@@ -1,0 +1,214 @@
+@page "/wcs-simulator/grcs-api-docs"
+@inject WcsApiClient WcsApi
+
+@* ════════════════════════════════════════════════
+   页面职责：「GRCS 接口说明」—— WCS 后端写死的 GRCS 接口 + 数据库功能模块清单。
+   数据源：后端 GET /api/wcs/grcs-api-docs（GrcsApiDocsController 动态组装：
+   内置接口为静态清单，功能模块实时从 SQLite（feature_modules 表）读取 ——
+   在「信号交互」页新建模块后，回到本页或点「刷新」即自动出现）。
+   每张卡片：接口名 + HTTP 方法 + 路径模板 + 描述 + 用到的地方；
+   点击展开显示参数表与请求体示例。
+   ════════════════════════════════════════════════ *@
+<PageTitle>GRCS 接口说明</PageTitle>
+
+<div class="section-card">
+    <div class="section-header">
+        🔌 GRCS 接口说明
+        <button class="btn btn-outline btn-sm" @onclick="Reload" disabled="@_loading">🔄 刷新</button>
+        <span class="badge-info">内置 @_builtin.Count 个</span>
+        <span class="badge-ok">模块 @_modules.Count 个</span>
+        <span class="hint-text" style="margin-left:auto;margin-bottom:0;">
+            内置 = 后端写死的 GRCS 接口；功能模块 = 数据库实时读取（信号交互页新建后刷新即出现）；点击卡片展开参数。
+        </span>
+    </div>
+
+    @if (_loading)
+    {
+        <span class="badge-info">⏳ 加载中...</span>
+    }
+    else
+    {
+        <div class="section-header" style="margin-top:6px;">🔧 系统内置接口</div>
+        @foreach (var d in _builtin)
+        {
+            <div class="section-card" style="margin-bottom:10px;border-left:3px solid @MethodColor(d.Method);">
+                <div class="section-header collapsible" @onclick="() => Toggle(d.Name)" title="点击展开/收起参数说明">
+                    <span class="addr-badge" style="background:@(MethodBg(d.Method));color:@MethodColor(d.Method);">@d.Method</span>
+                    <span style="white-space:nowrap;">@d.Name</span>
+                    <code style="font-size:0.7rem;color:#64748b;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">@d.UrlTemplate</code>
+                    <span class="collapse-arrow" style="margin-left:auto;">@(_open.Contains(d.Name) ? "▾ 收起" : "▸ 展开")</span>
+                </div>
+                @if (_open.Contains(d.Name))
+                {
+                    @RenderDocBody(d)
+                }
+            </div>
+        }
+
+        <div class="section-header" style="margin-top:16px;">📦 功能模块（数据库）</div>
+        @if (_modules.Count == 0)
+        {
+            <div class="hint-text" style="margin-bottom:10px;">
+                📭 暂无功能模块 —— 在「信号交互」页创建并保存模块（写入数据库）后，回到本页或点「🔄 刷新」即自动显示。
+            </div>
+        }
+        else
+        {
+            @foreach (var d in _modules)
+            {
+                <div class="section-card" style="margin-bottom:10px;border-left:3px solid #a78bfa;">
+                    <div class="section-header collapsible" @onclick="() => Toggle(d.Name)" title="点击展开/收起参数说明">
+                        <span class="addr-badge" style="background:rgba(167,139,250,0.12);color:#a78bfa;">@d.Method</span>
+                        <span style="white-space:nowrap;">@d.Name</span>
+                        <code style="font-size:0.7rem;color:#64748b;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">@d.UrlTemplate</code>
+                        <span class="collapse-arrow" style="margin-left:auto;">@(_open.Contains(d.Name) ? "▾ 收起" : "▸ 展开")</span>
+                    </div>
+                    @if (_open.Contains(d.Name))
+                    {
+                        @RenderDocBody(d)
+                    }
+                </div>
+            }
+        }
+    }
+</div>
+
+@code {
+    private List<GrcsApiDocDto> _builtin = [];
+    private List<GrcsApiDocDto> _modules = [];
+    private readonly HashSet<string> _open = [];
+    private bool _loading = true;
+
+    protected override async Task OnInitializedAsync() => await Reload();
+
+    private async Task Reload()
+    {
+        _loading = true;
+        StateHasChanged();
+        var docs = await WcsApi.GetGrcsApiDocsAsync();
+        _builtin = docs.Where(d => !d.Name.StartsWith("功能模块：", StringComparison.Ordinal)).ToList();
+        _modules = docs.Where(d => d.Name.StartsWith("功能模块：", StringComparison.Ordinal)).ToList();
+        _loading = false;
+    }
+
+    private void Toggle(string name)
+    {
+        if (!_open.Add(name)) _open.Remove(name);
+    }
+
+    /// <summary>展开区：描述 + 用到的地方 + 路径 + 参数表 + 请求体示例。</summary>
+    private RenderFragment RenderDocBody(GrcsApiDocDto d) => __builder =>
+    {
+        var i = 0;
+        __builder.OpenElement(i++, "div");
+        __builder.AddAttribute(i++, "style", "margin-bottom:10px;");
+        __builder.OpenElement(i++, "span");
+        __builder.AddAttribute(i++, "class", "hint-text");
+        __builder.AddAttribute(i++, "style", "display:block;margin-bottom:6px;");
+        __builder.AddContent(i++, d.Description);
+        __builder.CloseElement();
+
+        if (!string.IsNullOrEmpty(d.UsedBy))
+        {
+            __builder.OpenElement(i++, "div");
+            __builder.AddAttribute(i++, "style", "margin-bottom:8px;");
+            __builder.OpenElement(i++, "span");
+            __builder.AddAttribute(i++, "class", "hint-text");
+            __builder.AddAttribute(i++, "style", "margin-right:6px;");
+            __builder.AddContent(i++, "📌 用到的地方：");
+            __builder.CloseElement();
+            foreach (var u in d.UsedBy.Split('、', StringSplitOptions.RemoveEmptyEntries))
+            {
+                __builder.OpenElement(i++, "span");
+                __builder.AddAttribute(i++, "class", "addr-badge");
+                __builder.AddAttribute(i++, "style", "background:rgba(251,191,36,0.12);color:#fbbf24;margin-right:6px;");
+                __builder.AddContent(i++, u);
+                __builder.CloseElement();
+            }
+            __builder.CloseElement();
+        }
+
+        __builder.OpenElement(i++, "div");
+        __builder.AddAttribute(i++, "style", "margin-bottom:8px;");
+        __builder.OpenElement(i++, "span");
+        __builder.AddAttribute(i++, "class", "hint-text");
+        __builder.AddAttribute(i++, "style", "margin-right:6px;");
+        __builder.AddContent(i++, "🔗 路径：");
+        __builder.CloseElement();
+        __builder.OpenElement(i++, "code");
+        __builder.AddAttribute(i++, "style", "font-size:0.74rem;color:#7dd3fc;background:#0b1220;padding:2px 8px;border-radius:6px;border:1px solid #1e293b;");
+        __builder.AddContent(i++, d.UrlTemplate);
+        __builder.CloseElement();
+        __builder.CloseElement();
+
+        if (d.Params.Count > 0)
+        {
+            __builder.OpenElement(i++, "table");
+            __builder.AddAttribute(i++, "class", "data-table");
+            __builder.AddAttribute(i++, "style", "margin-bottom:8px;");
+            __builder.OpenElement(i++, "thead");
+            __builder.OpenElement(i++, "tr");
+            foreach (var head in new[] { "参数", "类型", "必填", "说明" })
+            {
+                __builder.OpenElement(i++, "th");
+                __builder.AddContent(i++, head);
+                __builder.CloseElement();
+            }
+            __builder.CloseElement();
+            __builder.CloseElement();
+            __builder.OpenElement(i++, "tbody");
+            foreach (var p in d.Params)
+            {
+                __builder.OpenElement(i++, "tr");
+                __builder.OpenElement(i++, "td");
+                __builder.AddAttribute(i++, "style", "font-family:Consolas,monospace;");
+                __builder.AddContent(i++, p.Name);
+                __builder.CloseElement();
+                __builder.OpenElement(i++, "td");
+                __builder.AddAttribute(i++, "style", "color:#94a3b8;");
+                __builder.AddContent(i++, p.Type);
+                __builder.CloseElement();
+                __builder.OpenElement(i++, "td");
+                __builder.AddContent(i++, p.Required ? "✅ 必填" : "—");
+                __builder.CloseElement();
+                __builder.OpenElement(i++, "td");
+                __builder.AddAttribute(i++, "style", "color:#cbd5e1;white-space:normal;");
+                __builder.AddContent(i++, p.Description);
+                __builder.CloseElement();
+                __builder.CloseElement();
+            }
+            __builder.CloseElement();
+            __builder.CloseElement();
+        }
+
+        if (!string.IsNullOrEmpty(d.BodyExample))
+        {
+            __builder.OpenElement(i++, "div");
+            __builder.OpenElement(i++, "span");
+            __builder.AddAttribute(i++, "class", "hint-text");
+            __builder.AddAttribute(i++, "style", "margin-right:6px;");
+            __builder.AddContent(i++, "📦 请求体示例：");
+            __builder.CloseElement();
+            __builder.OpenElement(i++, "pre");
+            __builder.AddAttribute(i++, "style", "margin:6px 0 0;padding:10px 12px;background:#0b1220;border:1px solid #1e293b;border-radius:8px;font-size:0.72rem;color:#a5f3fc;line-height:1.5;overflow:auto;");
+            __builder.AddContent(i++, d.BodyExample);
+            __builder.CloseElement();
+            __builder.CloseElement();
+        }
+        __builder.CloseElement();
+    };
+
+    private static string MethodColor(string m) => m switch
+    {
+        "POST" => "#fbbf24",
+        "GET" => "#4ade80",
+        _ => "#38bdf8",
+    };
+
+    private static string MethodBg(string m) => m switch
+    {
+        "POST" => "rgba(251,191,36,0.12)",
+        "GET" => "rgba(74,222,128,0.12)",
+        _ => "rgba(56,189,248,0.12)",
+    };
+}

@@ -1,0 +1,1141 @@
+@page "/wcs-simulator/automation"
+@inject IJSRuntime Js
+@inject LocalStoreService LocalStore
+@inject WcsApiClient WcsApi
+@inject AutomationHub Hub
+@inject GRCS.Dashboard.Modules.WcsSimulator.Services.MoveLoopService MoveLoop
+@inject GRCS.Dashboard.Modules.WcsSimulator.Services.TaskStageHub StageHub
+@implements IDisposable
+@using System.Text.Json
+@using System.Text.RegularExpressions
+@using GRCS.Dashboard.Modules.WcsSimulator.Models
+
+@* ════════════════════════════════════════════════
+    页面职责：WCS 模拟器的「自动化任务」页，两个独立功能区块
+    ① 纯移动任务：从「选点范围」筛选候选池，循环下发 MOVE_ONLY 任务（GRCS ChangeFloor）
+    ② 自动化模板：用户自定义的线性步骤模板（选托盘/选货物/执行任务模板），
+       由后端 AutoTemplateRunner 按模板执行（轮询或单次）；模板存后端跨浏览器共享
+    ── 交互服务 ──
+    WcsApiClient：GrcsBackend 管理面 API
+    AutomationHub：状态/日志共享轮询中枢（1s 刷新）
+    LocalStoreService：配置与折叠状态持久化到浏览器 localStorage
+    ════════════════════════════════════════════════ *@
+<PageTitle>自动化任务</PageTitle>
+
+<div class="hint-text" style="margin:0 0 12px;">
+    GRCS 地址与场景名在「地图信息」页系统设置配置，本页自动读取；自动化任务由后端执行。
+</div>
+
+@* ════════════════════════════════════════════════
+    选点范围：限制自动化模板与纯移动任务的选点范围。
+    配置持久化到后端（/api/wcs/auto/range）；仅按 楼层 + 手动 Mark 白名单（地图框选）过滤。
+    ════════════════════════════════════════════════ *@
+<div class="section-card">
+    <div class="section-header collapsible" @onclick="ToggleRange" title="点击折叠/展开">
+        🎯 选点范围
+        <span class="badge @(_range.Enabled ? "badge-ok" : "badge-warn")">@(_range.Enabled ? "已启用" : "未启用")</span>
+        <span class="addr-badge">候选 @_rangePool.Count 个</span>
+        <button class="btn btn-sm @(_range.Enabled ? "btn-danger" : "btn-primary")" @onclick="ToggleRangeEnabled" @onclick:stopPropagation>
+            @(_range.Enabled ? "关闭限制" : "开启限制")
+        </button>
+        <span class="collapse-arrow">@(IsCollapsed("range") ? "▸ 展开" : "▾ 收起")</span>
+    </div>
+    @if (!IsCollapsed("range"))
+    {
+    <div class="hint-text" style="margin-bottom:8px;">开启后，自动化模板与纯移动任务只在下述范围内随机选点（接驳位/储位/分拣台）。</div>
+
+    <div class="form-group" style="margin-top:6px;">
+        <label>楼层</label>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;">
+            <button class="chip-btn @(_range.FloorFilter == 0 ? "on" : "")" @onclick="() => { _range.FloorFilter = 0; SaveRange(); }">全部</button>
+            @foreach (var f in _rangeAvailableFloors)
+            {
+                <button class="chip-btn @(_range.FloorFilter == f ? "on" : "")" @onclick="() => { _range.FloorFilter = f; SaveRange(); }">@f 层</button>
+            }
+        </div>
+    </div>
+
+    <div class="form-group" style="margin-top:6px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;">
+            <label style="margin:0;">手动指定站点编码（可多个，逗号/空格/换行分隔；与类型/楼层取交集）</label>
+            <div style="display:flex;gap:6px;align-items:center;">
+                <button class="btn btn-outline btn-sm" @onclick="ClearRangeMarks" title="清空手动指定的站点">🧹 清空</button>
+                <button class="btn btn-outline btn-sm" @onclick="OpenStationMapPicker"
+                        disabled="@(_mapStations.Count == 0)"
+                        title="@(_mapStations.Count == 0 ? "需先在地图信息页加载地图数据" : "按 XY 坐标散点图框选站点，确定后写回本输入框")">
+                    🗺️ 地图框选
+                </button>
+            </div>
+        </div>
+        <textarea @bind="_rangeMarksText" @bind:event="oninput" rows="2" placeholder="留空=不限，如：0100001427, 0100001837"></textarea>
+    </div>
+
+    <div class="hint-text" style="margin-top:4px;">
+        @if (_range.Enabled)
+        {
+            <text>当前限制候选 @_rangePool.Count 个站点：@(string.Join(", ", _rangePool.Take(5).Select(s => s.Mark)))…</text>
+        }
+        else
+        {
+            <text>未启用，自动化任务从全地图随机选点。</text>
+        }
+    </div>
+    }
+</div>
+
+@* ════════════════════════════════════════════════
+    自动化（模板 / 纯移动任务，单卡片两模式）
+    ── 模板模式 ── 用户自定义线性步骤模板：每步从 选托盘/选货物/执行任务模板 中选。
+    选托盘/选货物从范围内库存随机抽（取出即从本轮机池移除）；执行任务模板用前置步骤挑出的
+    托盘/货物填充容器与起点下发单个 GRCS 任务。模板存后端、跨浏览器共享。
+    ── 纯移动模式 ── 候选池=选点范围，循环下发 MOVE_ONLY 任务。
+    两模式与移动循环互斥（防并发撞库存），运行状态/日志由后端统一提供，切走再回来仍可见。
+    ════════════════════════════════════════════════ *@
+<div class="section-card">
+    <div class="section-header collapsible" @onclick="ToggleAutoSection" title="点击折叠/展开">
+        🤖 自动化 · 模板 / 纯移动
+        <span class="badge-info">用户自定义 + MOVE_ONLY</span>
+        <span class="collapse-arrow">@(IsCollapsed("auto") ? "▸ 展开" : "▾ 收起")</span>
+    </div>
+    @if (!IsCollapsed("auto"))
+    {
+    @if (_range.Enabled)
+    {
+        <div class="range-banner">🎯 范围选点已开启，仅在限制范围内自动化下发任务（候选 @_rangePool.Count 个站点：储位 @_rangeStorages.Count / 接驳位 @_rangeTransferPoints.Count / 分拣台 @_rangePickingStations.Count）</div>
+    }
+
+    @if (OtherTabActive)
+    {
+        <div class="range-warning">⚠ 另一标签页正在下发任务（@OtherTabDesc），本页已禁止下发操作，避免并发撞车。</div>
+    }
+
+    @* 模式切换：模板任务 / 纯移动任务 *@
+    <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:14px;">
+        <button class="chip-btn @(_autoMode == "template" ? "on" : "")" @onclick='() => _autoMode = "template"' style="padding:9px 24px;font-size:0.85rem;">🧩 模板任务</button>
+        <button class="chip-btn @(_autoMode == "move" ? "on" : "")" @onclick='() => _autoMode = "move"' style="padding:9px 24px;font-size:0.85rem;">🚚 纯移动任务</button>
+        <button class="chip-btn @(_autoMode == "nest" ? "on" : "")" @onclick='() => _autoMode = "nest"' style="padding:9px 24px;font-size:0.85rem;">🐦 归巢模式</button>
+    </div>
+
+    @* 模式内容区：固定最小高度，切换模式时下方分割线/日志区不跳动 *@
+    <div style="min-height:200px;">
+    @if (_autoMode == "template")
+    {
+        @* ── 模板模式 ── *@
+        <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:flex-start;">
+            @* 左：模板列表 *@
+            <div style="min-width:220px;flex:1 1 100%;">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+                    <label style="margin:0;">模板列表 <span class="addr-badge">已选 @_selectedIds.Count</span></label>
+                    <button class="btn btn-outline btn-sm" @onclick="NewTemplate">➕ 新增</button>
+                </div>
+                <div style="display:flex;flex-direction:row;flex-wrap:wrap;gap:10px;">
+                    @foreach (var t in Hub.Status.Templates)
+                    {
+                        <div class="tt-row @(_selectedIds.Contains(t.Id) ? "on" : "")" style="flex:0 0 calc((100% - 40px) / 5);" @onclick="() => ToggleSelect(t.Id)">
+                            <div class="tt-row-head">
+                                <div class="tt-name">@t.Name</div>
+                                <button class="btn btn-outline btn-xs tt-edit" @onclick="() => OpenEditor(t.Id)" @onclick:stopPropagation title="编辑模板">✎ 编辑</button>
+                            </div>
+                            <div class="tt-steps">@string.Join(" → ", t.Steps.Select(s => StepLabel(s)))</div>
+                        </div>
+                    }
+                    @if (Hub.Status.Templates.Count == 0)
+                    {
+                        <div class="hint-text">暂无模板，点击「新增」创建</div>
+                    }
+                </div>
+            </div>
+
+            @* 模板编辑弹窗：点击「新增」或左侧模板打开 *@
+            @if (_editorOpen)
+            {
+                <div class="template-modal-overlay" @onclick="CloseEditor">
+                    <div class="tpl-modal" @onclick:stopPropagation>
+                        <div class="tpl-modal-header">
+                            <div class="tpl-modal-title">
+                                <div>🤖 模板任务</div>
+                                <div class="tpl-modal-sub">@(_editing.Name)</div>
+                            </div>
+                            <button class="tpl-modal-close" @onclick="CloseEditor" title="关闭">✕</button>
+                        </div>
+                        <div class="tpl-modal-body">
+                            <div class="form-group" style="margin-bottom:10px;">
+                                <label>模板名称</label>
+                                <input @bind="_editing.Name" placeholder="如：空托入库再分拣" />
+                            </div>
+
+                            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+                                <label style="margin:0;">步骤（按从上到下顺序执行）</label>
+                                <button class="btn btn-outline btn-sm" @onclick="AddStep">➕ 添加步骤</button>
+                            </div>
+
+                            <div style="display:flex;flex-direction:column;gap:14px;">
+                                @for (int i = 0; i < _editing.Steps.Count; i++)
+                                {
+                                    var idx = i;
+                                    var step = _editing.Steps[i];
+                                    <div class="step-card step-@(step.Kind)">
+                                        <div class="step-head">
+                                            <span class="step-pill">step@(i + 1)</span>
+                                            <select class="step-kind" @bind="step.Kind" @onclick:stopPropagation>
+                                                <option value="PickPallet">选托盘</option>
+                                                <option value="PickLoadedPallet">选带货托</option>
+                                                <option value="PickCargo">选货物</option>
+                                                <option value="RunTemplate">执行任务模板</option>
+                                            </select>
+                                            <label class="step-toggle" title="等待完成再继续下一步：含终点模块时强制等待模块 success；无终点模块时按 FINISHED 等待。关闭则下发后立即走下一步。">
+                                                <span class="toggle-switch @(step.WaitForFinish ? "on" : "")" @onclick="() => step.WaitForFinish = !step.WaitForFinish">
+                                                    <span class="toggle-track"><span class="toggle-thumb"></span></span>
+                                                </span>
+                                                <span class="step-toggle-text">等待完成</span>
+                                            </label>
+                                            <span style="flex:1;"></span>
+                                            <button class="btn btn-outline btn-xs" @onclick="() => MoveStep(idx, -1)" disabled="@(i == 0)" title="上移">↑</button>
+                                            <button class="btn btn-outline btn-xs" @onclick="() => MoveStep(idx, 1)" disabled="@(i == _editing.Steps.Count - 1)" title="下移">↓</button>
+                                            <button class="btn btn-outline btn-xs" @onclick="() => RemoveStep(idx)" title="删除">✕</button>
+                                        </div>
+                                        <div class="step-body">
+                                            @if (step.Kind == "PickPallet")
+                                            {
+                                                <select class="step-sub" @bind="step.PalletFilter">
+                                                    <option value="Empty">空托</option>
+                                                    <option value="Loaded">带货托</option>
+                                                    <option value="Any">任意</option>
+                                                </select>
+                                            }
+                                            else if (step.Kind == "RunTemplate")
+                                            {
+                                                <select class="step-sub step-tpl" @bind="step.TemplateValue">
+                                                    <option value="">— 选择任务模板 —</option>
+                                                    @foreach (var tt in TaskTypeRegistry.All)
+                                                    {
+                                                        <option value="@tt.Value">@tt.Label (@tt.Value)</option>
+                                                    }
+                                                </select>
+                                            }
+                                            <input class="step-label" @bind="step.Label" placeholder="步骤备注(可选)" />
+                                            @if (i >= 1 && step.Kind == "RunTemplate")
+                                            {
+                                                <label class="step-toggle" title="容器来源：引用前置某步骤挑选的容器号（选托盘=托盘号、选货物=货物号），或按模板容器号前缀自动生成。">
+                                                    <span class="step-toggle-text">容器来源</span>
+                                                    <select class="step-sub" style="width:auto;margin-left:6px;"
+                                                            value="@(step.PickedStepIndex == 0 && step.UsePickedContainer ? -1 : step.PickedStepIndex)"
+                                                            @onchange="e => { step.PickedStepIndex = int.TryParse(e.Value?.ToString(), out var v) ? v : 0; step.UsePickedContainer = step.PickedStepIndex != 0; }">
+                                                        <option value="0">自动生成（模板容器前缀）</option>
+                                                        <option value="-1">最近前置挑选的容器</option>
+                                                        @for (var p = 0; p < i; p++)
+                                                        {
+                                                            <option value="@(p + 1)">第 @(p + 1) 步：@StepPickDesc(_editing.Steps[p])</option>
+}
+
+                                                    </select>
+                                                </label>
+                                                <label class="step-toggle" title="起点是否取自前置步骤的终点（链路衔接）；关闭则按模板起点类型在选点范围内自行选点。">
+                                                    <span class="toggle-switch @(step.UsePickedStart ? "on" : "")" @onclick="() => step.UsePickedStart = !step.UsePickedStart">
+                                                        <span class="toggle-track"><span class="toggle-thumb"></span></span>
+                                                    </span>
+                                                    <span class="step-toggle-text">起点取自前置终点</span>
+                                                </label>
+                                            }
+                                        </div>
+                                        @if (step.Kind == "RunTemplate" && string.IsNullOrEmpty(step.TemplateValue))
+                                        {
+                                            <div class="hint-text" style="margin:6px 0 0;">请选择要执行的任务模板（来自「任务下发」页的已生成模板）</div>
+                                        }
+                                    </div>
+                                }
+                                @if (_editing.Steps.Count == 0)
+                                {
+                                    <div class="hint-text">暂无步骤，点击「添加步骤」</div>
+                                }
+                            </div>
+
+                            <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:12px;">
+                                <button class="btn btn-primary" @onclick="SaveTemplate" disabled="@(Hub.Status.Running)">💾 保存模板</button>
+                                <button class="btn btn-outline btn-sm" @onclick="RequestDeleteTemplate" disabled="@(Hub.Status.Running)">🗑 删除模板</button>
+                                <button class="btn btn-outline btn-sm" @onclick="CloseEditor">取消</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            }
+        </div>
+
+        @* 运行控制 *@
+        <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;margin-top:14px;border-top:1px dashed #334155;padding-top:12px;">
+            <div class="form-group" style="flex:1;min-width:120px;max-width:160px;">
+                <label>轮询间隔(秒)</label>
+                <input type="number" @bind="_intervalSec" min="1" max="600" step="1" />
+            </div>
+            <button class="btn @(Hub.Status.Running ? "btn-danger" : "btn-primary")" @onclick="TogglePoll"
+                    disabled="@(!Hub.Status.Running && (OtherTabActive || _selectedIds.Count == 0))">
+                @(Hub.Status.Running ? "⏹ 停止轮询" : "▶ 启动轮询")
+            </button>
+            <button class="btn btn-danger" @onclick="RequestForceStop" title="停止轮询、放弃进行中任务、释放所有占用与站点锁并清空日志">🧹 全部重置</button>
+            <button class="btn btn-outline" @onclick="QueryInventorySummary" disabled="@_invLoading">
+                📦 查库存
+            </button>
+            <span class="hint-text" style="padding-bottom:6px;">
+                @if (Hub.Status.Running) { <text>轮询中… 已执行 @Hub.Status.Executed 个任务（@Hub.Status.ActiveTemplateName）</text> }
+                else if (_selectedIds.Count == 0) { <text>请先在左侧选择至少一个模板（可多选）</text> }
+            </span>
+        </div>
+    }
+    else if (_autoMode == "move")
+    {
+        @* ── 纯移动任务（候选池=选点范围，一键自动下发）── *@
+        <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;margin-bottom:10px;">
+            <div class="form-group" style="flex:1;min-width:90px;max-width:120px;">
+                <label>下发间隔(秒)</label>
+                <input type="number" @bind="_batchInterval" min="1" max="600" step="1" />
+            </div>
+            <div class="form-group" style="flex:1;min-width:150px;max-width:250px;">
+                <label>优先级 (0-1000)</label>
+                <div style="display:flex;align-items:center;gap:10px;">
+                    <input type="range" min="0" max="1000" step="10" @bind="_batchPriority" style="flex:1;" />
+                    <span style="font-weight:700;color:#38bdf8;min-width:36px;text-align:center;">@_batchPriority</span>
+                </div>
+            </div>
+        </div>
+        <div class="hint-text" style="margin-top:-4px;margin-bottom:10px;">
+            MOVE_ONLY 纯移动任务，统一自动分配车辆；候选站点取自「选点范围」@(_range.Enabled ? "" : "（未开启 = 全图启用站点）")，当前候选 @_batchPool.Count 个。
+        </div>
+
+        <div style="display:flex;gap:10px;margin-top:4px;flex-wrap:wrap;align-items:center;">
+            <button class="btn @(_moveRunning ? "btn-danger" : "btn-primary")" @onclick="ToggleMoveDispatch" disabled="@(!_moveRunning && (Hub.Status.Running || OtherTabActive))">
+                @(_moveRunning ? "⏹ 停止自动下发" : "▶ 开始自动下发")
+            </button>
+            <span class="hint-text" style="margin:0;">每 @_batchInterval 秒在选点范围内随机抽 1 个站点下发 MOVE_ONLY 任务（自动分配车辆），点击停止结束</span>
+        </div>
+    }
+    else
+    {
+        @* ── 归巢模式（两步地图：先选车队再选巢区 → 持续调度直到区内点全被车占用）── *@
+        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:10px;">
+            <button class="btn btn-primary" @onclick="OpenNestPicker" disabled="@(_mapStations.Count == 0 || _nestRunning)" title="一张地图两步选：① 框选车队（站点为背景）→ ② 框选巢区（车辆为背景）→ 总结确认后一并保存">🎯 选择车队与巢区</button>
+            <span class="hint-text" style="margin:0;">一张地图两步完成：先框选车队（仅绿色就绪车可选），再框选巢区；确认后一并保存。</span>
+        </div>
+
+        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:6px;">
+            <label style="margin:0;white-space:nowrap;">🚗 车队</label>
+            <span class="addr-badge" style="background:rgba(56,189,248,0.15);color:#7dd3fc;">@_fleetPreview</span>
+            <span class="hint-text" style="margin:0;">不选则执行时自动捕获当前就绪车。</span>
+        </div>
+
+        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:10px;">
+            <label style="margin:0;white-space:nowrap;">🗺️ 巢区</label>
+            <span class="addr-badge" style="background:rgba(34,197,94,0.15);color:#6ee7b7;">@_nestPreview</span>
+            <span class="hint-text" style="margin:0;">巢区 = 框选区域内全部启用站点（不限类型）。</span>
+        </div>
+
+        <div style="display:flex;gap:10px;margin-top:4px;flex-wrap:wrap;align-items:center;">
+            <button class="btn btn-primary" @onclick="RunNest" disabled="@_nestRunning">
+                @(_nestRunning ? "⏳ 归巢执行中…" : $"🚀 执行归巢{(_selectedVehicles.Count > 0 ? $"（{_selectedVehicles.Count} 台）" : "")}")
+            </button>
+            @if (_nestRunning)
+            {
+                <button class="btn btn-danger" @onclick="StopNest">⏹ 停止归巢</button>
+            }
+            <span class="hint-text" style="margin:0;">只调度锁定车队（车少于目标点时占多少算多少）；框选 N 个点最多 N 台车在途，每 8 秒巡检，点满自动结束</span>
+        </div>
+
+        @if (_nestRunning || (StageHub.NestStats != null && StageHub.NestStats.PoolVehicles.Count > 0))
+        {
+            <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:12px;border-top:1px dashed #334155;padding-top:10px;">
+                <span class="badge-info">归巢状态</span>
+                <span class="hint-text" style="margin:0;">
+                    上次执行 <b style="color:#38bdf8">@(StageHub.NestStats?.LastRunAt ?? "—")</b> ｜ 巢区目标点 <b style="color:#38bdf8">@(StageHub.NestStats?.TargetTotal ?? 0)</b> 个 ｜ 已占用 <b style="color:#4ade80">@(StageHub.NestStats?.TargetOccupied ?? 0)</b> ｜ 在途 <b style="color:#fbbf24">@(StageHub.NestStats?.TargetAssigned ?? 0)</b> ｜ 成功 <b style="color:#4ade80">@((StageHub.NestStats?.Ok ?? 0))</b> ｜ 失败 <b style="color:#f87171">@((StageHub.NestStats?.Fail ?? 0))</b>
+                </span>
+                @if (!string.IsNullOrEmpty(StageHub.NestStats?.LastError))
+                {
+                    <span style="color:#f87171;font-weight:600;">｜ 最近错误：@StageHub.NestStats.LastError</span>
+                }
+            </div>
+            @if ((StageHub.NestStats?.PoolVehicles ?? []).Count > 0)
+            {
+                <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:8px;align-items:center;">
+                    <span class="hint-text" style="margin:0;">🔒 锁定车队（@(StageHub.NestStats!.PoolVehicles.Count) 台）：</span>
+                    @foreach (var v in StageHub.NestStats!.PoolVehicles)
+                    {
+                        <span class="addr-badge" style="background:rgba(56,189,248,0.15);color:#7dd3fc;">🔒 @v</span>
+                    }
+                </div>
+            }
+        }
+    }
+    </div>
+
+    @* 共用尾部：日志区（二级目录：父「第 N 轮」→ 子「每个模板一个」；点父展开子，点子或系统组查看详情）*@
+    <div style="border-top:1px solid #334155;margin:14px 0 4px;"></div>
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;">
+        <span class="badge-info">执行日志</span>
+        @if (_autoMode == "move")
+        {
+            <span class="hint-text" style="margin:0;">纯移动下发：共 <b style="color:#38bdf8">@_moveTotal</b> 个 ｜ 成功 <b style="color:#4ade80">@_moveOk</b> ｜ 失败 <b style="color:#f87171">@_moveFail</b>（明细见系统日志）
+            @if (!string.IsNullOrEmpty(MoveLoop.LastError))
+            {
+                <span style="color:#f87171;font-weight:600;">｜ 最近失败：@MoveLoop.LastError</span>
+            }
+        </span>
+        }
+    </div>
+    <div style="max-height:380px;overflow-y:auto;font-size:12px;line-height:1.7;font-family:Consolas,monospace;background:#0b1220;border:1px solid #1e293b;border-radius:8px;padding:8px 12px;">
+        @foreach (var parent in Hub.Rounds.Where(r => string.IsNullOrEmpty(r.ParentRoundId)))
+        {
+            var children = Hub.Rounds.Where(c => c.ParentRoundId == parent.RoundId).ToList();
+            bool isOpen = _expandedParents.Contains(parent.RoundId);
+            <div class="log-round @(children.Count == 0 ? "log-leaf" : "log-parent")" @onclick="() => OnParentClick(parent)">
+                <span class="log-arrow">@(children.Count == 0 ? "▸" : (isOpen ? "▾" : "▸"))</span>
+                <span class="log-round-title">@parent.Title</span>
+                <span class="log-count">@(children.Count == 0 ? $"{parent.Entries.Count} 条" : $"{children.Count} 个模板")</span>
+            </div>
+            if (isOpen)
+            {
+                @foreach (var child in children)
+                {
+                    <div class="log-round log-child" style="padding-left:24px;" @onclick="() => OpenRound(child.RoundId)">
+                        <span class="log-arrow">·</span>
+                        <span class="log-round-title">@child.Title</span>
+                        <span class="log-count">@child.Entries.Count 条</span>
+                    </div>
+                }
+            }
+        }
+        @if (Hub.Rounds.Count == 0)
+        {
+            <div class="hint-text">暂无日志</div>
+        }
+    </div>
+
+    @if (_openRoundId != null)
+    {
+        var openRound = Hub.Rounds.FirstOrDefault(r => r.RoundId == _openRoundId);
+        if (openRound != null)
+        {
+        <div class="log-modal-overlay" @onclick="CloseRound">
+            <div class="log-modal" @onclick:stopPropagation>
+                <div class="log-modal-head">
+                    <span class="log-modal-title">@openRound.Title</span>
+                    @if (openRound.RoundId == "__sys__")
+                    {
+                        <button class="btn btn-outline btn-sm" @onclick="ClearSystemLogs" @onclick:stopPropagation style="margin-right:8px;" title="仅清空系统日志">🧹 清空</button>
+                    }
+                    <button class="log-modal-close" @onclick="CloseRound" title="关闭">✕</button>
+                </div>
+                <div class="log-modal-body">
+                    @foreach (var e in openRound.Entries)
+                    {
+                        <div style="color:@e.Color;white-space:pre-wrap;"><span class="log-time">@e.Time</span> @RenderLog(e)</div>
+                    }
+                    @if (openRound.Entries.Count == 0)
+                    {
+                        <div class="hint-text">（无日志）</div>
+                    }
+                </div>
+            </div>
+        </div>
+        }
+    }
+    }
+
+    @if (_invDialogOpen && _invSummary != null)
+    {
+        <div class="template-modal-overlay" @onclick="CloseInventory">
+            <div class="tpl-modal" @onclick:stopPropagation style="width:820px;max-width:96vw;max-height:90vh;display:flex;flex-direction:column;">
+                <div class="tpl-modal-header">
+                    <div class="tpl-modal-title">
+                        <span class="tpl-modal-icon">📦</span>
+                        <div>
+                            <div class="tpl-modal-title-text">库存查询</div>
+                            <div class="tpl-modal-sub">仅列有货/托的储位；锁定中 = 移动单元数（货+托算一个）</div>
+                        </div>
+                    </div>
+                    <button class="tpl-modal-close" @onclick="CloseInventory" title="关闭">✕</button>
+                </div>
+                <div class="tpl-modal-body" style="flex:1;min-height:0;overflow-y:auto;max-height:none;">
+                    <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px;">
+                        <div style="flex:1;min-width:130px;background:#0f172a;border:1px solid #1e293b;border-radius:8px;padding:10px 14px;text-align:center;">
+                            <div style="font-size:1.5rem;font-weight:700;color:#38bdf8;">@_invSummary.Empty</div>
+                            <div class="hint-text" style="margin-top:2px;">纯空托</div>
+                        </div>
+                        <div style="flex:1;min-width:130px;background:#0f172a;border:1px solid #1e293b;border-radius:8px;padding:10px 14px;text-align:center;">
+                            <div style="font-size:1.5rem;font-weight:700;color:#38bdf8;">@_invSummary.Loaded</div>
+                            <div class="hint-text" style="margin-top:2px;">带货托</div>
+                        </div>
+                        <div style="flex:1;min-width:130px;background:#0f172a;border:1px solid #1e293b;border-radius:8px;padding:10px 14px;text-align:center;">
+                            <div style="font-size:1.5rem;font-weight:700;color:#38bdf8;">@_invSummary.Cargo</div>
+                            <div class="hint-text" style="margin-top:2px;">纯货物</div>
+                        </div>
+                        <div style="flex:1;min-width:130px;background:#0f172a;border:1px solid #1e293b;border-radius:8px;padding:10px 14px;text-align:center;">
+                            <div style="font-size:1.5rem;font-weight:700;color:#f59e0b;">@_invSummary.Locked</div>
+                            <div class="hint-text" style="margin-top:2px;">锁定中</div>
+                        </div>
+                    </div>
+
+                    <div style="display:flex;flex-direction:column;gap:12px;">
+                        <div style="background:#0f172a;border:1px solid #1e293b;border-radius:8px;padding:10px 14px;">
+                            <div style="font-weight:600;color:#38bdf8;margin-bottom:6px;">🟦 纯空托 @_invSummary.EmptyItems.Count</div>
+                            @if (_invSummary.EmptyItems.Count == 0) { <div class="hint-text">（无）</div> }
+                            else
+                            {
+                                <div style="max-height:180px;overflow-y:auto;display:flex;flex-direction:column;gap:3px;">
+                                    @foreach (var it in _invSummary.EmptyItems)
+                                    {
+                                        <div style="display:flex;gap:8px;align-items:baseline;font-size:0.85rem;">
+                                            <span style="font-weight:600;">@it.Code</span>
+                                            <span class="hint-text">@it.Station</span>
+                                        </div>
+                                    }
+                                </div>
+                            }
+                        </div>
+
+                        <div style="background:#0f172a;border:1px solid #1e293b;border-radius:8px;padding:10px 14px;">
+                            <div style="font-weight:600;color:#38bdf8;margin-bottom:6px;">🟨 带货托 @_invSummary.LoadedItems.Count</div>
+                            @if (_invSummary.LoadedItems.Count == 0) { <div class="hint-text">（无）</div> }
+                            else
+                            {
+                                <div style="max-height:180px;overflow-y:auto;display:flex;flex-direction:column;gap:3px;">
+                                    @foreach (var it in _invSummary.LoadedItems)
+                                    {
+                                        <div style="display:flex;gap:8px;align-items:baseline;font-size:0.85rem;">
+                                            <span style="font-weight:600;">@it.Code</span>
+                                            <span class="hint-text">@it.Station</span>
+                                            <span class="hint-text">货物：@it.CargoCode</span>
+                                        </div>
+                                    }
+                                </div>
+                            }
+                        </div>
+
+                        <div style="background:#0f172a;border:1px solid #1e293b;border-radius:8px;padding:10px 14px;">
+                            <div style="font-weight:600;color:#38bdf8;margin-bottom:6px;">🟩 纯货物 @_invSummary.CargoItems.Count</div>
+                            @if (_invSummary.CargoItems.Count == 0) { <div class="hint-text">（无）</div> }
+                            else
+                            {
+                                <div style="max-height:180px;overflow-y:auto;display:flex;flex-direction:column;gap:3px;">
+                                    @foreach (var it in _invSummary.CargoItems)
+                                    {
+                                        <div style="display:flex;gap:8px;align-items:baseline;font-size:0.85rem;">
+                                            <span style="font-weight:600;">@it.Code</span>
+                                            <span class="hint-text">@it.Station</span>
+                                        </div>
+                                    }
+                                </div>
+                            }
+                        </div>
+
+                        <div style="background:#0f172a;border:1px solid #1e293b;border-radius:8px;padding:10px 14px;">
+                            <div style="font-weight:600;color:#f59e0b;margin-bottom:6px;">🟠 锁定中 @_invSummary.LockedItems.Count</div>
+                            @if (_invSummary.LockedItems.Count == 0) { <div class="hint-text">（无）</div> }
+                            else
+                            {
+                                <div style="max-height:180px;overflow-y:auto;display:flex;flex-direction:column;gap:3px;">
+                                    @foreach (var it in _invSummary.LockedItems)
+                                    {
+                                        <div style="display:flex;gap:8px;align-items:baseline;font-size:0.85rem;">
+                                            <span style="font-weight:600;">@it.Code</span>
+                                            <span class="hint-text">@(string.IsNullOrEmpty(it.Station) ? "在途" : it.Station)</span>
+                                            @if (!string.IsNullOrEmpty(it.CargoCode)) { <span class="hint-text">货物：@it.CargoCode</span> }
+                                        </div>
+                                    }
+                                </div>
+                            }
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    }
+
+    @if (_confirmVisible)
+    {
+        <div class="template-modal-overlay" @onclick="CancelConfirm">
+            <div class="tpl-modal" @onclick:stopPropagation style="max-width:420px;">
+                <div class="tpl-modal-header">
+                    <div class="tpl-modal-title">@_confirmTitle</div>
+                    <button class="tpl-modal-close" @onclick="CancelConfirm" title="关闭">✕</button>
+                </div>
+                <div class="tpl-modal-body">
+                    <div class="hint-text" style="white-space:pre-wrap;color:#e2e8f0;">@_confirmMessage</div>
+                </div>
+                <div class="tpl-modal-footer" style="display:flex;gap:10px;justify-content:flex-end;margin-top:12px;">
+                    <button class="btn btn-danger" @onclick="ConfirmAsync">确认</button>
+                    <button class="btn btn-outline" @onclick="CancelConfirm">取消</button>
+                </div>
+            </div>
+        </div>
+    }
+    @if (_noticeVisible)
+    {
+        <div class="template-modal-overlay" @onclick="CloseNotice">
+            <div class="tpl-modal" @onclick:stopPropagation style="max-width:420px;">
+                <div class="tpl-modal-header">
+                    <div class="tpl-modal-title">⚠️ 无法启动轮询</div>
+                    <button class="tpl-modal-close" @onclick="CloseNotice" title="关闭">✕</button>
+                </div>
+                <div class="tpl-modal-body">
+                    <div class="hint-text" style="white-space:pre-wrap;color:#e2e8f0;">@_noticeMessage</div>
+                </div>
+                <div class="tpl-modal-footer" style="display:flex;gap:10px;justify-content:flex-end;margin-top:12px;">
+                    <button class="btn btn-primary" @onclick="CloseNotice">知道了</button>
+                </div>
+            </div>
+        </div>
+    }
+</div>
+
+@if (!string.IsNullOrEmpty(_responseText))
+{
+    <div class="section-card">
+        <div class="response-panel @_respClass">@_responseText</div>
+    </div>
+}
+
+@code {
+    // ── 场景名（后端系统设置，Hub 1s 轮询同步；移动任务报文用）──
+    private string SceneName => Hub.Status.Settings.SceneName;
+
+    // ── 地图站点缓存（从「地图信息」页写入的 localStorage 键 grcs_map_stations 恢复，
+    //    供按类型筛选候选池与手输站点校验使用）──
+    private List<MapStationLite> _mapStations = [];
+
+    // ── 纯移动任务（循环在 MoveLoopService 中运行：跨页面导航存活，离开本页任务继续下发）──
+    private int _batchPriority = 50;
+    private string _batchOrderIdPrefix = "SimMoveOnly";
+    private int _batchInterval = 3;
+    /// <summary>本标签页唯一 id（模板自动化租约 + 移动循环租约共用）。</summary>
+    private string _tabId = "";
+    private bool _moveRunning => MoveLoop.Running;   // 循环运行中（读服务状态）
+    private int _moveTotal => MoveLoop.Total;
+    private int _moveOk => MoveLoop.Ok;
+    private int _moveFail => MoveLoop.Fail;
+
+    // ── 归巢模式（后端 NestRunner 执行：框选巢区 → 持续调度直到区内点全有车，状态走 SignalR NestStats）──
+    private string _nestMarksText = "";
+    private bool _nestRunning => StageHub.NestStats?.Running == true || Hub.Status.NestRunning;
+    // 车队顺序即选择顺序（保序去重）：车多时仅前 N 台参与（N = 巢区点数），由两步地图确认时截断
+    private List<string> _selectedVehicles = [];
+    private static List<string> FleetDedupe(IEnumerable<string> xs) =>
+        xs.Where(n => !string.IsNullOrWhiteSpace(n))
+          .Distinct(StringComparer.OrdinalIgnoreCase)
+          .ToList();
+    private string _fleetPreview => _selectedVehicles.Count == 0
+        ? "未指定（归巢时自动捕获当前就绪车）"
+        : string.Join("、", _selectedVehicles.Take(6)) + (_selectedVehicles.Count > 6 ? $" 等 {_selectedVehicles.Count} 台" : "");
+
+    // ── 自动化模板编辑状态 ──
+    private string _autoMode = "template";
+    private AutoTemplateDto _editing = NewTemplateObject();
+    private HashSet<string> _selectedIds = new();
+    private int _intervalSec = 3;
+
+    // ── 响应 ──
+    private string _responseText = "";
+    private string _respClass = "";
+
+    // ── 卡片折叠状态（持久化到 localStorage 键 grcs_auto_collapsed）──
+    private Dictionary<string, bool> _collapsed = new() { ["range"] = true, ["auto"] = true };
+    private bool IsCollapsed(string key) => _collapsed.GetValueOrDefault(key, true);
+    private async Task Toggle(string key)
+    {
+        _collapsed[key] = !IsCollapsed(key);
+        await LocalStore.SetAsync(Js, "grcs_auto_collapsed", JsonSerializer.Serialize(_collapsed));
+    }
+    private Task ToggleRange() => Toggle("range");
+    private Task ToggleAutoSection() => Toggle("auto");
+
+    // ── 选点范围（后端 /api/wcs/auto/range）──
+    private RangeConfigDto _range = new();
+    private string _rangeMarksText = "";
+    private string _rangeFp = "";
+    // 模板任务实际候选池：与后端 AutoTemplateRunner 口径一致（仅按 Mark 白名单过滤；
+    // 类型位/楼层对模板任务不生效，套用会导致显示与实际不一致）。未启用 = 全部站点。
+    private List<MapStationLite> _rangePool
+    {
+        get
+        {
+            if (!_range.Enabled) return _mapStations.ToList();
+            var marks = _range.Marks.Where(m => !string.IsNullOrWhiteSpace(m))
+                .Select(m => m.Trim()).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            if (marks.Count == 0) return _mapStations.ToList();
+            return _mapStations.Where(s => marks.Contains(s.Mark)).ToList();
+        }
+    }
+    private List<int> _rangeAvailableFloors => _mapStations
+        .Where(s => s.StaEnable)
+        .Select(s => s.Floor).Distinct().OrderBy(f => f).ToList();
+    private List<MapStationLite> _rangeStorages => _rangePool.Where(s => s.StaEnable && (s.StationType & MapStationTypeBits.StorageLocation) != 0).ToList();
+    private List<MapStationLite> _rangeTransferPoints => _rangePool.Where(s => s.StaEnable && (s.StationType & MapStationTypeBits.TransferPoint) != 0).ToList();
+    private List<MapStationLite> _rangePickingStations => _rangePool.Where(s => s.StaEnable && (s.StationType & MapStationTypeBits.PeopleStation) != 0).ToList();
+
+    // ── 跨标签页互斥 ──
+    private bool OtherTabPollActive => Hub.Status.Running && !string.IsNullOrEmpty(Hub.Status.AutoTabId) && Hub.Status.AutoTabId != _tabId;
+    private bool OtherTabMoveActive => Hub.Status.MoveRunning && !MoveLoop.Running && !string.IsNullOrEmpty(Hub.Status.MoveTabId) && Hub.Status.MoveTabId != _tabId;
+    private bool OtherTabActive => OtherTabPollActive || OtherTabMoveActive;
+    private string OtherTabDesc
+    {
+        get
+        {
+            var parts = new List<string>();
+            if (OtherTabPollActive) parts.Add("模板任务");
+            if (OtherTabMoveActive) parts.Add("纯移动任务");
+            return string.Join("、", parts);
+        }
+    }
+
+    private void ToggleRangeEnabled() { _range.Enabled = !_range.Enabled; SaveRange(); }
+    private void SaveRange()
+    {
+        _range.Marks = RangeConfigHelpers.ParseMarks(_rangeMarksText);
+        _rangeFp = RangeFp(_range.Enabled, 0, _range.FloorFilter, _range.Marks);
+        _ = WcsApi.PutAsync<RangeConfigDto, object>("/api/wcs/auto/range", new RangeConfigDto
+        {
+            Enabled = _range.Enabled,
+            TypeFilter = 0,
+            FloorFilter = _range.FloorFilter,
+            Marks = _range.Marks,
+        });
+    }
+
+    private static string RangeFp(bool enabled, int typeFilter, int floorFilter, IEnumerable<string> marks)
+    {
+        var m = string.Join(",", marks
+            .Where(x => !string.IsNullOrWhiteSpace(x))
+            .Select(x => x.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(x => x, StringComparer.OrdinalIgnoreCase));
+        return $"{enabled}|{typeFilter}|{floorFilter}|{m}";
+    }
+
+    private void OnHubChanged()
+    {
+        var r = Hub.Range;
+        var fp = RangeFp(r.Enabled, r.TypeFilter, r.FloorFilter, r.Marks);
+        if (fp != _rangeFp)
+        {
+            _range.Enabled = r.Enabled;
+            _range.TypeFilter = r.TypeFilter;
+            _range.FloorFilter = r.FloorFilter;
+            _range.Marks = r.Marks ?? [];
+            _rangeMarksText = string.Join(", ", _range.Marks);
+            _rangeFp = fp;
+        }
+        InvokeAsync(StateHasChanged);
+    }
+
+    private void ClearRangeMarks() { _rangeMarksText = ""; SaveRange(); }
+
+    private async Task OpenStationMapPicker()
+    {
+        if (_mapStations.Count == 0) { ShowResp("❌ 请先在「地图信息」页加载地图数据", "error"); return; }
+        var stations = _mapStations
+            .Select(s => new StationMapPickerStation { Mark = s.Mark, StationType = s.StationType, X = s.X, Y = s.Y, Floor = s.Floor, StaEnable = s.StaEnable })
+            .ToList();
+        var floors = stations.Where(s => s.StaEnable).Select(s => s.Floor).Distinct().OrderBy(f => f).ToList();
+        if (floors.Count == 0) { ShowResp("❌ 没有可用的启用站点", "error"); return; }
+        int initialFloor = _range.FloorFilter != 0 && floors.Contains(_range.FloorFilter) ? _range.FloorFilter : floors[0];
+        var config = new StationMapPickerConfig { Floors = floors, InitialFloor = initialFloor, Stations = stations, Preselected = _range.Marks };
+        try
+        {
+            var result = await Js.InvokeAsync<string?>("grcsStationMapPickerOpen", JsonSerializer.Serialize(config));
+            if (result == null) return;
+            var marks = JsonSerializer.Deserialize<List<string>>(result, JsonOpts) ?? [];
+            _rangeMarksText = string.Join(", ", marks);
+            SaveRange();
+        }
+        catch (Exception ex) { ShowResp($"❌ 地图框选失败：{ex.Message}", "error"); }
+    }
+
+    /// <summary>页面销毁：仅退订事件。移动循环由 MoveLoopService 持有，离开页面任务继续下发。</summary>
+    public void Dispose()
+    {
+        Hub.Changed -= OnHubChanged;
+        MoveLoop.Changed -= OnMoveLoopChanged;
+        StageHub.NestStatsChanged -= OnNestStatsChanged;
+    }
+
+    private void OnMoveLoopChanged() => InvokeAsync(StateHasChanged);
+
+    private void OnNestStatsChanged() => InvokeAsync(StateHasChanged);
+
+    // ── 归巢模式 ──
+    private string _nestPreview => string.IsNullOrWhiteSpace(_nestMarksText)
+        ? "未选择"
+        : $"已选 {RangeConfigHelpers.ParseMarks(_nestMarksText).Count} 个站点";
+
+    private async Task RunNest()
+    {
+        if (string.IsNullOrWhiteSpace(SceneName)) { ShowResp("❌ 未配置场景名称（地图信息页系统设置）", "error"); return; }
+        var result = await WcsApi.RunNestAsync(_selectedVehicles.Count > 0 ? _selectedVehicles : null);
+        if (result == null) { ShowResp("❌ 归巢请求失败（后端未响应）", "error"); return; }
+        if (!result.Success) { ShowResp("❌ " + (result.Reason ?? "归巢执行被拒绝"), "error"); return; }
+        ShowResp("🚀 归巢执行中，结果见系统日志…", "success");
+        StateHasChanged();
+    }
+
+    private async Task StopNest()
+    {
+        await WcsApi.StopNestAsync();
+        ShowResp("⏹ 已请求停止归巢", "info");
+    }
+
+    // ── 归巢两步地图选择（先选车队，再选巢区，总结确认后一并保存）──
+    private List<VehicleInfoDto> _fleetVehicles = [];
+
+    /// <summary>打开两步地图：① 框选车队（站点为背景，仅就绪车可选）→ ② 框选巢区（车辆为背景）→ 总结确认后车队存 localStorage、巢区 PUT nest/config。</summary>
+    private async Task OpenNestPicker()
+    {
+        if (_mapStations.Count == 0) { ShowResp("❌ 请先在「地图信息」页加载地图数据", "error"); return; }
+        try { _fleetVehicles = await WcsApi.GetVehiclesAsync(); }
+        catch { _fleetVehicles = []; }
+        if (_fleetVehicles.Count == 0)
+        {
+            ShowResp("❌ 未获取到车辆（检查 GRCS 连接与「地图信息 → 系统设置」的场景名称）", "error");
+            return;
+        }
+        var chargingMarks = new HashSet<string>(
+            _mapStations.Where(s => (s.StationType & MapStationTypeBits.Charging) != 0).Select(s => s.Mark),
+            StringComparer.OrdinalIgnoreCase);
+        var config = new
+        {
+            Stations = _mapStations.Select(s => new { s.Mark, s.StationType, s.X, s.Y, s.Floor, s.StaEnable }),
+            Vehicles = _fleetVehicles.Select(v => new
+            {
+                v.Name, v.X, v.Y, v.IsReady, v.ExecutionState, v.UtilizationState, v.Power, v.Location,
+                IsCharging = !string.IsNullOrEmpty(v.Location) && chargingMarks.Contains(v.Location),
+            }),
+            PreselectedVehicles = Array.Empty<string>(),
+            PreselectedMarks = Array.Empty<string>(),
+        };
+        try
+        {
+            var json = await Js.InvokeAsync<string?>("grcsNestPickerOpen", JsonSerializer.Serialize(config));
+            if (string.IsNullOrWhiteSpace(json)) return;
+            NestPickResult? result = null;
+            try { result = JsonSerializer.Deserialize<NestPickResult>(json); } catch { }
+            if (result == null) return;
+
+            var names = result.Vehicles.Where(n => !string.IsNullOrWhiteSpace(n)).ToList();
+            _selectedVehicles = FleetDedupe(names);
+            await LocalStore.SetAsync(Js, "grcs_nest_fleet", JsonSerializer.Serialize(names));
+
+            var marks = result.Marks.Where(m => !string.IsNullOrWhiteSpace(m)).Distinct().ToList();
+            _nestMarksText = string.Join(", ", marks);
+            await WcsApi.PutAsync<NestConfigDto, object>("/api/wcs/auto/nest/config", new NestConfigDto { Marks = marks });
+            ShowResp(result.Dropped > 0
+                ? $"✅ 已保存：车队前 {names.Count} 台参与、巢区 {marks.Count} 个站点（其余 {result.Dropped} 台已移出车队）"
+                : $"✅ 已保存：车队 {names.Count} 台、巢区 {marks.Count} 个站点（确认后立即生效）", "success");
+            StateHasChanged();
+        }
+        catch (Exception ex) { ShowResp($"❌ 地图选择失败：{ex.Message}", "error"); }
+    }
+
+    // ── 自动化模板 ──
+    private static AutoTemplateDto NewTemplateObject() => new()
+    {
+        Id = "",
+        Name = "",
+        Steps = [new AutoStepDto { Kind = "PickPallet", PalletFilter = "Empty", Label = "" }],
+    };
+
+    private bool _editorOpen = false;
+    private void NewTemplate() { _editing = NewTemplateObject(); _editorOpen = true; }
+    private void CloseEditor() { _editorOpen = false; }
+
+    // ── 二次确认弹窗（删除模板 / 强制结束）──
+    private bool _confirmVisible;
+    private string _confirmTitle = "";
+    private string _confirmMessage = "";
+    private Func<Task>? _confirmAction;
+    private void ShowConfirm(string title, string message, Func<Task> action) { _confirmTitle = title; _confirmMessage = message; _confirmAction = action; _confirmVisible = true; }
+    private void CancelConfirm() { _confirmVisible = false; _confirmAction = null; }
+    private async Task ConfirmAsync() { var act = _confirmAction; _confirmVisible = false; _confirmAction = null; if (act != null) await act(); }
+
+    private bool _noticeVisible;
+    private string _noticeMessage = "";
+    private void ShowNotice(string message) { _noticeMessage = message; _noticeVisible = true; }
+    private void CloseNotice() { _noticeVisible = false; }
+    private class StartResultDto { public bool Success { get; set; } public string Message { get; set; } = ""; }
+    private void RequestDeleteTemplate() => ShowConfirm("确认删除", $"是否确认删除模板「{_editing.Name}」？", DeleteTemplate);
+    private void RequestForceStop() => ShowConfirm("确认全部重置", "是否确认全部重置当前自动化？所有进行中的任务将不再等待完成并释放占用与站点锁，日志将被清空。", ForceStop);
+
+    private void ToggleSelect(string id)
+    {
+        if (_selectedIds.Contains(id)) _selectedIds.Remove(id);
+        else _selectedIds.Add(id);
+    }
+
+    private void OpenEditor(string id)
+    {
+        var t = Hub.Status.Templates.FirstOrDefault(x => x.Id == id);
+        _editing = t == null ? NewTemplateObject() : Clone(t);
+        _editorOpen = true;
+    }
+
+    private static AutoTemplateDto Clone(AutoTemplateDto src) => new()
+    {
+        Id = src.Id,
+        Name = src.Name,
+        Steps = src.Steps.Select(s => new AutoStepDto { Kind = s.Kind, PalletFilter = s.PalletFilter, TemplateValue = s.TemplateValue, Label = s.Label, WaitForFinish = s.WaitForFinish, UsePickedContainer = s.UsePickedContainer, UsePickedStart = s.UsePickedStart, PickedStepIndex = s.PickedStepIndex }).ToList(),
+    };
+
+    /// <summary>容器来源下拉的步骤描述：步骤类型 + 备注（如「选托盘·取空托」）。</summary>
+    private static string StepPickDesc(AutoStepDto s)
+    {
+        var kind = s.Kind switch
+        {
+            "PickPallet" => "选托盘",
+            "PickCargo" => "选货物",
+            "PickLoadedPallet" => "选带货托",
+            _ => "任务模板",
+        };
+        return string.IsNullOrEmpty(s.Label) ? kind : $"{kind}·{s.Label}";
+    }
+
+    private void AddStep() => _editing.Steps.Add(new AutoStepDto { Kind = "PickPallet", PalletFilter = "Empty" });
+    private void RemoveStep(int i) { if (i >= 0 && i < _editing.Steps.Count) _editing.Steps.RemoveAt(i); }
+    private void MoveStep(int i, int dir)
+    {
+        var j = i + dir;
+        if (j < 0 || j >= _editing.Steps.Count) return;
+        (_editing.Steps[i], _editing.Steps[j]) = (_editing.Steps[j], _editing.Steps[i]);
+    }
+
+    private string StepLabel(AutoStepDto s) => s.Kind switch
+    {
+        "PickPallet" => "选托盘(" + (s.PalletFilter == "Loaded" ? "带货托" : s.PalletFilter == "Any" ? "任意" : "空托") + ")",
+        "PickLoadedPallet" => "选带货托",
+        "PickCargo" => "选货物",
+        "RunTemplate" => "执行:" + (TaskTypeRegistry.All.FirstOrDefault(t => t.Value == s.TemplateValue)?.Label ?? (string.IsNullOrEmpty(s.TemplateValue) ? "未选" : s.TemplateValue)),
+        _ => s.Kind,
+    };
+
+    private async Task SaveTemplate()
+    {
+        if (string.IsNullOrWhiteSpace(_editing.Id)) _editing.Id = "T_" + Guid.NewGuid().ToString("N")[..10];
+        if (string.IsNullOrWhiteSpace(_editing.Name)) _editing.Name = "未命名模板";
+        var clone = Clone(_editing);
+        var (ok, code, json) = await WcsApi.PutWithStatusAsync("/api/wcs/auto/templates/" + Uri.EscapeDataString(clone.Id), clone);
+        if (!ok)
+        {
+            var msg = "❌ 模板保存被拒绝";
+            try
+            {
+                var err = JsonSerializer.Deserialize<SaveValidationResult>(json, new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+                if (err?.Errors?.Count > 0) msg = "❌ 保存被拒绝：\n" + string.Join("\n", err.Errors);
+            }
+            catch { }
+            ShowResp(msg, "error");
+            return;
+        }
+        _selectedIds.Add(clone.Id);
+        ShowResp($"✅ 模板「{clone.Name}」已保存", "success");
+        _editorOpen = false;
+        await Hub.RefreshNowAsync();
+    }
+
+    private class SaveValidationResult
+    {
+        public bool Success { get; set; }
+        public List<string>? Errors { get; set; }
+    }
+
+    private async Task DeleteTemplate()
+    {
+        if (string.IsNullOrEmpty(_editing.Id)) return;
+        await WcsApi.DeleteAsync("/api/wcs/auto/templates?id=" + Uri.EscapeDataString(_editing.Id));
+        _selectedIds.Remove(_editing.Id);
+        NewTemplate();
+        ShowResp("🗑 已删除模板", "success");
+        _editorOpen = false;
+    }
+
+    private async Task TogglePoll()
+    {
+        if (Hub.Status.Running)
+        {
+            await WcsApi.PostAsync("/api/wcs/auto/stop", new { });
+        }
+        else
+        {
+            if (_selectedIds.Count == 0) return;
+            await WcsApi.PostAsync("/api/wcs/auto/interval", new { interval = _intervalSec });
+            var r = await WcsApi.PostAsync<object, StartResultDto>("/api/wcs/auto/start", new { tabId = _tabId, templateIds = _selectedIds.ToList() });
+            if (r == null || !r.Success)
+                ShowNotice(r?.Message ?? "启动轮询失败，请查看自动化日志");
+            else
+                await Hub.RefreshNowAsync();
+        }
+    }
+
+    private async Task ForceStop()
+    {
+        await WcsApi.PostAsync("/api/wcs/auto/force-stop", new { });
+        await Hub.RefreshNowAsync();
+    }
+
+    private void ClearLogs() => Hub.ClearLogs();
+
+    private async Task ClearSystemLogs()
+    {
+        await WcsApi.DeleteAsync("/api/wcs/auto/logs/system");
+        await Hub.RefreshNowAsync();
+        _openRoundId = null;
+        StateHasChanged();
+    }
+
+    // 库存分类汇总（纯空托 / 带货托 / 纯货物），点「查库存」按钮拉取
+    private InventorySummaryDto? _invSummary;
+    private bool _invLoading;
+    private async Task QueryInventorySummary()
+    {
+        _invLoading = true; StateHasChanged();
+        try
+        {
+            _invSummary = await WcsApi.GetAsync<InventorySummaryDto>("/api/wcs/auto/inventory-summary");
+            _invDialogOpen = _invSummary != null;
+        }
+        catch { _invSummary = null; }
+        finally { _invLoading = false; StateHasChanged(); }
+    }
+    private bool _invDialogOpen = false;
+    private void CloseInventory() { _invDialogOpen = false; }
+    private HashSet<string> _expanded = new() { "__sys__" };
+
+    private void ToggleRound(string id)
+    {
+        if (_expanded.Contains(id)) _expanded.Remove(id);
+        else _expanded.Add(id);
+    }
+
+    private string? _openRoundId;
+    private void OpenRound(string id) { _openRoundId = id; StateHasChanged(); }
+    private void CloseRound() { _openRoundId = null; StateHasChanged(); }
+
+    // 弹窗日志：步骤号（如「步骤 2/5」）高亮加粗；其余内容转义后原样展示
+    private static readonly Regex StepNoRe = new(@"步骤 (\d+/\d+)", RegexOptions.Compiled);
+    private static MarkupString RenderLog(LogEntryDto e)
+    {
+        var msg = System.Net.WebUtility.HtmlEncode(e.Message);
+        msg = StepNoRe.Replace(msg, "<b style=\"color:#fbbf24\">步骤 $1</b>");
+        return new MarkupString(msg);
+    }
+
+    private HashSet<string> _expandedParents = new();
+    private void OnParentClick(LogRoundDto parent)
+    {
+        var children = Hub.Rounds.Where(c => c.ParentRoundId == parent.RoundId).ToList();
+        if (children.Count == 0) { OpenRound(parent.RoundId); return; }
+        if (_expandedParents.Contains(parent.RoundId)) _expandedParents.Remove(parent.RoundId);
+        else _expandedParents.Add(parent.RoundId);
+        StateHasChanged();
+    }
+
+    private static readonly JsonSerializerOptions JsonOpts = new() { PropertyNameCaseInsensitive = true };
+
+    protected override async Task OnInitializedAsync()
+    {
+        // 标签页身份：sessionStorage 持久化（同标签页刷新/重进沿用同一 tabId，避免误判「另一标签页」；
+        // 新开标签页独立 sessionStorage 生成新 tabId，跨标签页互斥依然生效）
+        try
+        {
+            _tabId = await Js.InvokeAsync<string>("grcsSessionLoad", "wcs_auto_tab_id") ?? "";
+            if (string.IsNullOrEmpty(_tabId))
+            {
+                _tabId = Guid.NewGuid().ToString("N");
+                await Js.InvokeVoidAsync("grcsSessionSave", "wcs_auto_tab_id", _tabId);
+            }
+        }
+        catch { _tabId = Guid.NewGuid().ToString("N"); }
+
+        try
+        {
+            var cache = await WcsApi.GetAsync<MapCacheDto>("/api/wcs/map");
+            _mapStations = cache?.Stations ?? [];
+        }
+        catch { }
+
+        try
+        {
+            var cjson = LocalStore["grcs_auto_collapsed"];
+            if (!string.IsNullOrEmpty(cjson) && cjson != "null")
+                _collapsed = JsonSerializer.Deserialize<Dictionary<string, bool>>(cjson) ?? _collapsed;
+        }
+        catch { }
+
+        try
+        {
+            var range = await WcsApi.GetAsync<RangeConfigDto>("/api/wcs/auto/range");
+            if (range != null)
+            {
+                _range.Enabled = range.Enabled;
+                _range.TypeFilter = range.TypeFilter;
+                _range.FloorFilter = range.FloorFilter;
+                _range.Marks = range.Marks ?? [];
+                _rangeMarksText = string.Join(", ", _range.Marks);
+                _rangeFp = RangeFp(range.Enabled, range.TypeFilter, range.FloorFilter, _range.Marks);
+            }
+        }
+        catch { }
+
+        Hub.Changed += OnHubChanged;
+        MoveLoop.Changed += OnMoveLoopChanged;
+        StageHub.NestStatsChanged += OnNestStatsChanged;
+
+        try
+        {
+            var nest = await WcsApi.GetAsync<NestConfigDto>("/api/wcs/auto/nest/config");
+            if (nest != null) _nestMarksText = string.Join(", ", nest.Marks);
+        }
+        catch { }
+
+        try
+        {
+            var fleet = LocalStore["grcs_nest_fleet"];
+            if (!string.IsNullOrEmpty(fleet) && fleet != "null")
+            {
+                var list = JsonSerializer.Deserialize<List<string>>(fleet) ?? [];
+                _selectedVehicles = FleetDedupe(list);
+            }
+        }
+        catch { }
+    }
+
+    private List<MapStationLite> _batchPool => _range.ApplyTo(_mapStations.Where(s => s.StaEnable));
+
+    private async Task ToggleMoveDispatch()
+    {
+        if (_moveRunning)
+        {
+            MoveLoop.Stop();
+            StateHasChanged();
+            return;
+        }
+        if (string.IsNullOrEmpty(SceneName)) { ShowResp("❌ 未配置场景名称（地图信息页系统设置）", "error"); return; }
+
+        var (ok, reason) = await MoveLoop.StartAsync(new GRCS.Dashboard.Modules.WcsSimulator.Services.MoveLoopService.Options
+        {
+            TabId = _tabId,
+            OrderIdPrefix = _batchOrderIdPrefix,
+            Priority = _batchPriority,
+            Interval = _batchInterval,
+        });
+        if (!ok)
+        {
+            ShowResp("❌ 无法开始移动下发：" + (reason ?? "后端拒绝（互斥：模板任务或另一标签页正在下发）"), "error");
+            return;
+        }
+        StateHasChanged();
+    }
+
+    private void ShowResp(string msg, string cls) { _responseText = msg; _respClass = cls; }
+
+    // ── 归巢两步地图选择结果（nest-map-picker.js 确认后返回）──
+    private sealed class NestPickResult
+    {
+        public List<string> Vehicles { get; set; } = [];
+        public List<string> Marks { get; set; } = [];
+        public int Dropped { get; set; }
+    }
+}

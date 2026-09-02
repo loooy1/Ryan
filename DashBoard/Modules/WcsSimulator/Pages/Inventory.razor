@@ -1,0 +1,334 @@
+@page "/wcs-simulator/inventory"
+@inject IWcsService WcsService
+@inject IJSRuntime Js
+@inject LocalStoreService LocalStore
+@using System.Text.Json
+@using GRCS.Dashboard.Modules.WcsSimulator.Models
+
+<PageTitle>库存管理</PageTitle>
+
+@* ════════════════════════════════════════════════
+   库存查询：调用 GRCS /api/Cargo 读取容器库存
+   ════════════════════════════════════════════════ *@
+<div class="section-card">
+    <div class="section-header collapsible" @onclick="ToggleList" title="点击折叠/展开">
+        📦 库存查询
+        <span class="badge-info">@_cargoTotal 个容器</span>
+        <span class="collapse-arrow">@(IsCollapsed("inv_list") ? "▸ 展开" : "▾ 收起")</span>
+    </div>
+    @if (!IsCollapsed("inv_list"))
+    {
+
+    <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;">
+        <div class="form-group" style="flex:1;min-width:120px;max-width:180px;">
+            <label>容器编码</label>
+            <input type="text" @bind="_cargoCodeFilter" placeholder="留空=全部">
+        </div>
+        <div class="form-group" style="width:110px;flex-shrink:0;">
+            <label>锁定状态</label>
+            <select @bind="_cargoLockedFilter">
+                <option value="">全部</option>
+                <option value="true">已锁</option>
+                <option value="false">未锁</option>
+            </select>
+        </div>
+        <div class="hint-text" style="padding-bottom:6px;">GRCS 地址/场景名按「地图信息」页系统设置</div>
+    </div>
+    <div style="display:flex;gap:10px;align-items:center;margin-top:10px;flex-wrap:wrap;">
+        <button class="btn btn-primary" @onclick="QueryInventory" disabled="@_cargoLoading">🔍 查询</button>
+        <button class="btn btn-outline" @onclick="ResetCargoFilter">🔄 重置</button>
+        @if (_cargoLoadedAt != "")
+        {
+            <span class="badge-info">💾 @_cargoLoadedAt</span>
+        }
+        @if (_cargoError != "")
+        {
+            <span style="color:#f87171;font-size:0.8rem;">❌ @_cargoError</span>
+        }
+    </div>
+
+    @if (_cargoItems.Count > 0)
+    {
+        <div style="overflow-x:auto;margin-top:8px;">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>容器编码</th>
+                        <th>场景</th>
+                        <th>老家库位</th>
+                        <th>当前位置</th>
+                        <th>在车</th>
+                        <th>锁定</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var c in _cargoItems)
+                    {
+                        <tr style="color:@(c.IsLocked ? "#f87171" : "");">
+                            <td>@c.Id</td>
+                            <td style="font-family:Consolas,monospace;font-weight:600;">@c.Code</td>
+                            <td>@c.HomeStationScene</td>
+                            <td style="font-family:Consolas,monospace;">
+                                @c.HomeStationMark @(string.IsNullOrEmpty(c.HomeCargoAreaName) ? "" : "· " + c.HomeCargoAreaName)
+                            </td>
+                            <td style="font-family:Consolas,monospace;">
+                                @c.CurrentStationCode @(string.IsNullOrEmpty(c.CurrentCargoAreaName) ? "" : "· " + c.CurrentCargoAreaName)
+                            </td>
+                            <td>@(c.IsLoaded ? $"🚗 {c.RobotId}" : "—")</td>
+                            <td>@(c.IsLocked ? "🔒" : "")</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+        @if (_cargoItems.Count < _cargoTotal)
+        {
+            <button class="btn btn-outline btn-sm" @onclick="LoadMoreCargo" disabled="@_cargoLoadingMore" style="margin-top:8px;">
+                @(_cargoLoadingMore ? "⏳ 加载中..." : $"加载更多（已显示 {_cargoItems.Count} / 共 {_cargoTotal}）")
+            </button>
+        }
+    }
+    else if (_cargoQueried)
+    {
+        <div class="hint-text" style="margin-top:10px;">没有匹配的容器库存</div>
+    }
+    }
+</div>
+
+@* ════════════════════════════════════════════════
+   模拟增加库存：调用 /AutoContainerEnter 批量生成容器
+   ════════════════════════════════════════════════ *@
+<div class="section-card">
+    <div class="section-header collapsible" @onclick="ToggleAuto" title="点击折叠/展开">
+        🏭 模拟增加库存
+        <span class="collapse-arrow">@(IsCollapsed("inv_auto") ? "▸ 展开" : "▾ 收起")</span>
+    </div>
+    @if (!IsCollapsed("inv_auto"))
+    {
+    <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;">
+        <div class="form-group" style="flex:1;min-width:100px;max-width:150px;">
+            <label>容器前缀</label>
+            <input type="text" @bind="_autoPrefix" placeholder="SimContainer_">
+        </div>
+        <div class="form-group" style="flex:1;min-width:80px;max-width:120px;">
+            <label>数量(-1=全部)</label>
+            <input type="number" @bind="_autoNum">
+        </div>
+        <div class="form-group" style="width:90px;flex-shrink:0;">
+            <label>楼层</label>
+            <input type="number" @bind="_autoFloor">
+        </div>
+        <div class="form-group" style="width:110px;flex-shrink:0;">
+            <label>类型</label>
+            <select @bind="_autoType" @bind:after="() => OnAutoTypeChanged(_autoType)">
+                <option value="1">货物</option>
+                <option value="2">托盘</option>
+            </select>
+        </div>
+    </div>
+    <div style="display:flex;gap:10px;align-items:center;margin-top:10px;flex-wrap:wrap;">
+        <button class="btn btn-primary" @onclick="AutoEnter" disabled="@_autoLoading">
+            @(_autoLoading ? "⏳ 生成中..." : "🏭 生成容器")
+        </button>
+        <button class="btn btn-outline" @onclick="ResetAuto">🔄 重置条件</button>
+    </div>
+    <div class="hint-text" style="margin-top:4px;">调用 GRCS /AutoContainerEnter 接口（场景名按「地图信息」页系统设置），在空闲 RACK 储位上批量生成容器</div>
+    }
+</div>
+
+@* ════════════════════════════════════════════════
+   操作反馈
+   ════════════════════════════════════════════════ *@
+@if (!string.IsNullOrEmpty(_feedback))
+{
+    <div class="section-card">
+        <div class="response-panel @(_feedbackClass)">@_feedback</div>
+    </div>
+}
+
+@code {
+    private static readonly JsonSerializerOptions JsonOpts = new() { PropertyNameCaseInsensitive = true };
+
+    // ── 库存查询 ──
+    private string _cargoCodeFilter = "";
+    private string _cargoLockedFilter = "";
+    private List<CargoInventoryItem> _cargoItems = [];
+    private int _cargoTotal;
+    private bool _cargoLoading;
+    private bool _cargoLoadingMore;
+    private bool _cargoQueried;
+    private string _cargoLoadedAt = "";
+    private string _cargoError = "";
+    private const int CargoPageSize = 200;   // 分页拉取：每页 200 条，避免一次渲染数千行
+    private int _cargoPageNo = 1;
+
+    // ── 模拟增加库存（场景名按「地图信息」页系统设置）──
+    private string _autoPrefix = "SimCargo_";
+    private int _autoNum = 1;
+    private int _autoFloor = 1;
+    private int _autoType = 1;
+    private bool _autoLoading;
+
+    private void OnAutoTypeChanged(int type)
+    {
+        _autoType = type;
+        _autoPrefix = type == 2 ? "SimContainer_" : "SimCargo_";
+    }
+
+    private void ResetAuto()
+    {
+        _autoPrefix = "SimCargo_";
+        _autoNum = 1;
+        _autoFloor = 1;
+        _autoType = 1;
+    }
+
+    // ── 反馈 ──
+    private string _feedback = "";
+    private string _feedbackClass = "";
+
+    // ── 折叠状态 ──
+    private Dictionary<string, bool> _collapsed = new() { ["inv_list"] = true, ["inv_auto"] = true };
+    private bool IsCollapsed(string key) => _collapsed.GetValueOrDefault(key, true);
+    private async Task Toggle(string key)
+    {
+        _collapsed[key] = !IsCollapsed(key);
+        await LocalStore.SetAsync(Js, "grcs_inv_collapsed", JsonSerializer.Serialize(_collapsed));
+    }
+    private Task ToggleList() => Toggle("inv_list");
+    private Task ToggleAuto() => Toggle("inv_auto");
+
+    protected override async Task OnInitializedAsync()
+    {
+        // 读取 localStorage 状态（内存缓存，同步读取，无 JS 边界）
+        try
+        {
+            string? V(string k) => LocalStore[k] is { } v && v != "null" ? v : null;
+            // 切到模块时始终折叠，不恢复之前展开状态
+            if (V("grcs_cargo_inventory") is string cargoJson)
+            {
+                var cached = JsonSerializer.Deserialize<List<CargoInventoryItem>>(cargoJson, JsonOpts);
+                if (cached is { Count: > 0 })
+                {
+                    _cargoItems = cached;
+                    _cargoTotal = V("grcs_cargo_inventory_total") is string t && int.TryParse(t, out var n) ? n : cached.Count;
+                    _cargoPageNo = 1;
+                    if (V("grcs_cargo_inventory_at") is string at) _cargoLoadedAt = at;
+                }
+            }
+        }
+        catch { }
+    }
+
+    /// <summary>
+    /// 查询库存：分页拉取第 1 页（CargoPageSize=200 条/页）。
+    /// 优化前一次拉 pageSize=2000 并在页面上全量渲染，容器多时 Blazor diff 明显卡顿；
+    /// 现在首屏只渲染 200 行，需要时通过"加载更多"按钮按页追加。
+    /// 总数取接口返回的 data.totalCount（GRCS /api/Cargo 原生支持 pageNo/pageSize 分页），
+    /// 按钮只在"已显示 &lt; 总数"时出现。注意：自动化服务（AutoRunService/ContainerTaskService）
+    /// 的配对逻辑需要全量库存，它们仍按 2000 条全量拉取，与本页互不影响。
+    /// </summary>
+    private async Task QueryInventory()
+    {
+        _cargoLoading = true;
+        _cargoError = "";
+        _cargoQueried = true;
+        try
+        {
+            var (ok, code, json) = await WcsService.QueryCargoInventoryAsync(
+                "", _cargoCodeFilter, null, _cargoLockedFilter,
+                pageNo: 1, pageSize: CargoPageSize);
+            if (!ok)
+            {
+                _cargoItems = [];
+                _cargoTotal = 0;
+                _cargoError = $"HTTP {code}";
+                return;
+            }
+            var result = JsonSerializer.Deserialize<CargoQueryResult>(json, JsonOpts);
+            if (result == null || result.Code != 0 || result.Data == null)
+            {
+                _cargoItems = [];
+                _cargoTotal = 0;
+                _cargoError = result?.Message ?? "返回数据为空";
+                return;
+            }
+            _cargoPageNo = 1;
+            _cargoItems = result.Data.Records ?? [];
+            _cargoTotal = result.Data.TotalCount;
+            _cargoLoadedAt = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
+
+            await LocalStore.SetAsync(Js, "grcs_cargo_inventory", JsonSerializer.Serialize(_cargoItems));
+            await LocalStore.SetAsync(Js, "grcs_cargo_inventory_total", _cargoTotal.ToString());
+            await LocalStore.SetAsync(Js, "grcs_cargo_inventory_at", _cargoLoadedAt);
+        }
+        catch (Exception ex)
+        {
+            _cargoItems = [];
+            _cargoTotal = 0;
+            _cargoError = ex.Message;
+        }
+        finally { _cargoLoading = false; }
+    }
+
+    /// <summary>分页追加下一页（渲染保持在小规模，页面滚动/操作更流畅）。</summary>
+    private async Task LoadMoreCargo()
+    {
+        if (_cargoLoadingMore || _cargoItems.Count >= _cargoTotal) return;
+        _cargoLoadingMore = true;
+        _cargoError = "";
+        try
+        {
+            var next = _cargoPageNo + 1;
+            var (ok, code, json) = await WcsService.QueryCargoInventoryAsync(
+                "", _cargoCodeFilter, null, _cargoLockedFilter,
+                pageNo: next, pageSize: CargoPageSize);
+            if (!ok) { _cargoError = $"HTTP {code}"; return; }
+            var result = JsonSerializer.Deserialize<CargoQueryResult>(json, JsonOpts);
+            if (result is not { Code: 0, Data: not null })
+            {
+                _cargoError = result?.Message ?? "返回数据为空";
+                return;
+            }
+            _cargoPageNo = next;
+            _cargoItems.AddRange(result.Data.Records ?? []);
+            _cargoTotal = result.Data.TotalCount;
+            await LocalStore.SetAsync(Js, "grcs_cargo_inventory", JsonSerializer.Serialize(_cargoItems));
+            await LocalStore.SetAsync(Js, "grcs_cargo_inventory_total", _cargoTotal.ToString());
+        }
+        catch (Exception ex) { _cargoError = ex.Message; }
+        finally { _cargoLoadingMore = false; }
+    }
+
+    private void ResetCargoFilter()
+    {
+        _cargoCodeFilter = "";
+        _cargoLockedFilter = "";
+        _cargoItems = [];
+        _cargoTotal = 0;
+        _cargoQueried = false;
+        _cargoError = "";
+    }
+
+    /// <summary>调用 /AutoContainerEnter 批量生成容器库存（场景名按系统设置）。</summary>
+    private async Task AutoEnter()
+    {
+        _autoLoading = true;
+        var (ok, code, json) = await WcsService.AutoContainerEnterAsync(
+            "", "", _autoPrefix, _autoNum, _autoFloor, _autoType);
+        ShowFeedback(ok ? "✅" : "❌",
+            ok
+                ? $"容器已生成 HTTP {code}\n\n{json}"
+                : $"生成失败 HTTP {code}\n\n{json}");
+        if (ok)
+            await QueryInventory();   // 生成后自动刷新库存列表
+        _autoLoading = false;
+    }
+
+    private void ShowFeedback(string icon, string msg)
+    {
+        _feedback = $"{icon} {msg}";
+        _feedbackClass = msg.StartsWith("❌") || msg.Contains("失败") ? "error" : "success";
+    }
+}

@@ -1,0 +1,61 @@
+@inject AutomationHub Hub
+@inject SignalAutoService Signal
+@implements IDisposable
+
+@* ════════════════════════════════════════════════
+    自动化状态栏：固定在主布局底部，跨模块始终可见
+    显示 自动化模板轮询 / 纯移动循环 / 信号自动 的运行状态（数据来自 AutomationHub 共享轮询中枢）
+    ════════════════════════════════════════════════ *@
+<div class="auto-status-bar @(HasActivity ? "active" : "")">
+    @* ── 自动化模板轮询 ── *@
+    <div class="asb-section" title="自动化模板轮询：
+@(Hub.Status.Running ? "▶ 运行中" : "⏸ 已停止")
+模板：@Hub.Status.ActiveTemplateName
+已执行 @Hub.Status.Executed 个
+间隔 @(Hub.Status.Interval / 1000) 秒">
+        <span class="asb-dot @(Hub.Status.Running ? "on" : "")"></span>
+        <span class="asb-label">自动化</span>
+        <span class="asb-val @(Hub.Status.Running ? "on" : "")">@(Hub.Status.Running ? "▶ " + (Hub.Status.ActiveTemplateName ?? "运行中") : "⏸ 已停止")</span>
+    </div>
+
+    <span class="asb-sep">│</span>
+
+    @* ── 纯移动任务循环 ── *@
+    <div class="asb-section" title="纯移动任务循环：@(Hub.Status.MoveRunning ? "运行中" : "未运行")">
+        <span class="asb-dot @(Hub.Status.MoveRunning ? "on" : "")"></span>
+        <span class="asb-label">移动循环</span>
+        <span class="asb-meta">@(Hub.Status.MoveRunning ? "▶ 运行中" : "⏸ 停止")</span>
+    </div>
+
+    <span class="asb-sep">│</span>
+
+    @* ── 信号自动：到达 / 移除 / 分拣 ── *@
+    <div class="asb-section" title="信号自动确认：
+到达自动@(Signal.ArrivalAuto ? " ✓ 开启" : " ✗ 关闭")
+移除自动@(Signal.RemovalAuto ? " ✓ 开启" : " ✗ 关闭")
+分拣自动@(Signal.AutoSend ? " ✓ 开启" : " ✗ 关闭")">
+        <span class="asb-dot @(Signal.Running && (Signal.ArrivalAuto || Signal.RemovalAuto || Signal.AutoSend) ? "on" : "")"></span>
+        <span class="asb-label">信号自动</span>
+        <span class="asb-chip @(Signal.ArrivalAuto ? "chip-on" : "")">到达@(Signal.ArrivalAuto ? " ✓" : "")</span>
+        <span class="asb-chip @(Signal.RemovalAuto ? "chip-on" : "")">移除@(Signal.RemovalAuto ? " ✓" : "")</span>
+        <span class="asb-chip @(Signal.AutoSend ? "chip-on" : "")">分拣@(Signal.AutoSend ? " ✓" : "")</span>
+    </div>
+</div>
+
+@code {
+    private bool HasActivity => Hub.Status.Running || Hub.Status.MoveRunning || Signal.Running;
+
+    protected override void OnInitialized()
+    {
+        Hub.Changed += OnChanged;
+        Signal.Changed += OnChanged;
+    }
+
+    private void OnChanged() => InvokeAsync(StateHasChanged);
+
+    public void Dispose()
+    {
+        Hub.Changed -= OnChanged;
+        Signal.Changed -= OnChanged;
+    }
+}

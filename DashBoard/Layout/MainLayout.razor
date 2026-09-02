@@ -1,0 +1,146 @@
+@inherits LayoutComponentBase
+@inject ModuleNavigationService Nav
+@inject NavigationManager NavManager
+@inject IJSRuntime Js
+@inject LocalStoreService LocalStore
+@inject TaskStageHub StageHub
+@inject AutomationHub AutoHub
+@implements IDisposable
+
+@* ═══════════════════════════════════════════════════════
+   主布局：两列式结构，支持两层导航
+   第一列 → 功能列表（如 WCS模拟器）      —— 始终显示
+   第二列 → 页面导航（如 任务看板 / 信号交互） —— 选中功能后出现，主侧边栏缩回为图标模式
+
+   导航状态在 ModuleNavigationService（Scoped，每个标签页独立）中维护，
+   本布局订阅其 StateChanged 事件重绘；选中功能后直接 NavigateTo 该功能默认页面。
+   底部的后端连接状态由 BackendStatus 独立组件自行探测（见该组件注释）。
+   ═══════════════════════════════════════════════════════ *@
+
+<div class="app-layout">
+
+    @* ━━━ 第一列：主侧边栏（功能列表）━━━ *@
+    <aside class="main-sidebar @(Nav.SidebarCollapsed ? "collapsed" : "expanded")">
+        <div class="sidebar-header">
+            <span class="logo-dot"></span>
+            @* 缩回模式下只显示图标，不显示文字 *@
+            @if (!Nav.SidebarCollapsed) { <span class="logo-text">GRCS Panel</span> }
+        </div>
+
+        <div class="nav-section-title">功能</div>
+
+        @* 主页按钮：未选中任何功能时高亮 *@
+        <button class="nav-btn @(Nav.ActiveFeature == null ? "active" : "")"
+                @onclick="GoHome" title="主页">
+            <span class="nav-icon">⌂</span>
+            <span class="nav-label">主页</span>
+        </button>
+
+        @* WCS模拟器入口 *@
+        <button class="nav-btn @(Nav.ActiveFeature == "wcs" ? "active" : "")"
+                @onclick="SelectWcs" title="WCS模拟器">
+            <span class="nav-icon">◈</span>
+            <span class="nav-label">WCS模拟器</span>
+        </button>
+
+        @* 以后新增功能在这里加 <button> *@
+
+        <div class="sidebar-spacer"></div>
+    </aside>
+
+    @* ━━━ 第二列：页面导航（选中功能后出现，此时主侧边栏缩回）━━━ *@
+    @if (Nav.ActiveFeature != null && Nav.SubNavItems.Count > 0)
+    {
+        <nav class="sub-sidebar">
+            <div class="sub-header">@GetFeatureTitle()</div>
+            <div class="sub-scroll">
+                @foreach (var item in Nav.SubNavItems.Where(i => !i.Pinned))
+                {
+                    @* NavLink 自动根据当前 URL 高亮对应项 *@
+                    <NavLink class="sub-nav-btn" href="@item.Href" Match="NavLinkMatch.Prefix">
+                        <span class="nav-icon">@item.Icon</span>
+                        @item.Label
+                    </NavLink>
+                }
+            </div>
+
+            @* ━━━ 底部固定区：Pinned 项 + 连接状态（不随列表滚动，始终可见）━━━ *@
+            <div class="sub-pinned">
+                @foreach (var item in Nav.SubNavItems.Where(i => i.Pinned))
+                {
+                    <NavLink class="sub-nav-btn" href="@item.Href" Match="NavLinkMatch.Prefix">
+                        <span class="nav-icon">@item.Icon</span>
+                        @item.Label
+                    </NavLink>
+                }
+                <BackendStatus />
+            </div>
+        </nav>
+    }
+
+    @* ━━━ 内容区：页面主体渲染在这里 ━━━ *@
+    <main class="content-area">
+        <div class="content-body">
+            @Body
+        </div>
+        <AutomationStatusBar />
+    </main>
+</div>
+
+@code {
+    // 组件初始化时订阅导航状态变化事件（后端探测已移到 BackendStatus 独立组件）
+    protected override async Task OnInitializedAsync()
+    {
+        await LocalStore.PreloadAsync(Js);
+
+        // 常驻轮询：TaskStageHub/AutomationHub 构造即启动，这里确保每个标签页打开任意页面时它们已被创建。
+        // TaskStageHub → SignalR 任务阶段推送；AutomationHub → 自动化/进入申请/信号确认轮询 +
+        // 兼任后端健康探测源（喂 BackendHealthService，连接判定与侧边栏绿点同源）。
+        _ = StageHub.EnsureStartedAsync();
+        // 模块执行已统一迁移到后端（ModuleRunService + FinishedModuleWatcher），前端不再运行执行器。
+
+        Nav.StateChanged += OnNavStateChanged;
+    }
+
+    // 导航状态变了就重绘整个布局
+    private void OnNavStateChanged() => StateHasChanged();
+
+    // ── 第一层 → 第二层：选中 WCS模拟器，直接进入页面导航并跳转默认页 ──
+    private void SelectWcs()
+    {
+        Nav.SelectFeature("wcs", new List<SubNavItem>
+        {
+            new("地图信息", "wcs-simulator/map-reader", "🗺️"),
+            new("库存管理", "wcs-simulator/inventory", "📦"),
+            new("手动任务下发", "wcs-simulator/dispatch", "📤"),
+            new("自动化任务", "wcs-simulator/automation", "🤖"),
+            new("信号交互", "wcs-simulator/signal-interaction", "📶"),
+            new("任务看板", "wcs-simulator/task-stages", "📊"),
+            new("GRCS 接口说明", "wcs-simulator/grcs-api-docs", "🔌"),
+            new("异常记录", "wcs-simulator/exception-records", "⚠️", true),
+            new("项目记录", "wcs-simulator/project-logs", "📋", true),
+        });
+        // 直接跳转到该功能的默认页面
+        NavManager.NavigateTo("wcs-simulator/dispatch");
+    }
+
+    // 回到主页：清空所有选中状态，侧边栏展开
+    private void GoHome()
+    {
+        Nav.GoHome();
+        NavManager.NavigateTo("/");
+    }
+
+    // 根据功能 ID 返回中文标题
+    private string GetFeatureTitle() => Nav.ActiveFeature switch
+    {
+        "wcs" => "WCS模拟器",
+        _ => ""
+    };
+
+    // 组件销毁时取消订阅，防止内存泄漏
+    public void Dispose()
+    {
+        Nav.StateChanged -= OnNavStateChanged;
+    }
+}

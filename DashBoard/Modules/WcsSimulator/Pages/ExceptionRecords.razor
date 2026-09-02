@@ -1,0 +1,819 @@
+@page "/wcs-simulator/exception-records"
+@inject IJSRuntime Js
+@inject WcsApiClient WcsApi
+@inject LocalStoreService LocalStore
+@using GRCS.Dashboard.Modules.WcsSimulator.Services
+@using ClosedXML.Excel
+
+<PageTitle>异常记录</PageTitle>
+
+<div class="section-card">
+    <div class="section-header collapsible" @onclick="ToggleList" title="点击折叠/展开">
+        ⚠️ 异常记录
+        <span class="badge-info">共 @_records.Count 条</span>
+        <span class="badge-info" style="background:rgba(248,113,113,0.15);color:#f87171;">未完成 @_records.Count(r => r.Status != "resolved") 条</span>
+        <span style="margin-left:auto;">
+            <button class="btn btn-outline btn-sm" @onclick="ExportExcel" disabled="@(_records.Count == 0)" style="margin-right:8px;" title="导出当前全部记录为带样式的 Excel 表格">⬇️ 导出 Excel</button>
+            <button class="btn btn-primary btn-sm" @onclick="OpenNew">➕ 新增记录</button>
+        </span>
+        <span class="collapse-arrow">@(IsCollapsed ? "▸ 展开" : "▾ 收起")</span>
+    </div>
+    @if (!IsCollapsed)
+    {
+        <div class="hint-text" style="margin-top:2px;">AGV / 软件异常台账：记录发生时间、现象、原因、进度、状态（已解决 / 未回复 / 进行中 / 修复待观察）、复现信息（复现按钮 = 次数 +1、复现时间自动更新，不影响状态）。数据存后端 SQLite，跨浏览器共享。</div>
+
+        @* ── 项目区（必选项目，数据按项目隔离）── *@
+        <div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;margin-top:10px;padding:10px 12px;border:1px solid #1e293b;border-radius:8px;background:#0f172a;">
+            <div class="form-group" style="width:200px;">
+                <label>当前项目</label>
+                @if (_projects.Count > 0)
+                {
+                    <select value="@_currentProject" @onchange="OnProjectChanged">
+                        @foreach (var p in _projects.Where(p => p.Length > 0))
+                        {
+                            <option value="@p">@p</option>
+                        }
+                    </select>
+                }
+                else
+                {
+                    <input type="text" value="暂无项目，请新建" disabled style="color:#64748b;" />
+                }
+            </div>
+            <button class="btn btn-primary btn-sm" @onclick="CreateProject">➕ 新建项目</button>
+            @if (_projects.Contains(_currentProject) && _currentProject.Length > 0)
+            {
+                <button class="btn btn-outline btn-sm" style="color:#f87171;" @onclick="DeleteProject" title="删除当前项目及其全部记录（不可恢复）">🗑 删除项目</button>
+            }
+            <span class="badge-info" style="background:rgba(59,130,246,0.15);color:#93c5fd;">当前项目：@(string.IsNullOrEmpty(_currentProject) ? "—" : _currentProject)</span>
+        </div>
+
+        @* ── 搜索区（条件由后端过滤）── *@
+        <div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;margin-top:10px;padding:10px 12px;border:1px solid #1e293b;border-radius:8px;background:#0f172a;">
+            <div class="form-group" style="width:150px;">
+                <label>车号</label>
+                <input type="text" @bind="_qVehicle" placeholder="如 AGV-01" />
+            </div>
+            <div class="form-group" style="width:155px;">
+                <label>发生日期起</label>
+                <input type="date" value="@_qDateFrom" @onchange="OnDateFromChanged" />
+            </div>
+            <div class="form-group" style="width:155px;">
+                <label>发生日期止</label>
+                <input type="date" value="@_qDateTo" @onchange="OnDateToChanged" />
+            </div>
+            <div class="form-group" style="width:300px;">
+                <label>状态（可多选）</label>
+                <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:center;padding:5px 0;">
+                    @foreach (var opt in StatusOptions)
+                    {
+                        <label style="display:flex;align-items:center;gap:4px;color:#cbd5e1;font-size:0.8rem;cursor:pointer;white-space:nowrap;">
+                            <input type="checkbox" checked="@_qStatus.Contains(opt.Key)" @onchange="() => ToggleStatus(opt.Key)" /> @opt.Label
+                        </label>
+                    }
+                </div>
+            </div>
+            <div class="form-group" style="width:130px;">
+                <label>责任部门</label>
+                <select @bind="_qDept">
+                    <option value="">全部</option>
+                    <option value="RCS">RCS</option>
+                    <option value="WCS">WCS</option>
+                    <option value="Quicktron">Quicktron</option>
+                </select>
+            </div>
+            <button class="btn btn-primary btn-sm" @onclick="SearchAsync">🔍 搜索</button>
+            <button class="btn btn-outline btn-sm" @onclick="ResetSearch">重置</button>
+            @if (!string.IsNullOrEmpty(_currentQuery))
+            {
+                <span class="badge-info" style="background:rgba(59,130,246,0.15);color:#93c5fd;">筛选结果 @_records.Count 条</span>
+            }
+        </div>
+
+        @if (_loading)
+        {
+            <div class="hint-text" style="margin-top:8px;">⏳ 加载中...</div>
+        }
+        else if (_records.Count == 0)
+        {
+            <div class="hint-text" style="margin-top:8px;">暂无异常记录，点击「➕ 新增记录」添加第一条</div>
+        }
+        else
+        {
+            <div style="overflow-x:auto;margin-top:8px;">
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th style="width:55px;">序号</th>
+                            <th style="width:150px;">发生时间</th>
+                            <th style="width:110px;">车号</th>
+                            <th>现象</th>
+                            <th>原因</th>
+                            <th>进度</th>
+                            <th style="width:100px;">责任部门</th>
+                            <th style="width:100px;">状态</th>
+                            <th style="width:130px;">复现时间</th>
+                            <th style="width:70px;">复现次数</th>
+                            <th style="width:170px;">操作</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @for (var i = 0; i < _records.Count; i++)
+                        {
+                            var r = _records[i];
+                            <tr>
+                                <td style="font-weight:600;color:#64748b;">@(i + 1)</td>
+                                <td style="font-family:Consolas,monospace;">@r.HappenedAt</td>
+                                <td title="@r.VehicleCode">
+                                    @{
+                                        var vList = string.IsNullOrEmpty(r.VehicleCode)
+                                            ? new List<string>()
+                                            : r.VehicleCode.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
+                                    }
+                                    @if (vList.Count == 0)
+                                    {
+                                        <span style="color:#64748b;">—</span>
+                                    }
+                                    else
+                                    {
+                                        @foreach (var v in vList.Take(2))
+                                        {
+                                            <span class="badge-info" style="display:inline-block;margin:2px 6px 2px 0;background:rgba(56,189,248,0.12);color:#7dd3fc;">@v</span>
+                                        }
+                                        @if (vList.Count > 2)
+                                        {
+                                            <span class="badge-info" style="display:inline-block;margin:2px 6px 2px 0;background:rgba(100,116,139,0.2);color:#94a3b8;" title="@string.Join("、", vList)">+@(vList.Count - 2)</span>
+                                        }
+                                    }
+                                </td>
+                                <td style="max-width:15em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="@r.Phenomenon">@r.Phenomenon</td>
+                                <td style="max-width:15em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="@r.Reason">@(string.IsNullOrEmpty(r.Reason) ? "—" : r.Reason)</td>
+                                <td>@(string.IsNullOrEmpty(r.Progress) ? "—" : r.Progress)</td>
+                                <td>
+                                    <span class="badge-info" style="background:@(DeptColor(r.ResponsibleDept).bg);color:@(DeptColor(r.ResponsibleDept).fg);">
+                                        @(string.IsNullOrEmpty(r.ResponsibleDept) ? "—" : r.ResponsibleDept)
+                                    </span>
+                                </td>
+                                <td>
+                                    <span class="badge-info" style="display:inline-block;width:108px;text-align:center;background:@(StatusMeta(r.Status).bg);color:@(StatusMeta(r.Status).fg);">
+                                        @StatusMeta(r.Status).label
+                                    </span>
+                                </td>
+                                <td style="font-family:Consolas,monospace;">@(r.ReproducedAt ?? "—")</td>
+                                <td style="font-weight:600;">@r.ReproduceCount</td>
+                                <td>
+                                    <button class="btn btn-outline btn-xs" @onclick="() => Reproduce(r)" title="复现：弹出框填本次复现车号，保存后次数+1、复现时间=当前（状态不变）">🔄 复现</button>
+                                    <button class="btn btn-outline btn-xs" @onclick="() => OpenEdit(r)">✏️ 编辑</button>
+                                    <button class="btn btn-outline btn-xs" style="color:#f87171;" @onclick="() => Remove(r)">🗑 删除</button>
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        }
+
+        @if (!string.IsNullOrEmpty(_feedback))
+        {
+            <div class="response-panel @(_feedbackClass)" style="margin-top:8px;">@_feedback</div>
+        }
+    }
+</div>
+
+@* ── 新增 / 编辑 / 复现弹窗 ── *@
+@if (_showEditor)
+{
+    <div class="template-modal-overlay" @onclick="CloseEditor">
+        <div class="template-modal tpl-modal mod-modal" @onclick:stopPropagation style="max-width:560px;">
+            <div class="tpl-modal-header">
+                <div class="tpl-modal-title">
+                    <span class="tpl-modal-icon">@(_reproduceMode ? "🔄" : "⚠️")</span>
+                    <div>
+                        <div class="tpl-modal-title-text">@(_reproduceMode ? "复现异常记录" : (_editingNew ? "新增异常记录" : "编辑异常记录"))</div>
+                        <div class="tpl-modal-sub">
+                            @(_reproduceMode
+                                ? "确认问题再次出现：填入本次的车号保存，次数 +1、复现时间自动更新（状态不变）"
+                                : "AGV / 软件异常台账 · 复现按钮 = 次数+1、复现时间自动更新（状态不变）")
+                        </div>
+                    </div>
+                </div>
+                <button type="button" class="tpl-modal-close" @onclick="CloseEditor" title="关闭">✕</button>
+            </div>
+            <div class="tpl-modal-body">
+                @if (_reproduceMode)
+                {
+                    <div style="display:flex;align-items:flex-start;gap:10px;padding:10px 12px;border:1px solid #334155;border-radius:8px;background:#0f172a;margin-bottom:12px;">
+                        <span style="font-size:1rem;">📋</span>
+                        <div style="flex:1;">
+                            <div class="option-title" style="font-weight:600;color:#e2e8f0;font-size:0.85rem;margin-bottom:2px;">现象（只读）</div>
+                            <div style="color:#cbd5e1;font-size:0.85rem;white-space:pre-wrap;">@_editPhenomenon</div>
+                            <div class="option-title" style="font-weight:600;color:#e2e8f0;font-size:0.85rem;margin:10px 0 2px;">历史出现过的车</div>
+                            @if (string.IsNullOrEmpty(_reproduceVehicleHistory))
+                            {
+                                <div style="color:#64748b;font-size:0.8rem;">暂无记录</div>
+                            }
+                            else
+                            {
+                                @foreach (var v in _reproduceVehicleHistory.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+                                {
+                                    <span class="badge-info" style="display:inline-block;margin:2px 6px 2px 0;background:rgba(56,189,248,0.12);color:#7dd3fc;">@v</span>
+                                }
+                            }
+                        </div>
+                    </div>
+                    <div class="form-section-title">🚗 本次复现车号</div>
+                    <div class="form-group">
+                        <input type="text" @bind="_editVehicleCode" placeholder="如 AGV-01 / Car_101，软件问题可不填" />
+                        <div class="hint-text">保存后追加进历史车号（重复车号不叠加），保留所有曾出过问题的车</div>
+                    </div>
+                }
+                else
+                {
+                <div class="form-section-title">⏰ 时间信息</div>
+                <div class="form-group">
+                    <label>发生时间 <span class="req-star">*</span></label>
+                    <input type="datetime-local" value="@_editHappenedAt" @onchange="OnHappenedAtChanged" />
+                    <div class="hint-text">复现时间无需手动填，点列表「🔄 复现」自动记录当前时间</div>
+                </div>
+
+                <div class="form-section-title">📝 内容</div>
+                <div class="form-group">
+                    <label>曾出问题的车 <span style="font-weight:400;text-transform:none;color:#64748b;">（逗号分隔，可多个）</span></label>
+                    <input type="text" @bind="_editVehicleCode" placeholder="如 AGV-01, Car_101，记录哪些车出过问题（软件问题可不填）" />
+                    <div class="hint-text">复现时新填的车号会自动追加进此列表，无需手动维护</div>
+                </div>
+                <div class="form-group">
+                    <label>现象 <span class="req-star">*</span></label>
+                    <textarea @bind="_editPhenomenon" rows="3" placeholder="异常表现，如：AGV-01 停止不动、后台报错等"></textarea>
+                </div>
+                <div class="form-group">
+                    <label>原因</label>
+                    <textarea @bind="_editReason" rows="3" placeholder="原因分析（可空）"></textarea>
+                </div>
+                <div class="form-group">
+                    <label>进度</label>
+                    <textarea @bind="_editProgress" rows="2" placeholder="处理进度，如：已联系厂商 / 等待备件（可空）"></textarea>
+                </div>
+                <div class="form-group">
+                    <label>责任部门 <span class="req-star">*</span></label>
+                    <select @bind="_editDept">
+                        <option value="">请选择</option>
+                        <option value="RCS">RCS</option>
+                        <option value="WCS">WCS</option>
+                        <option value="Quicktron">Quicktron</option>
+                    </select>
+                    <div class="hint-text">必填：记录该问题由哪个部门负责（RCS / WCS / Quicktron）</div>
+                </div>
+
+                <div class="form-section-title">📁 项目</div>
+                <div class="form-group">
+                    <label>所属项目</label>
+                    <select @bind="_editProject">
+                        @foreach (var p in _projects.Where(p => p.Length > 0))
+                        {
+                            <option value="@p">@p</option>
+                        }
+                    </select>
+                    <div class="hint-text">切换项目可把这条记录移动到其他项目</div>
+                </div>
+
+                <div class="form-section-title">📌 状态</div>
+                <div class="form-group">
+                    <label>当前状态</label>
+                    <select @bind="_editStatus">
+                        <option value="pending">未回复</option>
+                        <option value="in_progress">进行中</option>
+                        <option value="observing">修复待观察</option>
+                        <option value="resolved">已解决</option>
+                    </select>
+                    <div class="hint-text">复现只更新次数与时间，不影响状态</div>
+                </div>
+                }
+
+            </div>
+            <div class="tpl-modal-footer">
+                <button class="btn btn-outline" @onclick="CloseEditor">取消</button>
+                <button class="btn btn-primary" @onclick="Save" disabled="@_saving">
+                    @(_saving ? "⏳ 保存中..." : (_reproduceMode ? "🔄 确认复现" : "✅ 保存"))
+                </button>
+            </div>
+        </div>
+    </div>
+}
+
+@* ── 系统风格密码对话框（行删除 / 删除项目）── *@
+@if (_passwordVisible)
+{
+    <div class="template-modal-overlay" @onclick="CancelPassword">
+        <div class="tpl-modal" @onclick:stopPropagation style="max-width:420px;">
+            <div class="tpl-modal-header">
+                <div class="tpl-modal-title">🔒 @_passwordTitle</div>
+                <button class="tpl-modal-close" @onclick="CancelPassword" title="关闭">✕</button>
+            </div>
+            <div class="tpl-modal-body">
+                <div class="hint-text" style="white-space:pre-wrap;color:#e2e8f0;margin-bottom:10px;">@_passwordMessage</div>
+                <input type="password" @bind="_passwordValue" placeholder="请输入删除密码" style="width:100%;" />
+            </div>
+            <div class="tpl-modal-footer" style="display:flex;gap:10px;justify-content:flex-end;margin-top:12px;">
+                <button class="btn btn-danger" @onclick="PasswordConfirm" disabled="@(string.IsNullOrEmpty(_passwordValue))">确认删除</button>
+                <button class="btn btn-outline" @onclick="CancelPassword">取消</button>
+            </div>
+        </div>
+    </div>
+}
+
+@* ── 系统风格新建项目弹窗 ── *@
+@if (_newProjectVisible)
+{
+    <div class="template-modal-overlay" @onclick="CancelNewProject">
+        <div class="tpl-modal" @onclick:stopPropagation style="max-width:420px;">
+            <div class="tpl-modal-header">
+                <div class="tpl-modal-title">📝 新建项目</div>
+                <button class="tpl-modal-close" @onclick="CancelNewProject" title="关闭">✕</button>
+            </div>
+            <div class="tpl-modal-body">
+                <div class="hint-text" style="color:#e2e8f0;margin-bottom:10px;">输入新项目名，新建记录将归属该项目。</div>
+                <input type="text" @bind="_newProjectValue" placeholder="输入项目名" style="width:100%;" />
+            </div>
+            <div class="tpl-modal-footer" style="display:flex;gap:10px;justify-content:flex-end;margin-top:12px;">
+                <button class="btn btn-primary" @onclick="NewProjectConfirm" disabled="@(string.IsNullOrWhiteSpace(_newProjectValue))">确认</button>
+                <button class="btn btn-outline" @onclick="CancelNewProject">取消</button>
+            </div>
+        </div>
+    </div>
+}
+
+@* ── 系统风格提示弹窗（导出失败等）── *@
+@if (_noticeVisible)
+{
+    <div class="template-modal-overlay" @onclick="CloseNotice">
+        <div class="tpl-modal" @onclick:stopPropagation style="max-width:420px;">
+            <div class="tpl-modal-header">
+                <div class="tpl-modal-title">⚠️ @_noticeTitle</div>
+                <button class="tpl-modal-close" @onclick="CloseNotice" title="关闭">✕</button>
+            </div>
+            <div class="tpl-modal-body">
+                <div class="hint-text" style="white-space:pre-wrap;color:#e2e8f0;">@_noticeMessage</div>
+            </div>
+            <div class="tpl-modal-footer" style="display:flex;gap:10px;justify-content:flex-end;margin-top:12px;">
+                <button class="btn btn-primary" @onclick="CloseNotice">知道了</button>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    private List<ExceptionRecordDto> _records = [];
+    private bool _loading;
+    private bool _saving;
+    private string _feedback = "";
+    private string _feedbackClass = "";
+    private bool _collapsed = false;
+    private bool IsCollapsed => _collapsed;
+    private Task ToggleList() { _collapsed = !_collapsed; StateHasChanged(); return Task.CompletedTask; }
+
+    // ── 搜索条件（后端过滤）──
+    private string _qVehicle = "";
+    private string _qDateFrom = "";
+    private string _qDateTo = "";
+    private List<string> _qStatus = [];
+    private string _qDept = "";
+    private string? _currentQuery;
+
+    // ── 编辑状态（datetime-local 用 yyyy-MM-ddTHH:mm，后端存 yyyy-MM-dd HH:mm:ss）──
+    private bool _showEditor;
+    private bool _editingNew;
+    private bool _reproduceMode;
+    private long _reproduceId;
+    private string _reproduceVehicleHistory = "";
+    private long _editId;
+    private string _editHappenedAt = "";
+    private string _editVehicleCode = "";
+    private string _editPhenomenon = "";
+    private string _editReason = "";
+    private string _editProgress = "";
+    private string _editDept = "";
+    private string _editStatus = "pending";
+    private string _editProject = "";
+
+    private static string ToLocalInput(string? dbTime)
+        => string.IsNullOrWhiteSpace(dbTime) ? "" : (dbTime.Length >= 16 ? dbTime[..16].Replace(' ', 'T') : dbTime);
+
+    private void OnHappenedAtChanged(Microsoft.AspNetCore.Components.ChangeEventArgs e) => _editHappenedAt = e.Value?.ToString() ?? "";
+    private void OnDateFromChanged(Microsoft.AspNetCore.Components.ChangeEventArgs e) => _qDateFrom = e.Value?.ToString() ?? "";
+    private void OnDateToChanged(Microsoft.AspNetCore.Components.ChangeEventArgs e) => _qDateTo = e.Value?.ToString() ?? "";
+
+    private static string ToDbTime(string localInput)
+    {
+        var t = localInput.Trim();
+        if (t.Length == 0) return "";
+        return t.Contains('T') ? t.Replace('T', ' ') + ":00" : t + ":00";
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadProjectsAsync();
+        var saved = LocalStore.Get(ProjectStoreKey);
+        if (!string.IsNullOrEmpty(saved) && _projects.Contains(saved)) _currentProject = saved;
+        else if (_projects.Count > 0) _currentProject = _projects[0];
+        await SearchAsync();
+    }
+
+    private async Task LoadAsync(string? query = null)
+    {
+        _currentQuery = query;
+        _loading = true;
+        try
+        {
+            _records = await WcsApi.GetAsync<List<ExceptionRecordDto>>("/api/wcs/exception-records" + (query ?? "")) ?? [];
+        }
+        catch { _records = []; }
+        finally { _loading = false; StateHasChanged(); }
+    }
+
+    private async Task SearchAsync()
+    {
+        var ps = new List<string> { "project=" + Uri.EscapeDataString(_currentProject) };
+        if (!string.IsNullOrWhiteSpace(_qVehicle)) ps.Add("vehicle=" + Uri.EscapeDataString(_qVehicle.Trim()));
+        if (!string.IsNullOrWhiteSpace(_qDateFrom)) ps.Add("dateFrom=" + Uri.EscapeDataString(_qDateFrom.Trim()));
+        if (!string.IsNullOrWhiteSpace(_qDateTo)) ps.Add("dateTo=" + Uri.EscapeDataString(_qDateTo.Trim()));
+        if (_qStatus.Count > 0) ps.Add("status=" + Uri.EscapeDataString(string.Join(",", _qStatus)));
+        if (!string.IsNullOrWhiteSpace(_qDept)) ps.Add("dept=" + Uri.EscapeDataString(_qDept.Trim()));
+        await LoadAsync("?" + string.Join("&", ps));
+    }
+
+private void ResetSearch()
+    {
+        _qVehicle = "";
+        _qDateFrom = "";
+        _qDateTo = "";
+        _qStatus = [];
+        _qDept = "";
+        _ = SearchAsync();
+    }
+
+    private void ToggleStatus(string key)
+    {
+        if (_qStatus.Contains(key)) _qStatus.Remove(key);
+        else _qStatus.Add(key);
+    }
+
+    // ── 项目区：必选项目，数据按项目隔离；当前项目记 localStorage ──
+    private const string ProjectStoreKey = "grcs_er_project";
+    private List<string> _projects = [];
+    private string _currentProject = "";
+    private bool _newProjectVisible;
+    private string _newProjectValue = "";
+
+    private async Task LoadProjectsAsync()
+    {
+        try { _projects = await WcsApi.GetAsync<List<string>>("/api/wcs/exception-records/projects") ?? []; }
+        catch { _projects = []; }
+    }
+
+    private async Task OnProjectChanged(Microsoft.AspNetCore.Components.ChangeEventArgs e)
+    {
+        _currentProject = e.Value?.ToString() ?? "";
+        await LocalStore.SetAsync(Js, ProjectStoreKey, _currentProject);
+        await SearchAsync();
+    }
+
+    private void CreateProject() { _newProjectValue = ""; _newProjectVisible = true; }
+
+    private void CancelNewProject() => _newProjectVisible = false;
+
+    private async Task NewProjectConfirm()
+    {
+        var name = _newProjectValue.Trim();
+        _newProjectVisible = false;
+        if (name.Length == 0) { ShowFeedback("⚠ 请输入项目名", "error"); return; }
+        if (!_projects.Contains(name)) _projects.Add(name);
+        _currentProject = name;
+        await LocalStore.SetAsync(Js, ProjectStoreKey, name);
+        ShowFeedback($"✅ 已切换到项目「{name}」（新建记录将归属该项目）", "success");
+        await SearchAsync();
+    }
+
+    /// <summary>删除当前项目及其全部记录（需密码，不可恢复）。</summary>
+    private void DeleteProject() =>
+        ShowPassword("删除项目", $"删除项目「{_currentProject}」将删除其全部 {_records.Count} 条异常记录，不可恢复！请输入删除密码：", async pwd =>
+        {
+            if (pwd != "wayzim") { ShowFeedback("❌ 密码错误，未删除", "error"); return; }
+            try
+            {
+                var deletedName = _currentProject;
+                await WcsApi.DeleteAsync($"/api/wcs/exception-records/projects/{Uri.EscapeDataString(_currentProject)}?password={Uri.EscapeDataString(pwd)}");
+                _projects.Remove(_currentProject);
+                _currentProject = _projects.FirstOrDefault(p => p.Length > 0) ?? "";
+                await LocalStore.SetAsync(Js, ProjectStoreKey, _currentProject);
+                ShowFeedback($"🗑 已删除项目「{deletedName}」（其全部记录已清除）", "success");
+                await SearchAsync();
+            }
+            catch (Exception ex) { ShowFeedback("❌ " + ex.Message, "error"); }
+        });
+
+    // ── 系统风格对话框：删除密码 / 提示 ──
+    private bool _passwordVisible;
+    private string _passwordTitle = "";
+    private string _passwordMessage = "";
+    private string _passwordValue = "";
+    private Func<string, Task>? _passwordAction;
+
+    private void ShowPassword(string title, string message, Func<string, Task> action) { _passwordTitle = title; _passwordMessage = message; _passwordAction = action; _passwordValue = ""; _passwordVisible = true; }
+    private void CancelPassword() { _passwordVisible = false; _passwordAction = null; }
+    private async Task PasswordConfirm() { var act = _passwordAction; var v = _passwordValue; _passwordVisible = false; _passwordAction = null; if (act != null) await act(v); }
+
+    private bool _noticeVisible;
+    private string _noticeTitle = "";
+    private string _noticeMessage = "";
+
+    private void ShowNotice(string title, string message) { _noticeTitle = title; _noticeMessage = message; _noticeVisible = true; }
+    private void CloseNotice() => _noticeVisible = false;
+
+    /// <summary>状态筛选选项（key = 存储值，Label = 显示名）。</summary>
+    private static readonly (string Key, string Label)[] StatusOptions =
+    [
+        ("resolved", "已解决"),
+        ("pending", "未回复"),
+        ("in_progress", "进行中"),
+        ("observing", "修复待观察"),
+    ];
+
+    private void OpenNew()
+    {
+        _reproduceMode = false;
+        _editingNew = true;
+        _editId = 0;
+        _editHappenedAt = DateTime.Now.ToString("yyyy-MM-ddTHH:mm");
+        _editVehicleCode = "";
+        _editPhenomenon = "";
+        _editReason = "";
+        _editProgress = "";
+        _editDept = "";
+        _editStatus = "pending";
+        _editProject = _currentProject;
+        _showEditor = true;
+    }
+
+    private void OpenEdit(ExceptionRecordDto r)
+    {
+        _reproduceMode = false;
+        _editingNew = false;
+        _editId = r.Id;
+        _editHappenedAt = ToLocalInput(r.HappenedAt);
+        _editVehicleCode = r.VehicleCode ?? "";
+        _editPhenomenon = r.Phenomenon;
+        _editReason = r.Reason;
+        _editProgress = r.Progress ?? "";
+        _editDept = r.ResponsibleDept ?? "";
+        _editStatus = r.Status ?? "pending";
+        _editProject = r.Project ?? "";
+        _showEditor = true;
+    }
+
+    /// <summary>复现：打开编辑框，本次车号留空由用户填，保存后追加进历史车号。</summary>
+    private void OpenReproduce(ExceptionRecordDto r)
+    {
+        _reproduceMode = true;
+        _reproduceId = r.Id;
+        _reproduceVehicleHistory = r.VehicleCode ?? "";
+        _editingNew = false;
+        _editHappenedAt = ToLocalInput(r.HappenedAt);
+        _editVehicleCode = "";
+        _editPhenomenon = r.Phenomenon;
+        _editReason = r.Reason;
+        _editProgress = r.Progress ?? "";
+        _editDept = r.ResponsibleDept ?? "";
+        _editStatus = r.Status ?? "pending";
+        _editProject = r.Project ?? "";
+        _showEditor = true;
+    }
+
+    private void CloseEditor()
+    {
+        _showEditor = false;
+        _saving = false;
+    }
+
+    private async Task Save()
+    {
+        if (!_reproduceMode && string.IsNullOrWhiteSpace(_editHappenedAt)) { ShowNotice("必填项未填", "请选择发生时间（必填）"); return; }
+        if (!_reproduceMode && string.IsNullOrWhiteSpace(_editPhenomenon)) { ShowNotice("必填项未填", "请填写异常现象（必填）"); return; }
+        if (!_reproduceMode && string.IsNullOrWhiteSpace(_editDept)) { ShowNotice("必填项未填", "请选择责任部门（必填）"); return; }
+        _saving = true;
+        try
+        {
+            if (_reproduceMode)
+            {
+                var resp = await WcsApi.PostAsync<ReproduceRequest, SaveResult>($"/api/wcs/exception-records/{_reproduceId}/reproduce", new ReproduceRequest { VehicleCode = _editVehicleCode.Trim() });
+                if (resp == null || !resp.Success) { ShowNotice("保存失败", "复现失败：后端未响应"); return; }
+                var idx = _records.FindIndex(x => x.Id == _reproduceId);
+                if (idx >= 0) _records[idx].ReproduceCount++;
+                _showEditor = false;
+                ShowFeedback($"🔄 已复现（ID {_reproduceId}），次数 +1（状态不变）", "success");
+            }
+            else
+            {
+                var rec = new ExceptionRecordDto
+                {
+                    Id = _editId,
+                    HappenedAt = ToDbTime(_editHappenedAt),
+                    VehicleCode = string.IsNullOrWhiteSpace(_editVehicleCode) ? null : _editVehicleCode.Trim(),
+                    Phenomenon = _editPhenomenon.Trim(),
+                    Reason = _editReason.Trim(),
+                    Progress = string.IsNullOrWhiteSpace(_editProgress) ? null : _editProgress.Trim(),
+                    ResponsibleDept = _editDept.Trim(),
+                    Status = string.IsNullOrWhiteSpace(_editStatus) ? "pending" : _editStatus.Trim(),
+                    Project = _editProject.Trim(),
+                    ReproducedAt = _editingNew ? null : (_records.FirstOrDefault(x => x.Id == _editId)?.ReproducedAt),
+                    ReproduceCount = _editingNew ? 0 : (_records.FirstOrDefault(x => x.Id == _editId)?.ReproduceCount ?? 0),
+                };
+                if (_editingNew)
+                {
+                    var resp = await WcsApi.PostAsync<ExceptionRecordDto, SaveResult>("/api/wcs/exception-records", rec);
+                    if (resp == null || !resp.Success) { ShowNotice("保存失败", "新增失败：后端未响应"); return; }
+                    ShowFeedback($"✅ 已新增异常记录（ID {resp.Id}）", "success");
+                }
+                else
+                {
+                    await WcsApi.PutAsync<ExceptionRecordDto, object>($"/api/wcs/exception-records/{_editId}", rec);
+                    ShowFeedback($"✅ 已保存修改（ID {_editId}）", "success");
+                }
+                _showEditor = false;
+            }
+            await LoadAsync(_currentQuery);
+        }
+        catch (Exception ex) { ShowNotice("保存失败", ex.Message); }
+        finally { _saving = false; }
+    }
+
+    private async Task Reproduce(ExceptionRecordDto r) => OpenReproduce(r);
+
+    private void Remove(ExceptionRecordDto r) =>
+        ShowPassword("删除异常记录", $"确认删除这条异常记录？（ID {r.Id}，{r.Phenomenon}）\n请输入删除密码：", async pwd =>
+        {
+            if (pwd != "wayzim") { ShowFeedback("❌ 密码错误，未删除", "error"); return; }
+            try
+            {
+                await WcsApi.DeleteAsync($"/api/wcs/exception-records/{r.Id}?password={Uri.EscapeDataString(pwd)}");
+                ShowFeedback($"🗑 已删除（ID {r.Id}）", "success");
+                await LoadAsync(_currentQuery);
+            }
+            catch (Exception ex) { ShowFeedback("❌ " + ex.Message, "error"); }
+        });
+
+    private async Task ExportExcel()
+    {
+        try
+        {
+            await LoadAsync(_currentQuery);
+            if (_records.Count == 0) { ShowNotice("导出失败", "当前筛选条件下没有数据，无法导出 Excel。"); return; }
+            using var wb = new XLWorkbook();
+            var ws = wb.Worksheets.Add("异常记录");
+            var projTitle = SafeFileName(string.IsNullOrEmpty(_currentProject) ? "项目" : _currentProject);
+            var headers = new[] { "序号", "发生时间", "车号", "现象", "原因", "进度", "责任部门", "是否解决", "复现时间", "复现次数" };
+            ws.Cell(1, 1).Value = $"{projTitle}_异常记录";
+            ws.Range(1, 1, 1, headers.Length).Merge();
+            ws.Cell(1, 1).Style.Font.Bold = true;
+            ws.Cell(1, 1).Style.Font.FontSize = 16;
+            ws.Cell(1, 1).Style.Font.FontColor = XLColor.White;
+            ws.Cell(1, 1).Style.Fill.BackgroundColor = XLColor.FromHtml("#0f172a");
+            ws.Cell(1, 1).Style.Alignment.Horizontal = XLAlignmentHorizontalValues.Center;
+            ws.Cell(1, 1).Style.Alignment.Vertical = XLAlignmentVerticalValues.Center;
+            ws.Row(1).Height = 30;
+            for (var c = 0; c < headers.Length; c++) ws.Cell(2, c + 1).Value = headers[c];
+            var headerRow = ws.Row(2);
+            ws.Range(2, 1, 2, headers.Length).Style.Font.Bold = true;
+            ws.Range(2, 1, 2, headers.Length).Style.Font.FontColor = XLColor.White;
+            ws.Range(2, 1, 2, headers.Length).Style.Fill.BackgroundColor = XLColor.FromHtml("#0f172a");
+            ws.Range(2, 1, 2, headers.Length).Style.Alignment.Horizontal = XLAlignmentHorizontalValues.Center;
+            ws.Range(2, 1, 2, headers.Length).Style.Alignment.Vertical = XLAlignmentVerticalValues.Center;
+            headerRow.Height = 24;
+
+            for (var i = 0; i < _records.Count; i++)
+            {
+                var r = _records[i];
+                var row = i + 3;
+                var vehicles = string.IsNullOrEmpty(r.VehicleCode)
+                    ? ""
+                    : string.Join("; ", r.VehicleCode.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
+                ws.Cell(row, 1).Value = i + 1;
+                ws.Cell(row, 2).Value = r.HappenedAt;
+                ws.Cell(row, 3).Value = vehicles;
+                ws.Cell(row, 4).Value = r.Phenomenon;
+                ws.Cell(row, 5).Value = r.Reason ?? "";
+                ws.Cell(row, 6).Value = r.Progress ?? "";
+                ws.Cell(row, 7).Value = string.IsNullOrEmpty(r.ResponsibleDept) ? "—" : r.ResponsibleDept;
+                ws.Cell(row, 8).Value = StatusMeta(r.Status).label;
+                ws.Cell(row, 9).Value = r.ReproducedAt ?? "—";
+                ws.Cell(row, 10).Value = r.ReproduceCount;
+
+                if (i % 2 == 1)
+                    ws.Range(row, 1, row, 10).Style.Fill.BackgroundColor = XLColor.FromHtml("#f1f5f9");
+                var (_, dcFg) = DeptColor(r.ResponsibleDept);
+                if (!string.IsNullOrEmpty(r.ResponsibleDept))
+                {
+                    ws.Cell(row, 7).Style.Font.FontColor = XLColor.FromHtml(dcFg);
+                    ws.Cell(row, 7).Style.Font.Bold = true;
+                }
+                var (_, _, stFg) = StatusMeta(r.Status);
+                ws.Cell(row, 8).Style.Font.FontColor = XLColor.FromHtml(stFg);
+                ws.Cell(row, 8).Style.Font.Bold = true;
+                ws.Cell(row, 1).Style.Alignment.Horizontal = XLAlignmentHorizontalValues.Center;
+                ws.Cell(row, 2).Style.Alignment.Horizontal = XLAlignmentHorizontalValues.Center;
+                ws.Cell(row, 2).Style.Font.FontName = "Consolas";
+                ws.Cell(row, 3).Style.Alignment.Horizontal = XLAlignmentHorizontalValues.Center;
+                ws.Cell(row, 7).Style.Alignment.Horizontal = XLAlignmentHorizontalValues.Center;
+                ws.Cell(row, 8).Style.Alignment.Horizontal = XLAlignmentHorizontalValues.Center;
+                ws.Cell(row, 9).Style.Alignment.Horizontal = XLAlignmentHorizontalValues.Center;
+                ws.Cell(row, 9).Style.Font.FontName = "Consolas";
+                ws.Cell(row, 10).Style.Alignment.Horizontal = XLAlignmentHorizontalValues.Center;
+                ws.Cell(row, 10).Style.Font.Bold = true;
+            }
+
+            var used = ws.RangeUsed();
+            if (used != null)
+            {
+                used.Style.Alignment.Vertical = XLAlignmentVerticalValues.Center;
+                used.Style.Border.OutsideBorder = XLBorderStyleValues.Thin;
+                used.Style.Border.InsideBorder = XLBorderStyleValues.Thin;
+                used.Style.Border.OutsideBorderColor = XLColor.FromHtml("#cbd5e1");
+                used.Style.Border.InsideBorderColor = XLColor.FromHtml("#cbd5e1");
+            }
+
+            ws.SheetView.FreezeRows(2);
+            ws.Columns().AdjustToContents();
+            ws.Column(1).Width = 6;
+            ws.Column(2).Width = 22;
+            ws.Column(4).Width = 60;
+            ws.Column(5).Width = 45;
+            ws.Column(6).Width = 30;
+            ws.Column(7).Width = 12;
+            ws.Column(8).Width = 12;
+            ws.Column(9).Width = 22;
+            ws.Column(10).Width = 10;
+            ws.Column(4).Style.Alignment.WrapText = true;
+            ws.Column(5).Style.Alignment.WrapText = true;
+            ws.Column(6).Style.Alignment.WrapText = true;
+            ws.Column(4).Style.Alignment.Vertical = XLAlignmentVerticalValues.Center;
+            ws.Column(5).Style.Alignment.Vertical = XLAlignmentVerticalValues.Center;
+            ws.Column(6).Style.Alignment.Vertical = XLAlignmentVerticalValues.Center;
+
+            using var ms = new MemoryStream();
+            wb.SaveAs(ms);
+            var b64 = Convert.ToBase64String(ms.ToArray());
+            var projPart = SafeFileName(string.IsNullOrEmpty(_currentProject) ? "未分类" : _currentProject);
+            await Js.InvokeVoidAsync("downloadBase64",
+                $"异常记录_{projPart}_{DateTime.Now:yyyyMMdd_HHmm}.xlsx",
+                b64,
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+            ShowFeedback($"⬇️ 已导出 {_records.Count} 条记录（项目：{projPart}）为 Excel", "success");
+        }
+        catch (Exception ex) { ShowFeedback("❌ 导出失败：" + ex.Message, "error"); }
+    }
+
+    /// <summary>责任部门徽标配色：RCS=橙、WCS=蓝、Quicktron=紫。</summary>
+    private static (string bg, string fg) DeptColor(string dept)
+        => dept switch
+        {
+            "RCS" => ("rgba(251,146,60,0.15)", "#fb923c"),
+            "WCS" => ("rgba(56,189,248,0.15)", "#7dd3fc"),
+            "Quicktron" => ("rgba(192,132,252,0.15)", "#c084fc"),
+            _ => ("rgba(100,116,139,0.15)", "#94a3b8"),
+        };
+
+    /// <summary>状态徽标：resolved=已解决(绿) / pending=未回复(灰) / in_progress=进行中(蓝) / observing=修复待观察(橙)。</summary>
+    private static (string label, string bg, string fg) StatusMeta(string status)
+        => status switch
+        {
+            "resolved" => ("✔ 已解决", "rgba(74,222,128,0.15)", "#4ade80"),
+            "in_progress" => ("🔄 进行中", "rgba(56,189,248,0.15)", "#7dd3fc"),
+            "observing" => ("👁 修复待观察", "rgba(251,191,36,0.15)", "#fbbf24"),
+            _ => ("⏳ 未回复", "rgba(148,163,184,0.15)", "#94a3b8"),
+        };
+
+    private void ShowFeedback(string msg, string cls)
+    {
+        _feedback = msg;
+        _feedbackClass = cls;
+        StateHasChanged();
+    }
+
+    /// <summary>文件名安全化：去除 Windows 非法字符。</summary>
+    private static string SafeFileName(string name)
+    {
+        var safe = string.Join("_", name.Split(Path.GetInvalidFileNameChars(), StringSplitOptions.RemoveEmptyEntries));
+        return safe.Length == 0 ? "项目" : safe;
+    }
+
+    private class SaveResult
+    {
+        public bool Success { get; set; }
+        public long Id { get; set; }
+    }
+
+    private class ReproduceRequest
+    {
+        public string VehicleCode { get; set; } = "";
+    }
+}

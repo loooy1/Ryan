@@ -1,0 +1,642 @@
+@page "/wcs-simulator/project-logs"
+@inject IJSRuntime Js
+@inject WcsApiClient WcsApi
+@inject LocalStoreService LocalStore
+@using GRCS.Dashboard.Modules.WcsSimulator.Services
+@using ClosedXML.Excel
+
+<PageTitle>项目记录</PageTitle>
+
+<div class="section-card">
+    <div class="section-header collapsible" @onclick="ToggleList" title="点击折叠/展开">
+        📋 项目记录
+        <span class="badge-info">共 @_records.Count 条</span>
+        <span class="badge-info" style="background:rgba(248,113,113,0.15);color:#f87171;">待办 @_records.Count(r => r.Status == "pending") 条</span>
+        <span style="margin-left:auto;">
+            <button class="btn btn-outline btn-sm" @onclick="ExportExcel" disabled="@(_records.Count == 0)" style="margin-right:8px;" title="导出当前筛选结果为带样式的 Excel（日期按条数合并单元格）">⬇️ 导出 Excel</button>
+            <button class="btn btn-primary btn-sm" @onclick="OpenNew">➕ 新增日程</button>
+        </span>
+        <span class="collapse-arrow">@(IsCollapsed ? "▸ 展开" : "▾ 收起")</span>
+    </div>
+    @if (!IsCollapsed)
+    {
+        <div class="hint-text" style="margin-top:2px;">每日项目日程：记录日期、内容、状态（待办 / 已完成 / 搁置）与备注。数据存后端 SQLite，跨浏览器共享。</div>
+
+        @* ── 项目区（必选项目，数据按项目隔离）── *@
+        <div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;margin-top:10px;padding:10px 12px;border:1px solid #1e293b;border-radius:8px;background:#0f172a;">
+            <div class="form-group" style="width:200px;">
+                <label>当前项目</label>
+                @if (_projects.Count > 0)
+                {
+                    <select value="@_currentProject" @onchange="OnProjectChanged">
+                        @foreach (var p in _projects.Where(p => p.Length > 0))
+                        {
+                            <option value="@p">@p</option>
+                        }
+                    </select>
+                }
+                else
+                {
+                    <input type="text" value="暂无项目，请新建" disabled style="color:#64748b;" />
+                }
+            </div>
+            <button class="btn btn-primary btn-sm" @onclick="CreateProject">➕ 新建项目</button>
+            @if (_projects.Contains(_currentProject) && _currentProject.Length > 0)
+            {
+                <button class="btn btn-outline btn-sm" style="color:#f87171;" @onclick="DeleteProject" title="删除当前项目及其全部记录（不可恢复）">🗑 删除项目</button>
+            }
+            <span class="badge-info" style="background:rgba(59,130,246,0.15);color:#93c5fd;">当前项目：@(string.IsNullOrEmpty(_currentProject) ? "—" : _currentProject)</span>
+        </div>
+
+        @* ── 搜索区（条件由后端过滤）── *@
+        <div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;margin-top:10px;padding:10px 12px;border:1px solid #1e293b;border-radius:8px;background:#0f172a;">
+            <div class="form-group" style="width:155px;">
+                <label>日期起</label>
+                <input type="date" value="@_qDateFrom" @onchange="OnDateFromChanged" />
+            </div>
+            <div class="form-group" style="width:155px;">
+                <label>日期止</label>
+                <input type="date" value="@_qDateTo" @onchange="OnDateToChanged" />
+            </div>
+            <div class="form-group" style="width:130px;">
+                <label>状态</label>
+                <select @bind="_qStatus">
+                    <option value="">全部</option>
+                    <option value="pending">待办</option>
+                    <option value="done">已完成</option>
+                    <option value="cancelled">搁置</option>
+                </select>
+            </div>
+            <button class="btn btn-primary btn-sm" @onclick="SearchAsync">🔍 搜索</button>
+            <button class="btn btn-outline btn-sm" @onclick="ResetSearch">重置</button>
+            @if (!string.IsNullOrEmpty(_currentQuery))
+            {
+                <span class="badge-info" style="background:rgba(59,130,246,0.15);color:#93c5fd;">筛选结果 @_records.Count 条</span>
+            }
+        </div>
+
+        @if (_loading)
+        {
+            <div class="hint-text" style="margin-top:8px;">⏳ 加载中...</div>
+        }
+        else if (_records.Count == 0)
+        {
+            <div class="hint-text" style="margin-top:8px;">暂无日程，点击「➕ 新增日程」添加第一条</div>
+        }
+else
+        {
+            <div style="margin-top:8px;">
+                @foreach (var g in Groups)
+                {
+                    var expanded = IsDayExpanded(g.Key);
+                    <div class="pl-day-block">
+                        <div class="pl-day-header" @onclick="() => ToggleDay(g.Key)" title="点击展开/收起当天日程">
+                            <span style="font-weight:600;font-family:Consolas,monospace;color:#e2e8f0;">📅 @g.Key</span>
+                            <span class="badge-info">@g.Count() 条</span>
+                            <span class="badge-info" style="background:rgba(248,113,113,0.15);color:#f87171;">待办 @g.Count(x => x.Status == "pending") 条</span>
+                            <span style="margin-left:auto;color:#64748b;">@(expanded ? "▾" : "▸")</span>
+                        </div>
+                        @if (expanded)
+                        {
+                            <table class="data-table" style="margin-top:6px;">
+                                <tbody>
+                                    @{ var gi = 0; }
+                                    @foreach (var r in g)
+                                    {
+                                        gi++;
+                                        <tr>
+                                            <td style="width:40px;font-weight:600;color:#64748b;">@gi</td>
+                                            <td style="max-width:15em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="@r.Content">@r.Content</td>
+                                            <td style="width:100px;">
+                                                <span class="badge-info" style="display:inline-block;width:88px;text-align:center;background:@(StatusMeta(r.Status).bg);color:@(StatusMeta(r.Status).fg);">
+                                                    @StatusMeta(r.Status).label
+                                                </span>
+                                            </td>
+                                            <td>@(string.IsNullOrEmpty(r.Remark) ? "—" : r.Remark)</td>
+                                            <td style="width:180px;">
+                                                @if (r.Status == "pending" || r.Status == "cancelled")
+                                                {
+                                                    <button class="btn btn-outline btn-xs" @onclick="() => ToggleDone(r)" title="标记为已完成">✔ 完成</button>
+                                                }
+                                                <button class="btn btn-outline btn-xs" @onclick="() => OpenEdit(r)">✏️ 编辑</button>
+                                                <button class="btn btn-outline btn-xs" style="color:#f87171;" @onclick="() => Remove(r)">🗑 删除</button>
+                                            </td>
+                                        </tr>
+                                    }
+                                </tbody>
+                            </table>
+                        }
+                    </div>
+                }
+            </div>
+        }
+
+        @if (!string.IsNullOrEmpty(_feedback))
+        {
+            <div class="response-panel @(_feedbackClass)" style="margin-top:8px;">@_feedback</div>
+        }
+    }
+</div>
+
+@* ── 新增 / 编辑弹窗 ── *@
+@if (_showEditor)
+{
+    <div class="template-modal-overlay" @onclick="CloseEditor">
+        <div class="template-modal tpl-modal mod-modal" @onclick:stopPropagation style="max-width:520px;">
+            <div class="tpl-modal-header">
+                <div class="tpl-modal-title">
+                    <span class="tpl-modal-icon">📋</span>
+                    <div>
+                        <div class="tpl-modal-title-text">@(_editingNew ? "新增日程" : "编辑日程")</div>
+                        <div class="tpl-modal-sub">记录每天的项目日程，按日期倒序展示</div>
+                    </div>
+                </div>
+                <button type="button" class="tpl-modal-close" @onclick="CloseEditor" title="关闭">✕</button>
+            </div>
+            <div class="tpl-modal-body">
+                <div class="form-section-title">🗓 日程信息</div>
+                <div class="form-group">
+                    <label>所属项目</label>
+                    <select @bind="_editProject">
+                        @foreach (var p in _projects.Where(p => p.Length > 0))
+                        {
+                            <option value="@p">@p</option>
+                        }
+                    </select>
+                    <div class="hint-text">切换项目可把这条日程移动到其他项目</div>
+                </div>
+                <div class="form-group">
+                    <label>日期 <span class="req-star">*</span></label>
+                    <input type="date" value="@_editLogDate" @onchange="OnEditDateChanged" />
+                </div>
+                <div class="form-group">
+                    <label>内容 <span class="req-star">*</span></label>
+                    <textarea @bind="_editContent" rows="3" placeholder="今天的项目日程，如：完成设备联调、跟进 RCS 排车问题等"></textarea>
+                </div>
+                <div class="form-group">
+                    <label>状态</label>
+                    <select @bind="_editStatus">
+                        <option value="pending">待办</option>
+                        <option value="done">已完成</option>
+                        <option value="cancelled">搁置</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>备注</label>
+                    <textarea @bind="_editRemark" rows="2" placeholder="补充说明（可空）"></textarea>
+                </div>
+
+                @if (!string.IsNullOrEmpty(_editError))
+                {
+                    <div class="tpl-error">@_editError</div>
+                }
+            </div>
+            <div class="tpl-modal-footer">
+                <button class="btn btn-outline" @onclick="CloseEditor">取消</button>
+                <button class="btn btn-primary" @onclick="Save" disabled="@(_saving || string.IsNullOrWhiteSpace(_editLogDate) || string.IsNullOrWhiteSpace(_editContent))">
+                    @(_saving ? "⏳ 保存中..." : "✅ 保存")
+                </button>
+            </div>
+        </div>
+    </div>
+}
+
+@* ── 系统风格密码对话框（行删除 / 删除项目）── *@
+@if (_passwordVisible)
+{
+    <div class="template-modal-overlay" @onclick="CancelPassword">
+        <div class="tpl-modal" @onclick:stopPropagation style="max-width:420px;">
+            <div class="tpl-modal-header">
+                <div class="tpl-modal-title">🔒 @_passwordTitle</div>
+                <button class="tpl-modal-close" @onclick="CancelPassword" title="关闭">✕</button>
+            </div>
+            <div class="tpl-modal-body">
+                <div class="hint-text" style="white-space:pre-wrap;color:#e2e8f0;margin-bottom:10px;">@_passwordMessage</div>
+                <input type="password" @bind="_passwordValue" placeholder="请输入删除密码" style="width:100%;" />
+            </div>
+            <div class="tpl-modal-footer" style="display:flex;gap:10px;justify-content:flex-end;margin-top:12px;">
+                <button class="btn btn-danger" @onclick="PasswordConfirm" disabled="@(string.IsNullOrEmpty(_passwordValue))">确认删除</button>
+                <button class="btn btn-outline" @onclick="CancelPassword">取消</button>
+            </div>
+        </div>
+    </div>
+}
+
+@* ── 系统风格新建项目弹窗 ── *@
+@if (_newProjectVisible)
+{
+    <div class="template-modal-overlay" @onclick="CancelNewProject">
+        <div class="tpl-modal" @onclick:stopPropagation style="max-width:420px;">
+            <div class="tpl-modal-header">
+                <div class="tpl-modal-title">📝 新建项目</div>
+                <button class="tpl-modal-close" @onclick="CancelNewProject" title="关闭">✕</button>
+            </div>
+            <div class="tpl-modal-body">
+                <div class="hint-text" style="color:#e2e8f0;margin-bottom:10px;">输入新项目名，新建记录将归属该项目。</div>
+                <input type="text" @bind="_newProjectValue" placeholder="输入项目名" style="width:100%;" />
+            </div>
+            <div class="tpl-modal-footer" style="display:flex;gap:10px;justify-content:flex-end;margin-top:12px;">
+                <button class="btn btn-primary" @onclick="NewProjectConfirm" disabled="@(string.IsNullOrWhiteSpace(_newProjectValue))">确认</button>
+                <button class="btn btn-outline" @onclick="CancelNewProject">取消</button>
+            </div>
+        </div>
+    </div>
+}
+
+@* ── 系统风格提示弹窗（导出失败等）── *@
+@if (_noticeVisible)
+{
+    <div class="template-modal-overlay" @onclick="CloseNotice">
+        <div class="tpl-modal" @onclick:stopPropagation style="max-width:420px;">
+            <div class="tpl-modal-header">
+                <div class="tpl-modal-title">⚠️ @_noticeTitle</div>
+                <button class="tpl-modal-close" @onclick="CloseNotice" title="关闭">✕</button>
+            </div>
+            <div class="tpl-modal-body">
+                <div class="hint-text" style="white-space:pre-wrap;color:#e2e8f0;">@_noticeMessage</div>
+            </div>
+            <div class="tpl-modal-footer" style="display:flex;gap:10px;justify-content:flex-end;margin-top:12px;">
+                <button class="btn btn-primary" @onclick="CloseNotice">知道了</button>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    private List<ProjectLogDto> _records = [];
+    private bool _loading;
+    private bool _saving;
+    private string _feedback = "";
+    private string _feedbackClass = "";
+    private bool _collapsed = false;
+    private bool IsCollapsed => _collapsed;
+    private Task ToggleList() { _collapsed = !_collapsed; StateHasChanged(); return Task.CompletedTask; }
+
+    // ── 搜索条件（后端过滤，默认今天）──
+    private string _qDateFrom = "";
+    private string _qDateTo = "";
+    private string _qStatus = "";
+    private string? _currentQuery;
+
+    // ── 编辑状态 ──
+    private bool _showEditor;
+    private bool _editingNew;
+    private long _editId;
+    private string _editLogDate = "";
+    private string _editContent = "";
+    private string _editStatus = "pending";
+    private string _editProject = "";
+    private string _editRemark = "";
+    private string _editError = "";
+
+    // ── 按天展开：_expandedDays 为空 = 全折叠；默认只展开今天 ──
+    private HashSet<string> _expandedDays = [];
+
+    private List<IGrouping<string, ProjectLogDto>> Groups => _records.GroupBy(r => r.LogDate).ToList();
+
+    private bool IsDayExpanded(string date) => _expandedDays.Contains(date);
+
+    private void ToggleDay(string date)
+    {
+        if (_expandedDays.Contains(date)) _expandedDays.Remove(date);
+        else _expandedDays.Add(date);
+    }
+
+    // ── 项目区：必选项目，数据按项目隔离；当前项目记 localStorage ──
+    private const string ProjectStoreKey = "grcs_pl_project";
+    private List<string> _projects = [];
+    private string _currentProject = "";
+    private bool _newProjectVisible;
+    private string _newProjectValue = "";
+
+    private async Task LoadProjectsAsync()
+    {
+        try { _projects = await WcsApi.GetAsync<List<string>>("/api/wcs/project-logs/projects") ?? []; }
+        catch { _projects = []; }
+    }
+
+    private async Task OnProjectChanged(Microsoft.AspNetCore.Components.ChangeEventArgs e)
+    {
+        _currentProject = e.Value?.ToString() ?? "";
+        await LocalStore.SetAsync(Js, ProjectStoreKey, _currentProject);
+        await SearchAsync();
+    }
+
+    private void CreateProject() { _newProjectValue = ""; _newProjectVisible = true; }
+
+    private void CancelNewProject() => _newProjectVisible = false;
+
+    private async Task NewProjectConfirm()
+    {
+        var name = _newProjectValue.Trim();
+        _newProjectVisible = false;
+        if (name.Length == 0) { ShowFeedback("⚠ 请输入项目名", "error"); return; }
+        if (!_projects.Contains(name)) _projects.Add(name);
+        _currentProject = name;
+        await LocalStore.SetAsync(Js, ProjectStoreKey, name);
+        ShowFeedback($"✅ 已切换到项目「{name}」（新建日程将归属该项目）", "success");
+        await SearchAsync();
+    }
+
+    /// <summary>删除当前项目及其全部记录（需密码，不可恢复）。</summary>
+    private void DeleteProject() =>
+        ShowPassword("删除项目", $"删除项目「{_currentProject}」将删除其全部 {_records.Count} 条日程，不可恢复！请输入删除密码：", async pwd =>
+        {
+            if (pwd != "wayzim") { ShowFeedback("❌ 密码错误，未删除", "error"); return; }
+            try
+            {
+                var deletedName = _currentProject;
+                await WcsApi.DeleteAsync($"/api/wcs/project-logs/projects/{Uri.EscapeDataString(_currentProject)}?password={Uri.EscapeDataString(pwd)}");
+                _projects.Remove(_currentProject);
+                _currentProject = _projects.FirstOrDefault(p => p.Length > 0) ?? "";
+                await LocalStore.SetAsync(Js, ProjectStoreKey, _currentProject);
+                ShowFeedback($"🗑 已删除项目「{deletedName}」（其全部记录已清除）", "success");
+                await SearchAsync();
+            }
+            catch (Exception ex) { ShowFeedback("❌ " + ex.Message, "error"); }
+        });
+
+    // ── 系统风格对话框：删除密码 / 提示 ──
+    private bool _passwordVisible;
+    private string _passwordTitle = "";
+    private string _passwordMessage = "";
+    private string _passwordValue = "";
+    private Func<string, Task>? _passwordAction;
+
+    private void ShowPassword(string title, string message, Func<string, Task> action) { _passwordTitle = title; _passwordMessage = message; _passwordAction = action; _passwordValue = ""; _passwordVisible = true; }
+    private void CancelPassword() { _passwordVisible = false; _passwordAction = null; }
+    private async Task PasswordConfirm() { var act = _passwordAction; var v = _passwordValue; _passwordVisible = false; _passwordAction = null; if (act != null) await act(v); }
+
+    private bool _noticeVisible;
+    private string _noticeTitle = "";
+    private string _noticeMessage = "";
+
+    private void ShowNotice(string title, string message) { _noticeTitle = title; _noticeMessage = message; _noticeVisible = true; }
+    private void CloseNotice() => _noticeVisible = false;
+
+    private void OnDateFromChanged(Microsoft.AspNetCore.Components.ChangeEventArgs e) => _qDateFrom = e.Value?.ToString() ?? "";
+    private void OnDateToChanged(Microsoft.AspNetCore.Components.ChangeEventArgs e) => _qDateTo = e.Value?.ToString() ?? "";
+    private void OnEditDateChanged(Microsoft.AspNetCore.Components.ChangeEventArgs e) => _editLogDate = e.Value?.ToString() ?? "";
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadProjectsAsync();
+        var saved = LocalStore.Get(ProjectStoreKey);
+        if (!string.IsNullOrEmpty(saved) && _projects.Contains(saved)) _currentProject = saved;
+        else if (_projects.Count > 0) _currentProject = _projects[0];
+        _qDateFrom = DateTime.Now.ToString("yyyy-MM-dd");
+        _qDateTo = _qDateFrom;
+        _expandedDays.Add(_qDateFrom);
+        await SearchAsync();
+    }
+
+    private async Task LoadAsync(string? query = null)
+    {
+        _currentQuery = query;
+        _loading = true;
+        try
+        {
+            _records = await WcsApi.GetAsync<List<ProjectLogDto>>("/api/wcs/project-logs" + (query ?? "")) ?? [];
+        }
+        catch { _records = []; }
+        finally { _loading = false; StateHasChanged(); }
+    }
+
+    private async Task SearchAsync()
+    {
+        var ps = new List<string> { "project=" + Uri.EscapeDataString(_currentProject) };
+        if (!string.IsNullOrWhiteSpace(_qDateFrom)) ps.Add("dateFrom=" + Uri.EscapeDataString(_qDateFrom.Trim()));
+        if (!string.IsNullOrWhiteSpace(_qDateTo)) ps.Add("dateTo=" + Uri.EscapeDataString(_qDateTo.Trim()));
+        if (!string.IsNullOrWhiteSpace(_qStatus)) ps.Add("status=" + Uri.EscapeDataString(_qStatus.Trim()));
+        await LoadAsync("?" + string.Join("&", ps));
+    }
+
+    private void ResetSearch()
+    {
+        _qDateFrom = "";
+        _qDateTo = "";
+        _qStatus = "";
+        _ = SearchAsync();
+    }
+
+    private void OpenNew()
+    {
+        _editingNew = true;
+        _editId = 0;
+        _editLogDate = DateTime.Now.ToString("yyyy-MM-dd");
+        _editContent = "";
+        _editStatus = "pending";
+        _editProject = _currentProject;
+        _editRemark = "";
+        _editError = "";
+        _showEditor = true;
+    }
+
+    private void OpenEdit(ProjectLogDto r)
+    {
+        _editingNew = false;
+        _editId = r.Id;
+        _editLogDate = r.LogDate;
+        _editContent = r.Content;
+        _editStatus = r.Status ?? "pending";
+        _editProject = r.Project ?? "";
+        _editRemark = r.Remark ?? "";
+        _editError = "";
+        _showEditor = true;
+    }
+
+    private void CloseEditor()
+    {
+        _showEditor = false;
+        _saving = false;
+        _editError = "";
+    }
+
+    private async Task Save()
+    {
+        if (string.IsNullOrWhiteSpace(_editLogDate)) { _editError = "❌ 请选择日期"; return; }
+        if (string.IsNullOrWhiteSpace(_editContent)) { _editError = "❌ 请填写日程内容"; return; }
+        _saving = true;
+        try
+        {
+            var rec = new ProjectLogDto
+            {
+                Id = _editId,
+                LogDate = _editLogDate.Trim(),
+                Content = _editContent.Trim(),
+                Status = string.IsNullOrWhiteSpace(_editStatus) ? "pending" : _editStatus.Trim(),
+                Project = _editProject.Trim(),
+                Remark = string.IsNullOrWhiteSpace(_editRemark) ? null : _editRemark.Trim(),
+            };
+            if (_editingNew)
+            {
+                var resp = await WcsApi.PostAsync<ProjectLogDto, SaveResult>("/api/wcs/project-logs", rec);
+                if (resp == null || !resp.Success) { _editError = "❌ 新增失败：后端未响应"; return; }
+                ShowFeedback($"✅ 已新增日程（ID {resp.Id}）", "success");
+            }
+            else
+            {
+                await WcsApi.PutAsync<ProjectLogDto, object>($"/api/wcs/project-logs/{_editId}", rec);
+                ShowFeedback($"✅ 已保存修改（ID {_editId}）", "success");
+            }
+            _showEditor = false;
+            _editError = "";
+            await LoadAsync(_currentQuery);
+        }
+        catch (Exception ex) { _editError = "❌ " + ex.Message; }
+        finally { _saving = false; }
+    }
+
+    /// <summary>一键标记完成：done ↔ pending（搁置保留不动）。</summary>
+    private async Task ToggleDone(ProjectLogDto r)
+    {
+        try
+        {
+            await WcsApi.PutAsync<ProjectLogDto, object>($"/api/wcs/project-logs/{r.Id}", new ProjectLogDto
+            {
+                Id = r.Id,
+                LogDate = r.LogDate,
+                Content = r.Content,
+                Status = "done",
+                Remark = r.Remark,
+            });
+            ShowFeedback($"✅ 已标记完成（ID {r.Id}）", "success");
+            await LoadAsync(_currentQuery);
+        }
+        catch (Exception ex) { ShowFeedback("❌ " + ex.Message, "error"); }
+    }
+
+    private void Remove(ProjectLogDto r) =>
+        ShowPassword("删除日程", $"确认删除这条日程？（ID {r.Id}，{r.Content}）\n请输入删除密码：", async pwd =>
+        {
+            if (pwd != "wayzim") { ShowFeedback("❌ 密码错误，未删除", "error"); return; }
+            try
+            {
+                await WcsApi.DeleteAsync($"/api/wcs/project-logs/{r.Id}?password={Uri.EscapeDataString(pwd)}");
+                ShowFeedback($"🗑 已删除（ID {r.Id}）", "success");
+                await LoadAsync(_currentQuery);
+            }
+            catch (Exception ex) { ShowFeedback("❌ " + ex.Message, "error"); }
+        });
+
+    /// <summary>导出当前筛选结果为 Excel：第一列日期（同一天按条数合并单元格），后面是事项/状态/备注。</summary>
+    private async Task ExportExcel()
+    {
+        try
+        {
+            await LoadAsync(_currentQuery);
+            if (_records.Count == 0) { ShowNotice("导出失败", "当前筛选条件下没有数据，无法导出 Excel。"); return; }
+            using var wb = new XLWorkbook();
+            var ws = wb.Worksheets.Add("项目记录");
+            var projTitle = SafeFileName(string.IsNullOrEmpty(_currentProject) ? "项目" : _currentProject);
+            var headers = new[] { "日期", "事项", "状态", "备注" };
+            ws.Cell(1, 1).Value = $"{projTitle}_项目记录";
+            ws.Range(1, 1, 1, headers.Length).Merge();
+            ws.Cell(1, 1).Style.Font.Bold = true;
+            ws.Cell(1, 1).Style.Font.FontSize = 16;
+            ws.Cell(1, 1).Style.Font.FontColor = XLColor.White;
+            ws.Cell(1, 1).Style.Fill.BackgroundColor = XLColor.FromHtml("#0f172a");
+            ws.Cell(1, 1).Style.Alignment.Horizontal = XLAlignmentHorizontalValues.Center;
+            ws.Cell(1, 1).Style.Alignment.Vertical = XLAlignmentVerticalValues.Center;
+            ws.Row(1).Height = 30;
+            for (var c = 0; c < headers.Length; c++) ws.Cell(2, c + 1).Value = headers[c];
+            var headerRow = ws.Row(2);
+            ws.Range(2, 1, 2, headers.Length).Style.Font.Bold = true;
+            ws.Range(2, 1, 2, headers.Length).Style.Font.FontColor = XLColor.White;
+            ws.Range(2, 1, 2, headers.Length).Style.Fill.BackgroundColor = XLColor.FromHtml("#0f172a");
+            ws.Range(2, 1, 2, headers.Length).Style.Alignment.Horizontal = XLAlignmentHorizontalValues.Center;
+            ws.Range(2, 1, 2, headers.Length).Style.Alignment.Vertical = XLAlignmentVerticalValues.Center;
+            headerRow.Height = 24;
+
+            var groups = _records.GroupBy(r => r.LogDate).ToList();
+            var row = 3;
+            foreach (var g in groups)
+            {
+                var gi = 0;
+                foreach (var r in g)
+                {
+                    ws.Cell(row, 1).Value = gi == 0 ? g.Key : "";
+                    ws.Cell(row, 2).Value = r.Content;
+                    ws.Cell(row, 3).Value = StatusMeta(r.Status).label;
+                    ws.Cell(row, 4).Value = r.Remark ?? "";
+
+                    if ((row - 3) % 2 == 1)
+                        ws.Range(row, 1, row, 4).Style.Fill.BackgroundColor = XLColor.FromHtml("#f1f5f9");
+                    var (_, _, stFg) = StatusMeta(r.Status);
+                    ws.Cell(row, 3).Style.Font.FontColor = XLColor.FromHtml(stFg);
+                    ws.Cell(row, 3).Style.Font.Bold = true;
+                    ws.Cell(row, 3).Style.Alignment.Horizontal = XLAlignmentHorizontalValues.Center;
+                    ws.Cell(row, 4).Style.Alignment.WrapText = true;
+                    row++;
+                    gi++;
+                }
+                if (g.Count() > 1)
+                {
+                    var merged = ws.Range(row - g.Count(), 1, row - 1, 1).Merge();
+                    merged.Style.Alignment.Vertical = XLAlignmentVerticalValues.Center;
+                    merged.Style.Alignment.Horizontal = XLAlignmentHorizontalValues.Center;
+                    merged.Style.Font.Bold = true;
+                    merged.Style.Font.FontColor = XLColor.FromHtml("#334155");
+                }
+            }
+
+            var used = ws.RangeUsed();
+            if (used != null)
+            {
+                used.Style.Alignment.Vertical = XLAlignmentVerticalValues.Center;
+                used.Style.Border.OutsideBorder = XLBorderStyleValues.Thin;
+                used.Style.Border.InsideBorder = XLBorderStyleValues.Thin;
+                used.Style.Border.OutsideBorderColor = XLColor.FromHtml("#cbd5e1");
+                used.Style.Border.InsideBorderColor = XLColor.FromHtml("#cbd5e1");
+            }
+
+            ws.SheetView.FreezeRows(2);
+            ws.Columns().AdjustToContents();
+            ws.Column(1).Width = 14;
+            ws.Column(2).Width = 60;
+            ws.Column(3).Width = 12;
+            ws.Column(4).Width = 40;
+            ws.Column(2).Style.Alignment.WrapText = true;
+
+            using var ms = new MemoryStream();
+            wb.SaveAs(ms);
+            var b64 = Convert.ToBase64String(ms.ToArray());
+            var projPart = SafeFileName(string.IsNullOrEmpty(_currentProject) ? "未分类" : _currentProject);
+            await Js.InvokeVoidAsync("downloadBase64",
+                $"项目记录_{projPart}_{DateTime.Now:yyyyMMdd_HHmm}.xlsx",
+                b64,
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+            ShowFeedback($"⬇️ 已导出 {_records.Count} 条记录（项目：{projPart}）为 Excel", "success");
+        }
+        catch (Exception ex) { ShowFeedback("❌ 导出失败：" + ex.Message, "error"); }
+    }
+
+    /// <summary>状态徽标：pending=待办(灰) / done=已完成(绿) / cancelled=搁置(橙)。</summary>
+    private static (string label, string bg, string fg) StatusMeta(string status)
+        => status switch
+        {
+            "done" => ("✔ 已完成", "rgba(74,222,128,0.15)", "#4ade80"),
+            "cancelled" => ("⊘ 搁置", "rgba(251,191,36,0.15)", "#fbbf24"),
+            _ => ("⏳ 待办", "rgba(148,163,184,0.15)", "#94a3b8"),
+        };
+
+    private void ShowFeedback(string msg, string cls)
+    {
+        _feedback = msg;
+        _feedbackClass = cls;
+        StateHasChanged();
+    }
+
+    /// <summary>文件名安全化：去除 Windows 非法字符。</summary>
+    private static string SafeFileName(string name)
+    {
+        var safe = string.Join("_", name.Split(Path.GetInvalidFileNameChars(), StringSplitOptions.RemoveEmptyEntries));
+        return safe.Length == 0 ? "项目" : safe;
+    }
+
+    private class SaveResult
+    {
+        public bool Success { get; set; }
+        public long Id { get; set; }
+    }
+}

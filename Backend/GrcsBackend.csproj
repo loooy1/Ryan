@@ -1,0 +1,41 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Remove="grcs.db" />
+    <!-- Contracts 独立类库（前后端共享契约层），不作为本项目的源码编译 -->
+    <Compile Remove="Contracts\**" />
+    <EmbeddedResource Remove="Contracts\**" />
+    <None Remove="Contracts\**" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Contracts\GrcsBackend.Contracts.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- NewtonsoftJson：GRCS 用 Newtonsoft 按 yyyy-MM-dd HH:mm:ss.fff 解析响应，必须对齐 -->
+    <PackageReference Include="Mapster" Version="10.0.12" />
+    <PackageReference Include="Microsoft.AspNetCore.Mvc.NewtonsoftJson" Version="10.0.9" />
+    <!-- SQLite：台账/范围配置/地图缓存/货物码持久化（纯托管 + 预编译 bundle，免装） -->
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.9" />
+    <!-- EF Core：统一数据访问层（新表走迁移；现有表迁移时用 ExcludeFromMigrations 防止重建冲突） -->
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="10.0.9" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.9">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <Content Include="grcs.db">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,6 @@
+@GrcsBackend_HostAddress = http://localhost:5078
+
+GET {{GrcsBackend_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###

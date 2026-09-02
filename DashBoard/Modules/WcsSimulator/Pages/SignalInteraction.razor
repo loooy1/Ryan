@@ -1,0 +1,1000 @@
+@page "/wcs-simulator/signal-interaction"
+@inject IJSRuntime Js
+@inject LocalStoreService LocalStore
+@inject WcsApiClient Api
+@inject TaskStageHub StageHub
+@implements IDisposable
+
+@* ════════════════════════════════════════════════
+     页面职责：WCS 模拟器的「信号交互」页 —— 功能模板 + 通用 Mock 入站 + 请求审批 + 模块执行记录。
+    ── 数据流 ──
+    ① 功能模板：本页创建/编辑/删除【功能模块】（自定义名称 + API 地址 + 参数(值来源)），
+       持久化到后端 feature_modules 表（跨浏览器共享）+ localStorage 兜底；
+       任务模板在「任务下发」页给起点/起点之后/终点各自关联若干模块。
+    ② 通用 Mock 入站：任意 RCS→WCS 回调按 URL+参数命中卡片返回自定义 JSON；
+       勾选「关联任务看板」的卡片为任务阶段卡，命中时自动推送任务看板。
+    ③ 请求信号：命中“需审批”卡片的请求在此逐条批准/拒绝（批准/拒绝后按卡片审批变量回写）。
+    ④ 模块执行记录：由后端统一执行器（ModuleRunService + FinishedModuleWatcher）写入，
+       本页轮询 GET /api/wcs/modules/logs 展示。
+    ════════════════════════════════════════════════ *@
+<PageTitle>信号交互</PageTitle>
+
+<style>
+    .switch { position: relative; width: 40px; height: 22px; flex: none; display: inline-block; }
+    .switch input { opacity: 0; width: 0; height: 0; }
+    .slider { position: absolute; inset: 0; background: #334155; border-radius: 22px; transition: .2s; cursor: pointer; border: 1px solid #475569; }
+    .slider:before { content: ""; position: absolute; width: 14px; height: 14px; left: 3px; top: 3px; background: #94a3b8; border-radius: 50%; transition: .2s; }
+    .switch input:checked + .slider { background: #3b82f6; border-color: #3b82f6; }
+    .switch input:checked + .slider:before { transform: translateX(18px); background: #fff; }
+    .option-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 12px; border: 1px solid #1e293b; border-radius: 8px; background: #0f172a; margin-bottom: 8px; }
+    .option-row .option-title { font-weight: 600; color: #e2e8f0; font-size: 0.85rem; }
+    .option-row .option-desc { color: #64748b; font-size: 0.75rem; margin-top: 2px; }
+    .form-section-title { margin: 14px 0 8px; padding: 5px 10px; background: linear-gradient(90deg, rgba(59,130,246,.12), transparent); border-left: 3px solid #3b82f6; border-radius: 4px; color: #93c5fd; font-weight: 600; font-size: 0.8rem; letter-spacing: .5px; }
+    .mod-card { transition: transform .15s, box-shadow .15s; }
+    .mod-card:hover { transform: translateY(-2px); box-shadow: 0 4px 14px rgba(0,0,0,.35); }
+</style>
+
+<div class="hint-text" style="margin:0 0 12px;">
+    WCS 后端地址与 GRCS 地址/场景名在「地图信息」页系统设置配置，本页自动读取。
+</div>
+
+<div class="section-card">
+    <div class="section-header collapsible" @onclick="ToggleSignalSection" title="点击折叠/展开">
+        🎛 信号交互
+        <span class="hint-text" style="margin:0;">功能模板 + Mock 入站</span>
+        <span class="collapse-arrow">@(_panelCollapsed ? "▸ 展开" : "▾ 收起")</span>
+    </div>
+    @if (!_panelCollapsed)
+    {
+
+    <div class="section-divider"></div>
+
+    @* ── 通用 Mock 入站：任意 RCS→WCS 回调均可拦截，前端新建卡片即生效 ── *@
+    <div class="sub-header">
+        🌐 通用 Mock 入站
+        <span class="hint-text" style="margin:0;">按 URL+参数匹配返回自定义 JSON（如 station_entry_request 控制是否允许）</span>
+        <button class="btn btn-primary btn-sm" @onclick="CreateMockRule" style="margin-left:auto;">+ 新建 Mock</button>
+    </div>
+    @if (_mockRules.Count == 0)
+    {
+        <div class="hint-text">暂无 Mock 规则。示例：新建 <code>/api/v1/station_entry_request</code> + 匹配 <code>body.VehicleCode=Car_101</code> + 返回 <code>{"success":false,"message":"拒绝进入"}</code>，保存后 RCS 下次请求即按此返回，无需重启。</div>
+    }
+    else
+    {
+        <div class="mock-grid">
+            @foreach (var r in _mockRules)
+            {
+                <div class="mock-card">
+                    <div class="mock-card-head">
+                        <span class="badge @(r.Method == "GET" ? "badge-ok" : "badge-info")">@r.Method</span>
+                        <span class="badge @(r.Enabled ? "badge-ok" : "badge-empty")" style="margin-left:auto;">@(r.Enabled ? "● 启用" : "○ 停用")</span>
+                    </div>
+                    <div class="mock-card-path" title="@r.PathPattern">@r.PathPattern</div>
+                    @if (!string.IsNullOrEmpty(r.Name))
+                    {
+                        <div style="font-weight:600;color:#e2e8f0;font-size:0.9rem;margin-bottom:4px;">@r.Name</div>
+                    }
+                    @if (!string.IsNullOrEmpty(r.Description))
+                    {
+                        <div class="mock-card-desc">@r.Description</div>
+                    }
+                    <div class="mock-card-meta">
+                        <span class="badge-info">@r.Matchers.Count 条件</span>
+                        <span class="badge-info">→ @r.ResponseCode</span>
+                        @if (r.BoardSync)
+                        {
+                            <span class="badge badge-ok" title="任务阶段卡：命中时自动提取 taskId/stage 推送任务看板">🔗 任务阶段</span>
+                        }
+                        @if (r.RequiresApproval)
+                        {
+                            <span class="badge badge-warn" title="命中时生成请求任务，需手动批准/拒绝">⏳ 审批</span>
+                        }
+                    </div>
+                    <div class="mock-card-body" title="@r.ResponseBody">@r.ResponseBody</div>
+                    <div class="mock-card-actions">
+                        <button class="btn btn-outline btn-xs" @onclick="() => EditMockRule(r)">✏️ 编辑</button>
+                        <button class="btn btn-danger btn-xs" @onclick="() => RequestDeleteMock(r.Id, r.PathPattern)">✕ 删除</button>
+                        <button class="btn @(r.Enabled ? "btn-outline" : "btn-primary") btn-xs" @onclick="() => ToggleMockEnabled(r)">@(r.Enabled ? "停用" : "启用")</button>
+                    </div>
+                </div>
+            }
+        </div>
+    }
+
+    <div class="section-divider"></div>
+
+    @* ── 功能模板管理：创建/编辑/删除，供任务模板起点/终点关联 ── *@
+    <div class="sub-header">
+        🧩 功能模板
+        <span class="hint-text" style="margin:0;">WCS 出站模块（起点/终点关联），配置下发信号</span>
+        <button class="btn btn-primary btn-sm" @onclick="CreateModule" style="margin-left:auto;">+ 创建模块</button>
+    </div>
+    @if (ModuleRegistry.All.Count == 0)
+    {
+        <div class="hint-text">暂无模块。点击「+ 创建模块」新建：自定义名称、API 地址（WCS 后端代理相对路径）、参数（值来源可选）。</div>
+    }
+    else
+    {
+        <div class="mod-grid">
+            @foreach (var m in ModuleRegistry.All)
+            {
+                <div class="mod-card">
+                    <div class="mod-card-head">
+                        <span class="mod-card-icon">⚙️</span>
+                        <div class="mod-card-name">@m.Name</div>
+                    </div>
+                    <div class="mod-card-url">@m.ApiUrl</div>
+                    <div class="mod-card-meta">
+                        <span class="badge-info">@(m.Params.Count) 参数</span>
+                    </div>
+                    <div class="mod-card-actions">
+                        <button class="btn btn-outline btn-xs" @onclick="() => EditModule(m)">✏️ 编辑</button>
+                        <button class="btn btn-danger btn-xs" @onclick="() => RequestDeleteModule(m.Id, m.Name)">✕ 删除</button>
+                    </div>
+                </div>
+            }
+        </div>
+        <div class="hint-text">执行时机：起点模块 = 下发任务组之前；起点之后模块 = 下发接口返回 success 后；终点模块 = 任务到达终点（FINISHED）时由后端自动执行。</div>
+    }
+
+    @if (_mockDraft != null)
+    {
+        var d = _mockDraft;
+        <div class="template-modal-overlay" @onclick="CancelMockEdit">
+            <div class="template-modal tpl-modal mod-modal" @onclick:stopPropagation style="max-width:680px;">
+                <div class="tpl-modal-header">
+                    <div class="tpl-modal-title">
+                        <span class="tpl-modal-icon">🌐</span>
+                        <div>
+                            <div>@(_editingMock == null ? "新建 Mock 规则" : "编辑 Mock 规则")</div>
+                            <div class="tpl-modal-sub">匹配入站请求返回自定义 JSON；勾选「关联任务看板」即为任务阶段卡</div>
+                        </div>
+                    </div>
+                    <button type="button" class="tpl-modal-close" @onclick="CancelMockEdit" title="关闭">✕</button>
+                </div>
+                <div class="tpl-modal-body">
+                    <div class="form-section-title">基础配置</div>
+                    <div class="form-grid2">
+                        <div class="form-group">
+                            <label>Method</label>
+                            <select @bind="d.Method">
+                                <option value="POST">POST</option>
+                                <option value="GET">GET</option>
+                                <option value="PUT">PUT</option>
+                                <option value="DELETE">DELETE</option>
+                                <option value="*">* (任意)</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>PathPattern <span class="req-star">*</span></label>
+                            <input type="text" @bind="d.PathPattern" placeholder="/api/v1/station_entry_request 或 /api/mock/*" />
+                        </div>
+                        <div class="form-group">
+                            <label>ResponseCode</label>
+                            <input type="number" @bind="d.ResponseCode" />
+                        </div>
+                        <div class="form-group">
+                            <label>Priority（越大越先匹配）</label>
+                            <input type="number" @bind="d.Priority" />
+                        </div>
+                        <div class="form-group" style="grid-column:1/-1;">
+                            <label>名称</label>
+                            <input type="text" @bind="d.Name" placeholder="如：进站审批 Car_101" />
+                        </div>
+                        <div class="form-group" style="grid-column:1/-1;">
+                            <label>描述</label>
+                            <input type="text" @bind="d.Description" placeholder="如：Car_101 禁入 0100000108_1" />
+                        </div>
+                    </div>
+
+                    <div class="form-section-title">匹配条件（全部满足才命中）</div>
+                    <table class="workitem-table mod-param-table">
+                        <thead><tr><th style="width:22%;">Key</th><th style="width:16%;">Source</th><th style="width:18%;">Op</th><th>Expected</th><th style="width:38px;"></th></tr></thead>
+                        <tbody>
+                        @foreach (var m in d.Matchers)
+                        {
+                            <tr>
+                                <td><input type="text" @bind="m.Key" placeholder="VehicleCode" /></td>
+                                <td><select @bind="m.Source"><option value="body">body</option><option value="query">query</option><option value="path">path</option></select></td>
+                                <td><select @bind="m.Op"><option value="equals">equals</option><option value="contains">contains</option><option value="regex">regex</option><option value="exists">exists</option></select></td>
+                                <td><input type="text" @bind="m.Expected" placeholder="Car_101" /></td>
+                                <td><button class="btn btn-danger btn-xs" @onclick="() => RemoveMockMatcher(m)">✕</button></td>
+                            </tr>
+                        }
+                        </tbody>
+                    </table>
+                    <div style="display:flex;gap:8px;margin-top:6px;">
+                        <button class="btn btn-outline btn-xs" @onclick="AddMockMatcher">+ 添加条件</button>
+                        <button class="btn btn-outline btn-xs" @onclick="() => AddMockMatcherPreset()">+ 快捷：station_entry_request 模板</button>
+                    </div>
+
+                    <div class="form-section-title">行为选项</div>
+                    <div class="option-row">
+                        <div>
+                            <div class="option-title">启用规则</div>
+                            <div class="option-desc">停用后请求不会命中本卡片</div>
+                        </div>
+                        <label class="switch"><input type="checkbox" @bind="d.Enabled" /><span class="slider"></span></label>
+                    </div>
+                    <div class="option-row">
+                        <div>
+                            <div class="option-title">同时落库</div>
+                            <div class="option-desc">task_stage_change 等业务请勾选以更新看板</div>
+                        </div>
+                        <label class="switch"><input type="checkbox" @bind="d.AlsoRecord" /><span class="slider"></span></label>
+                    </div>
+                    <div class="option-row">
+                        <div>
+                            <div class="option-title">🔗 关联任务看板（任务阶段卡）</div>
+                            <div class="option-desc">URL 任意，全系统仅一张：命中时自动提取 taskId/stage（兼容 task_code/orderNo/status 等别名）推送任务看板；系统要求至少存在一张才允许下发任务；与「需审批」互斥</div>
+                        </div>
+                        <label class="switch"><input type="checkbox" checked="@d.BoardSync" @onchange="(e) => ToggleBoardSync(d, e)" /><span class="slider"></span></label>
+                    </div>
+                    <div class="option-row">
+                        <div>
+                            <div class="option-title">需审批</div>
+                            <div class="option-desc">命中时生成请求任务，需手动批准才按审批变量返回；与「关联任务看板」互斥</div>
+                        </div>
+                        <label class="switch"><input type="checkbox" checked="@d.RequiresApproval" @onchange="(e) => ToggleApproval(d, e)" /><span class="slider"></span></label>
+                    </div>
+
+                    <div class="form-section-title">响应体</div>
+                    @if (d.RequiresApproval)
+                    {
+                        <div class="form-grid2" style="border:1px dashed #334155; padding:10px; border-radius:8px; margin-bottom:8px;">
+                            <div class="form-group">
+                                <label>审批变量名</label>
+                                <input type="text" @bind="d.ApprovalVariable" placeholder="success" />
+                            </div>
+                            <div class="form-group">
+                                <label>批准时值</label>
+                                <input type="text" @bind="d.ApprovalTrueValue" placeholder="true" />
+                            </div>
+                            <div class="form-group">
+                                <label>拒绝时值</label>
+                                <input type="text" @bind="d.ApprovalFalseValue" placeholder="false" />
+                            </div>
+                            <div class="form-group" style="grid-column:1/-1;">
+                                <span class="hint-text">在 ResponseBody 中用 <code>{{approval}}</code> 占位，审批后将替换为对应值；若 JSON 已含该字段名则自动覆写。</span>
+                            </div>
+                        </div>
+                    }
+                    <div class="form-group">
+                        <label>ResponseBody JSON</label>
+                        <textarea @bind="d.ResponseBody" rows="5" placeholder='{"success":false,"message":"拒绝进入","msgTime":"{{now}}"}  支持 {{query.key}} / {{body.key}} / {{approval}} 占位' style="font-family:monospace;background:#0b1120;"></textarea>
+                    </div>
+                    @if (!string.IsNullOrEmpty(_mockError))
+                    {
+                        <div class="tpl-error">@_mockError</div>
+                    }
+                </div>
+                <div class="tpl-modal-footer">
+                    <button class="btn btn-outline" @onclick="CancelMockEdit">取消</button>
+                    <button class="btn btn-primary" @onclick="SaveMockEdit">✅ 保存</button>
+                </div>
+            </div>
+        </div>
+    }
+
+    <div class="section-divider"></div>
+
+    @* ── 编辑/新建功能模块弹窗：名称 + API 地址 + 参数（值来源）── *@
+    @if (_moduleDraft != null)
+    {
+        var m = _moduleDraft;
+        <div class="template-modal-overlay" @onclick="CancelModuleEdit">
+            <div class="template-modal tpl-modal mod-modal" @onclick:stopPropagation>
+                <div class="tpl-modal-header">
+                    <div class="tpl-modal-title">
+                        <span class="tpl-modal-icon">⚙️</span>
+                        <div>
+                            <div>@(_editingModule != null ? "编辑功能模板" : "新建功能模板")</div>
+                            <div class="tpl-modal-sub">任务模板的起点 / 起点之后 / 终点均可关联本模块</div>
+                        </div>
+                    </div>
+                    <button type="button" class="tpl-modal-close" @onclick="CancelModuleEdit" title="关闭">✕</button>
+                </div>
+
+                <div class="tpl-modal-body">
+                    <div class="form-grid2">
+                        <div class="form-group">
+                            <label>名称 <span class="req-star">*</span></label>
+                            <input type="text" @bind="m.Name" placeholder="如：出库-接驳位移除" />
+                        </div>
+                        <div class="form-group">
+                            <label>API 地址 <span class="req-star">*</span> <span class="hint-inline">GRCS 相对路径（经后端通用转发接口代发）</span></label>
+                            <input type="text" @bind="m.ApiUrl" placeholder="如 /api/v1/container_remove" />
+                        </div>
+                    </div>
+
+                    <div class="tpl-section-title" style="margin-top:16px;">参数配置</div>
+                    <table class="workitem-table mod-param-table">
+                        <thead><tr><th style="width:28%;">参数</th><th style="width:26%;">值来源</th><th>固定值</th><th style="width:38px;"></th></tr></thead>
+                        <tbody>
+                        @foreach (var p in m.Params)
+                        {
+                            <tr>
+                                <td><input type="text" @bind="p.Name" /></td>
+                                <td><select @bind="p.Source">
+                                        <option value="Fixed">固定值</option>
+                                        <option value="StartPoint">起点值</option>
+                                        <option value="EndPoint">终点值</option>
+                                        <option value="TaskContainer">任务容器</option>
+                                        <option value="TaskWarehouse">任务仓库</option>
+                                        <option value="TaskType">任务类型</option>
+                                        <option value="TaskId">任务号</option>
+                                        <option value="Now">当前时间</option>
+                                    </select></td>
+                                <td>@if (p.Source == WorkValueSourceDto.Fixed) { <input type="text" @bind="p.FixedValue" placeholder="固定值" /> }</td>
+                                <td><button class="btn btn-danger btn-xs" @onclick="() => RemoveModuleParam(p)">✕</button></td>
+                            </tr>
+                        }
+                        </tbody>
+                    </table>
+                    <div style="display:flex;gap:8px;margin-top:6px;flex-wrap:wrap;">
+                        <button class="btn btn-outline btn-xs" @onclick="AddModuleRecommendedParams">+ 推荐参数（StationCode/ContainerCode/MsgTime/Warehouse）</button>
+                        <button class="btn btn-outline btn-xs" @onclick="AddModuleCustomParam">+ 自定义参数</button>
+                    </div>
+
+                    @if (!string.IsNullOrEmpty(_moduleError))
+                    {
+                        <div class="tpl-error">@_moduleError</div>
+                    }
+                </div>
+
+                <div class="tpl-modal-footer">
+                    <button class="btn btn-outline" @onclick="CancelModuleEdit">取消</button>
+                    <button class="btn btn-primary" @onclick="SaveModuleEdit">✅ 保存</button>
+                </div>
+            </div>
+        </div>
+    }
+
+    @if (_confirmVisible)
+    {
+        <div class="template-modal-overlay" @onclick="CancelConfirm">
+            <div class="tpl-modal" @onclick:stopPropagation style="max-width:420px;">
+                <div class="tpl-modal-header">
+                    <div class="tpl-modal-title">@_confirmTitle</div>
+                    <button class="tpl-modal-close" @onclick="CancelConfirm" title="关闭">✕</button>
+                </div>
+                <div class="tpl-modal-body">
+                    <div class="hint-text" style="white-space:pre-wrap;color:#e2e8f0;">@_confirmMessage</div>
+                </div>
+                <div class="tpl-modal-footer" style="display:flex;gap:10px;justify-content:flex-end;margin-top:12px;">
+                    <button class="btn btn-danger" @onclick="ConfirmAsync">确认</button>
+                    <button class="btn btn-outline" @onclick="CancelConfirm">取消</button>
+                </div>
+            </div>
+        </div>
+    }
+}
+
+</div>
+
+@* ── 信号与模块记录：独立卡片，按钮打开独立操作界面 ── *@
+<div class="section-card">
+    <div class="section-header">
+        🎛 信号与模块记录
+        <span class="hint-text" style="margin:0;">请求信号（通用 Mock 审批）与模块执行记录，点击按钮打开独立界面操作</span>
+    </div>
+    <div style="display:flex;gap:14px;flex-wrap:wrap;margin-bottom:12px;">
+        <button class="btn btn-outline" style="padding:12px 28px;font-size:1.05rem;border-radius:10px;" @onclick="() => OpenReqModal()">📥 请求信号记录@(PendingCount > 0 ? $"（{PendingCount} 待审批）" : "")</button>
+        <button class="btn btn-outline" style="padding:12px 28px;font-size:1.05rem;border-radius:10px;" @onclick="() => OpenLogModal()">📤 模块执行记录</button>
+    </div>
+    <div class="hint-text" style="margin:0;">
+        「请求信号记录」：RCS→WCS 请求命中需审批的 Mock 时在此逐条批准/拒绝；「模块执行记录」：任务模板起点/中间/终点模块的执行结果。
+        未审批的请求无法清除，保留待处理。
+    </div>
+</div>
+
+@* ── 请求信号操作界面 ── *@
+@if (_showReqModal)
+{
+    <div class="template-modal-overlay" @onclick="CloseReqModal">
+        <div class="template-modal tpl-modal mod-modal" @onclick:stopPropagation style="width:1100px;height:760px;max-width:96vw;max-height:92vh;display:flex;flex-direction:column;">
+            <div class="tpl-modal-header">
+                <div class="tpl-modal-title">
+                    <span class="tpl-modal-icon">📥</span>
+                    <div>
+                        <div class="tpl-modal-title-text">请求信号记录（通用 Mock 审批）</div>
+                        <div class="tpl-modal-sub">RCS→WCS 请求经通用 Mock 命中：需审批的在此批准/拒绝，自动通过的同样记录（持久化）；清除只清理已处理记录，未审批的保留</div>
+                    </div>
+                </div>
+                <button type="button" class="tpl-modal-close" @onclick="CloseReqModal" title="关闭">✕</button>
+            </div>
+            <div class="tpl-modal-body" style="flex:1;min-height:0;overflow-y:auto;max-height:none;">
+                <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px;flex-wrap:wrap;">
+                    <button class="btn btn-outline btn-xs" @onclick="ClearMockApprovals" title="清除已处理（批准/拒绝/放行）记录，未审批的保留">清空已处理</button>
+                    <input type="text" @bind="_reqSearch" placeholder="🔍 搜索名称 / 路径 / 描述" style="flex:1;min-width:180px;max-width:320px;" />
+                    <span class="hint-text" style="margin:0;">共 @_mockApprovals.Count 条，待审批 @PendingCount 条</span>
+                </div>
+                @if (_mockApprovals.Count == 0)
+                {
+                    <div class="hint-text">暂无请求记录。RCS 调任意 URL（如 <code>POST /api/v1/station_entry_request</code>）命中通用 Mock 卡片时会在此生成一条记录：命中“需审批”卡片生成待审批任务（批准/拒绝后按卡片的“审批变量/批准值/拒绝值”回写响应）；命中“自动通过”卡片同样生成“自动通过”记录。一次进站一审批：批准后本次进站放行（卡片保留为“已放行”并自动更换内部 ID），同车同站下次进站会重新弹卡审批；未审批前的重试归并同一张卡片（Attempts 累加）。记录持久化到数据库，重启不丢。</div>
+                }
+                else if (_filteredApprovals.Count == 0)
+                {
+                    <div class="hint-text">无匹配「@_reqSearch」的记录</div>
+                }
+                else
+                {
+                    <div style="display:flex;flex-direction:column;gap:8px;">
+                        @foreach (var e in _filteredApprovals.OrderByDescending(x => x.Time))
+                        {
+                            <div style="border:1px solid #1e293b;border-radius:8px;background:#0f172a;padding:10px 12px;">
+                                <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+                                    <span class="badge @(e.Status=="Pending"?"badge-warn":e.Status=="Approved"?"badge-info":e.Status=="Allowed"||e.Status=="AutoPass"?"badge-ok":"badge-empty")">@(e.Status=="Pending"?"待审批":e.Status=="Approved"?"已批准·待重试":e.Status=="Allowed"?"已放行":e.Status=="AutoPass"?"自动通过":"已拒绝")</span>
+                                    <span style="color:#94a3b8;font-family:Consolas,monospace;font-size:0.8rem;" title="系统唯一标识：同一 Key 的新进站会生成新 ID，放行后原卡自动更换 ID 退出匹配">#@e.Id</span>
+                                    <span style="color:#cbd5e1;font-family:Consolas,monospace;font-size:0.8rem;">@e.Time.ToString("HH:mm:ss")</span>
+                                    <span class="badge badge-info">@e.Method</span>
+                                    <span style="color:#e2e8f0;font-family:Consolas,monospace;font-size:0.85rem;max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="@e.PathPattern">@e.PathPattern</span>
+                                    <span style="color:#7dd3fc;font-size:0.85rem;font-weight:600;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="@MockRuleNameOf(e)">@MockRuleNameOf(e)</span>
+                                    <span style="color:#64748b;font-size:0.8rem;flex:1;min-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="@e.MockRuleDescription">@e.MockRuleDescription</span>
+                                    <span style="color:#64748b;font-size:0.75rem;" title="同一请求（body 相同）循环重试次数，去重不新增任务">重试 @e.Attempts 次</span>
+                                    <span style="display:flex;gap:6px;flex-wrap:wrap;">
+                                        @if (e.Status == "Pending")
+                                        {
+                                            <button class="btn btn-primary btn-xs" @onclick="() => DecideMock(e.Key, true)">批准</button>
+                                            <button class="btn btn-danger btn-xs" @onclick="() => DecideMock(e.Key, false)">拒绝</button>
+                                        }
+                                        <button class="btn btn-outline btn-xs" @onclick="() => ToggleMockDetail(e.Key)">配置</button>
+                                        <button class="btn btn-outline btn-xs" @onclick="() => DeleteMockApproval(e.Key)">删除</button>
+                                    </span>
+                                </div>
+                                @if (_expandedMock.Contains(e.Key))
+                                {
+                                    <div style="margin-top:8px;border-top:1px dashed #334155;padding-top:8px;">
+                                        @{
+                                            var rule = !string.IsNullOrEmpty(e.RuleJson)
+                                                ? System.Text.Json.JsonSerializer.Deserialize<MockRuleDto>(e.RuleJson)
+                                                : null;
+                                        }
+                                        @if (rule != null)
+                                        {
+                                            <div class="mock-detail">
+                                                <div class="mock-detail-row"><b>系统 ID</b> #@e.Id ｜ <b>关联键</b> <code>@e.Key</code></div>
+                                                <div class="mock-detail-row"><b>响应码</b> @rule.ResponseCode ｜ <b>Mock 卡</b> @e.MockRuleId</div>
+                                                <div class="mock-detail-row"><b>审批变量名</b> <code>@rule.ApprovalVariable</code> ｜ <b>批准时值</b> <code>@rule.ApprovalTrueValue</code> ｜ <b>拒绝时值</b> <code>@rule.ApprovalFalseValue</code></div>
+                                                <div class="mock-detail-row"><b>ResponseBody</b></div>
+                                                <pre class="mock-json">@rule.ResponseBody</pre>
+                                                <div class="mock-detail-row"><b>最新命中请求 Body</b></div>
+                                                <pre class="mock-json">@(string.IsNullOrEmpty(e.BodyJson) ? "(无 body)" : e.BodyJson)</pre>
+                                                @if (!string.IsNullOrEmpty(e.QueryString))
+                                                {
+                                                    <div class="mock-detail-row"><b>Query</b></div>
+                                                    <pre class="mock-json">@e.QueryString</pre>
+                                                }
+                                                @if (rule.Matchers.Count > 0)
+                                                {
+                                                    <div class="mock-detail-row"><b>匹配条件</b></div>
+                                                    <table class="entry-table"><tbody>
+                                                    @foreach (var m in rule.Matchers)
+                                                    { <tr><td>@m.Key</td><td>@m.Source</td><td>@m.Op</td><td>@m.Expected</td></tr> }
+                                                    </tbody></table>
+                                                }
+                                            </div>
+                                        }
+                                        else
+                                        {
+                                            <div class="hint-text">无配置快照</div>
+                                        }
+                                    </div>
+                                }
+                            </div>
+                        }
+                    </div>
+                }
+            </div>
+            <div class="tpl-modal-footer">
+                <button class="btn btn-outline" @onclick="CloseReqModal">关闭</button>
+            </div>
+        </div>
+    </div>
+}
+
+@* ── 模块执行记录操作界面 ── *@
+@if (_showLogModal)
+{
+    <div class="template-modal-overlay" @onclick="CloseLogModal">
+        <div class="template-modal tpl-modal mod-modal" @onclick:stopPropagation style="width:1100px;height:760px;max-width:96vw;max-height:92vh;display:flex;flex-direction:column;">
+            <div class="tpl-modal-header">
+                <div class="tpl-modal-title">
+                    <span class="tpl-modal-icon">📤</span>
+                    <div>
+                        <div class="tpl-modal-title-text">模块执行记录</div>
+                        <div class="tpl-modal-sub">任务模板起点 / 起点之后 / 终点模块的执行结果（后端统一执行器写入，实时显示）</div>
+                    </div>
+                </div>
+                <button type="button" class="tpl-modal-close" @onclick="CloseLogModal" title="关闭">✕</button>
+            </div>
+            <div class="tpl-modal-body" style="flex:1;min-height:0;overflow-y:auto;max-height:none;">
+                <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px;flex-wrap:wrap;">
+                    <button class="btn btn-outline btn-xs" @onclick="ClearModuleLog" title="删除 HTTP 200 的成功记录，失败/异常记录保留">清空已处理</button>
+                    <input type="text" @bind="_logSearch" placeholder="🔍 搜索模块名 / 任务号" style="flex:1;min-width:180px;max-width:320px;" />
+                    <span class="hint-text" style="margin:0;">共 @_execLog.Count 条</span>
+                </div>
+                @if (_execLog.Count == 0)
+                {
+                    <div class="hint-text">暂无执行记录。起点模块在「任务下发」时执行，起点之后模块在下发接口返回 success 后执行，终点模块在任务到达终点（FINISHED）时由后端自动执行，结果会实时显示在这里。</div>
+                }
+                else if (_filteredExecLog.Count == 0)
+                {
+                    <div class="hint-text">无匹配「@_logSearch」的记录</div>
+                }
+                else
+                {
+                    <div style="display:flex;flex-direction:column;gap:8px;">
+                        @foreach (var e in _filteredExecLog)
+                        {
+                            <div style="border:1px solid #1e293b;border-radius:8px;background:#0f172a;padding:10px 12px;">
+                                <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+                                    <span class="badge @(e.Ok ? "badge-ok" : "badge-warn")">@(e.Ok ? "✅" : "❌") HTTP @e.HttpCode</span>
+                                    <span style="color:#cbd5e1;font-family:Consolas,monospace;font-size:0.8rem;">@e.Time</span>
+                                    <span style="color:#e2e8f0;font-family:Consolas,monospace;font-size:0.85rem;" title="任务号">@e.TaskId</span>
+                                    <span class="badge badge-info">@e.Point</span>
+                                    <span style="color:#7dd3fc;font-size:0.85rem;">@e.Module</span>
+                                    <span style="color:#64748b;font-size:0.8rem;flex:1;min-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="@e.Detail">@e.Detail</span>
+                                    @if (CanRetryLog(e))
+                                    {
+                                        <button class="btn btn-outline btn-xs" disabled="@_retryingLogId.Contains(e.Id)" @onclick="() => RetryModuleLog(e.Id)" title="重新执行该模块（MsgTime 用当前时间），新记录实时追加">🔄 重试</button>
+                                    }
+                                </div>
+                            </div>
+                        }
+                    </div>
+                }
+            </div>
+            <div class="tpl-modal-footer">
+                <button class="btn btn-outline" @onclick="CloseLogModal">关闭</button>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    private bool _panelCollapsed;
+    private void ToggleSignalSection()
+    {
+        _panelCollapsed = !_panelCollapsed;
+        _ = LocalStore.SetAsync(Js, "grcs_si_collapsed", _panelCollapsed ? "1" : "0");
+    }
+
+    // ── 信号与模块记录：独立操作界面（弹窗）──
+    private bool _showReqModal;
+    private bool _showLogModal;
+    private int PendingCount => _mockApprovals.Count(e => e.Status == "Pending");
+    private void OpenReqModal() { _showReqModal = true; _ = LoadMockApprovals(); }
+    private void CloseReqModal() => _showReqModal = false;
+    private void OpenLogModal() { _showLogModal = true; _ = LoadExecLogAsync(); }
+    private void CloseLogModal() => _showLogModal = false;
+
+    // ── 二次确认弹窗（删除模块）──
+    private bool _confirmVisible;
+    private string _confirmTitle = "";
+    private string _confirmMessage = "";
+    private Func<Task>? _confirmAction;
+    private void ShowConfirm(string title, string message, Func<Task> action) { _confirmTitle = title; _confirmMessage = message; _confirmAction = action; _confirmVisible = true; }
+    private void CancelConfirm() { _confirmVisible = false; _confirmAction = null; }
+    private async Task ConfirmAsync() { var act = _confirmAction; _confirmVisible = false; _confirmAction = null; if (act != null) await act(); }
+    private void RequestDeleteModule(string id, string name) => ShowConfirm("确认删除", $"是否确认删除功能模板「{name}」？", () => DeleteModule(id));
+
+    // ── 通用 Mock 入站（持久化 mock_rules）──
+    private List<MockRuleDto> _mockRules = [];
+    private MockRuleDto? _editingMock;
+    private MockRuleDto? _mockDraft;
+    private string _mockError = "";
+
+    // ── 请求信号（通用 Mock 审批，所有 RCS→WCS 请求经 Mock 命中需审批时在此处理）──
+    private List<MockRequestEventDto> _mockApprovals = [];
+    private string _reqSearch = "";
+    private static string MockRuleNameOf(MockRequestEventDto e)
+    {
+        if (string.IsNullOrEmpty(e.RuleJson)) return "";
+        try
+        {
+            var r = System.Text.Json.JsonSerializer.Deserialize<MockRuleDto>(e.RuleJson);
+            return r?.Name ?? "";
+        }
+        catch { return ""; }
+    }
+    private List<MockRequestEventDto> _filteredApprovals
+    {
+        get
+        {
+            var q = _reqSearch?.Trim();
+            if (string.IsNullOrEmpty(q)) return _mockApprovals;
+            return _mockApprovals.Where(e =>
+                e.PathPattern.Contains(q, StringComparison.OrdinalIgnoreCase)
+                || e.MockRuleDescription.Contains(q, StringComparison.OrdinalIgnoreCase)
+                || MockRuleNameOf(e).Contains(q, StringComparison.OrdinalIgnoreCase)
+                || e.Method.Equals(q, StringComparison.OrdinalIgnoreCase)).ToList();
+        }
+    }
+    private async Task LoadMockApprovals(bool forceRender = true)
+    {
+        _mockApprovals = StageHub.MockApprovalEvents.ToList();
+        if (forceRender) StateHasChanged();
+        await Task.CompletedTask;
+    }
+    private async Task ClearMockApprovals()
+    {
+        await Api.ClearMockApprovalsAsync();
+        _mockApprovals.Clear();
+        StateHasChanged();
+    }
+    private HashSet<string> _expandedMock = new();
+    private void ToggleMockDetail(string key) { if (_expandedMock.Contains(key)) _expandedMock.Remove(key); else _expandedMock.Add(key); StateHasChanged(); }
+
+    private async Task DecideMock(string key, bool allow)
+    {
+        await Api.DecideMockAsync(key, allow);
+        await LoadMockApprovals();
+    }
+    private async Task DeleteMockApproval(string key)
+    {
+        await Api.DeleteMockApprovalAsync(key);
+        await LoadMockApprovals();
+    }
+
+    // ── 功能模板管理（持久化 grcs_si_modules）──
+    private const string ModuleStorageKey = "grcs_si_modules";
+    private FeatureModuleDto? _editingModule;
+    private FeatureModuleDto? _moduleDraft;
+    private string _moduleError = "";
+
+    /// <summary>创建新模块：生成唯一 Id、默认名称/API/参数，并打开编辑弹窗。</summary>
+    private void CreateModule()
+    {
+        _editingModule = null;
+        _moduleDraft = new FeatureModuleDto
+        {
+            Id = "MOD_" + DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString("x").ToUpper(),
+            Name = "新模块",
+            ApiUrl = "/api/v1/container_remove",
+            Params =
+            [
+                new WorkParamDto { Name = "StationCode", Source = WorkValueSourceDto.StartPoint },
+                new WorkParamDto { Name = "ContainerCode", Source = WorkValueSourceDto.TaskContainer },
+                new WorkParamDto { Name = "MsgTime", Source = WorkValueSourceDto.Now },
+                new WorkParamDto { Name = "Warehouse", Source = WorkValueSourceDto.TaskWarehouse },
+            ]
+        };
+        _moduleError = "";
+        StateHasChanged();
+    }
+
+    /// <summary>编辑已有模块（草稿 = 深拷贝，取消不落库）。</summary>
+    private void EditModule(FeatureModuleDto m)
+    {
+        _editingModule = m;
+        _moduleDraft = new FeatureModuleDto
+        {
+            Id = m.Id,
+            Name = m.Name,
+            ApiUrl = m.ApiUrl,
+            Params = m.Params.Select(p => new WorkParamDto { Name = p.Name, Source = p.Source, FixedValue = p.FixedValue }).ToList()
+        };
+        _moduleError = "";
+        StateHasChanged();
+    }
+
+    private async Task DeleteModule(string id)
+    {
+        if (ModuleRegistry.Remove(id))
+        {
+            try { await Api.DeleteFeatureModuleAsync(id); } catch { }
+            await SaveModules();
+            StateHasChanged();
+        }
+    }
+
+    private void CancelModuleEdit()
+    {
+        _editingModule = null;
+        _moduleDraft = null;
+        StateHasChanged();
+    }
+
+    private async Task SaveModuleEdit()
+    {
+        if (_moduleDraft is null) return;
+        _moduleError = "";
+        var d = _moduleDraft;
+        if (string.IsNullOrWhiteSpace(d.Name)) { _moduleError = "❌ 模块名称不能为空"; return; }
+        if (string.IsNullOrWhiteSpace(d.ApiUrl)) { _moduleError = "❌ API 地址不能为空"; return; }
+
+        if (_editingModule is not null)
+        {
+            // 更新已有模块
+            _editingModule.Name = d.Name.Trim();
+            _editingModule.ApiUrl = d.ApiUrl.Trim();
+            _editingModule.Params = d.Params;
+        }
+        else
+        {
+            // 新建
+            if (!ModuleRegistry.Add(d))
+            {
+                _moduleError = "❌ 模块 Id 冲突，请重试";
+                return;
+            }
+        }
+        await SaveModules();
+        _editingModule = null;
+        _moduleDraft = null;
+        StateHasChanged();
+    }
+
+    /// <summary>补加推荐参数（StationCode/ContainerCode/MsgTime/Warehouse），已存在则不重复添加。</summary>
+    private void AddModuleRecommendedParams()
+    {
+        if (_moduleDraft is null) return;
+        var ps = _moduleDraft.Params;
+        if (!ps.Any(p => p.Name == "StationCode")) ps.Add(new WorkParamDto { Name = "StationCode", Source = WorkValueSourceDto.StartPoint });
+        if (!ps.Any(p => p.Name == "ContainerCode")) ps.Add(new WorkParamDto { Name = "ContainerCode", Source = WorkValueSourceDto.TaskContainer });
+        if (!ps.Any(p => p.Name == "MsgTime")) ps.Add(new WorkParamDto { Name = "MsgTime", Source = WorkValueSourceDto.Now });
+        if (!ps.Any(p => p.Name == "Warehouse")) ps.Add(new WorkParamDto { Name = "Warehouse", Source = WorkValueSourceDto.TaskWarehouse });
+    }
+
+    private void AddModuleCustomParam()
+    {
+        if (_moduleDraft is null) return;
+        _moduleDraft.Params.Add(new WorkParamDto { Name = "自定义参数", Source = WorkValueSourceDto.Fixed });
+    }
+
+    private void RemoveModuleParam(WorkParamDto p)
+    {
+        if (_moduleDraft is null) return;
+        _moduleDraft.Params.Remove(p);
+    }
+
+    /// <summary>持久化功能模块：后端 SQLite（跨浏览器共享）+ localStorage（离线兜底）。</summary>
+    private async Task SaveModules()
+    {
+        try
+        {
+            var list = ModuleRegistry.All.ToList();
+            await Api.SaveFeatureModulesAsync(list);
+            await LocalStore.SetAsync(Js, ModuleStorageKey, System.Text.Json.JsonSerializer.Serialize(list));
+        }
+        catch { }
+    }
+
+    /// <summary>载入功能模块：优先后端 feature_modules 表（跨浏览器共享），后端不可用时回退 localStorage。</summary>
+    private async Task LoadModules()
+    {
+        try
+        {
+            var remote = await Api.GetFeatureModulesAsync();
+            if (remote is { Count: > 0 })
+            {
+                ModuleRegistry.SetCustoms(remote);
+                return;
+            }
+        }
+        catch { /* 后端不可用，回退 localStorage */ }
+
+        try
+        {
+            var json = LocalStore[ModuleStorageKey];
+            if (string.IsNullOrEmpty(json) || json == "null") return;
+            var modules = System.Text.Json.JsonSerializer.Deserialize<List<FeatureModuleDto>>(json);
+            if (modules != null) ModuleRegistry.SetCustoms(modules);
+        }
+        catch { }
+    }
+
+    // ── 通用 Mock 入站 ──
+    private async Task LoadMockRules()
+    {
+        try
+        {
+            var remote = await Api.GetMockRulesAsync();
+            if (remote != null) _mockRules = remote;
+        }
+        catch { }
+    }
+    private void CreateMockRule()
+    {
+        _editingMock = null;
+        _mockDraft = new MockRuleDto
+        {
+            Id = "MOCK_" + Guid.NewGuid().ToString("N")[..8].ToUpper(),
+            Method = "POST",
+            PathPattern = "/api/v1/station_entry_request",
+            ResponseCode = 200,
+            ResponseBody = "{\"success\":true,\"message\":\"允许进入\",\"msgTime\":\"{{now}}\"}",
+            Enabled = true,
+            Priority = 0,
+            Description = "新建 Mock",
+            Matchers = []
+        };
+        _mockError = "";
+        StateHasChanged();
+    }
+    private void EditMockRule(MockRuleDto r)
+    {
+        _editingMock = r;
+        _mockDraft = new MockRuleDto
+        {
+            Id = r.Id,
+            Name = r.Name,
+            Method = r.Method,
+            PathPattern = r.PathPattern,
+            ResponseCode = r.ResponseCode,
+            ResponseBody = r.ResponseBody,
+            Enabled = r.Enabled,
+            Priority = r.Priority,
+            Description = r.Description,
+            AlsoRecord = r.AlsoRecord,
+            BoardSync = r.BoardSync,
+            RequiresApproval = r.RequiresApproval,
+            ApprovalVariable = r.ApprovalVariable,
+            ApprovalTrueValue = r.ApprovalTrueValue,
+            ApprovalFalseValue = r.ApprovalFalseValue,
+            Matchers = r.Matchers.Select(m => new MockMatcher { Key = m.Key, Op = m.Op, Expected = m.Expected, Source = m.Source }).ToList()
+        };
+        _mockError = "";
+        StateHasChanged();
+    }
+    private void CancelMockEdit() { _editingMock = null; _mockDraft = null; _mockError = ""; }
+    private async Task SaveMockEdit()
+    {
+        if (_mockDraft == null) return;
+        if (string.IsNullOrWhiteSpace(_mockDraft.PathPattern)) { _mockError = "❌ PathPattern 不能为空"; return; }
+        try { if (!string.IsNullOrWhiteSpace(_mockDraft.ResponseBody)) System.Text.Json.JsonDocument.Parse(_mockDraft.ResponseBody); } catch { _mockError = "❌ ResponseBody 不是合法 JSON"; return; }
+        if (_mockDraft.BoardSync && _mockRules.Any(x => x.Id != _mockDraft.Id && x.BoardSync))
+        {
+            _mockError = "❌ 任务阶段卡只能有一张，请先取消其他卡的「关联任务看板」";
+            return;
+        }
+        if (_mockDraft.BoardSync && _mockDraft.RequiresApproval)
+        {
+            _mockError = "❌ 「关联任务看板」与「需审批」互斥，请只勾选其一";
+            return;
+        }
+        var idx = _mockRules.FindIndex(x => x.Id == _mockDraft.Id);
+        if (idx >= 0) _mockRules[idx] = _mockDraft;
+        else _mockRules.Add(_mockDraft);
+        _mockRules = _mockRules.OrderByDescending(x => x.Priority).ThenBy(x => x.Id).ToList();
+        await SaveMocks();
+        _editingMock = null; _mockDraft = null;
+    }
+    private void RequestDeleteMock(string id, string path) => ShowConfirm("确认删除", $"是否确认删除 Mock 规则「{path}」？", () => DeleteMock(id));
+    private async Task DeleteMock(string id)
+    {
+        _mockRules.RemoveAll(x => x.Id == id);
+        await SaveMocks();
+    }
+    private async Task ToggleMockEnabled(MockRuleDto r)
+    {
+        r.Enabled = !r.Enabled;
+        await SaveMocks();
+    }
+    /// <summary>任务阶段卡互斥：勾选时自动取消其他卡的「关联任务看板」，且与「需审批」互斥。</summary>
+    private void ToggleBoardSync(MockRuleDto d, ChangeEventArgs e)
+    {
+        var on = e.Value is bool b ? b : (e.Value?.ToString() == "true" || e.Value?.ToString() == "on");
+        if (on)
+        {
+            foreach (var r in _mockRules)
+                if (r.Id != d.Id) r.BoardSync = false;
+            d.BoardSync = true;
+            d.RequiresApproval = false;
+        }
+        else d.BoardSync = false;
+    }
+    /// <summary>「需审批」与「关联任务看板」互斥：勾选审批时自动取消任务阶段卡。</summary>
+    private void ToggleApproval(MockRuleDto d, ChangeEventArgs e)
+    {
+        var on = e.Value is bool b ? b : (e.Value?.ToString() == "true" || e.Value?.ToString() == "on");
+        d.RequiresApproval = on;
+        if (on) d.BoardSync = false;
+    }
+    private void AddMockMatcher() => _mockDraft?.Matchers.Add(new MockMatcher { Key = "VehicleCode", Source = "body", Op = "equals", Expected = "" });
+    private void RemoveMockMatcher(MockMatcher m) => _mockDraft?.Matchers.Remove(m);
+    private void AddMockMatcherPreset()
+    {
+        if (_mockDraft == null) return;
+        if (!_mockDraft.Matchers.Any(m => m.Key == "VehicleCode")) _mockDraft.Matchers.Add(new MockMatcher { Key = "VehicleCode", Source = "body", Op = "equals", Expected = "Car_101" });
+        if (!_mockDraft.Matchers.Any(m => m.Key == "StationCode")) _mockDraft.Matchers.Add(new MockMatcher { Key = "StationCode", Source = "body", Op = "equals", Expected = "0100000108_1" });
+        if (!_mockDraft.Matchers.Any(m => m.Key == "IsLoaded")) _mockDraft.Matchers.Add(new MockMatcher { Key = "IsLoaded", Source = "body", Op = "equals", Expected = "false" });
+    }
+    private async Task SaveMocks()
+    {
+        try { await Api.SaveMockRulesAsync(_mockRules); } catch { }
+        StateHasChanged();
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadModules();
+        await LoadMockRules();
+
+        // 长连接推送（SignalR /hubs/task-stages，TaskStageHub 常驻）：请求信号记录/模块执行记录实时到达，零轮询
+        StageHub.MockApprovalEventsChanged += OnMockEventsChanged;
+        StageHub.ExecLogChanged += OnExecLogChanged;
+        await StageHub.EnsureStartedAsync();
+        _mockApprovals = StageHub.MockApprovalEvents.ToList();
+        _execLog = StageHub.ExecLogEntries.ToList();
+
+        // 读取 localStorage 状态（内存缓存，同步读取，无 JS 边界）
+        try
+        {
+            if (LocalStore["grcs_si_collapsed"] is { } cl && cl != "null") _panelCollapsed = cl == "1";
+        }
+        catch { }
+        await Task.CompletedTask;
+    }
+
+    private void OnMockEventsChanged() => InvokeAsync(() =>
+    {
+        _mockApprovals = StageHub.MockApprovalEvents.ToList();
+        StateHasChanged();
+    });
+
+    private void OnExecLogChanged() => InvokeAsync(() =>
+    {
+        _execLog = StageHub.ExecLogEntries.ToList();
+        StateHasChanged();
+    });
+
+    // ── 模块执行记录（SignalR 推送，TaskStageHub.ExecLogEntries 为权威缓存）──
+    private List<ModuleExecLogEntry> _execLog = [];
+    private string _logSearch = "";
+    private List<ModuleExecLogEntry> _filteredExecLog
+    {
+        get
+        {
+            var q = _logSearch?.Trim();
+            if (string.IsNullOrEmpty(q)) return _execLog;
+            return _execLog.Where(e =>
+                e.Module.Contains(q, StringComparison.OrdinalIgnoreCase)
+                || e.TaskId.Contains(q, StringComparison.OrdinalIgnoreCase)
+                || e.Point.Contains(q, StringComparison.OrdinalIgnoreCase)
+                || e.Detail.Contains(q, StringComparison.OrdinalIgnoreCase)).ToList();
+        }
+    }
+
+    private async Task LoadExecLogAsync()
+    {
+        _execLog = StageHub.ExecLogEntries.ToList();
+        StateHasChanged();
+        await Task.CompletedTask;
+    }
+
+    private async Task ClearModuleLog()
+    {
+        await Api.ClearModuleExecLogsAsync();
+        _execLog = StageHub.ExecLogEntries.ToList();
+        StateHasChanged();
+    }
+
+    // ── 模块执行记录重试 ──
+    private HashSet<long> _retryingLogId = new();
+
+    /// <summary>可重试：模块名为正常配置名（非「模块未找到/API 为空」类特殊条目）。</summary>
+    private static bool CanRetryLog(ModuleExecLogEntry e)
+        => !e.Module.StartsWith("模块未找到", StringComparison.OrdinalIgnoreCase)
+           && e.Module != "API 地址为空，已跳过";
+
+    private async Task RetryModuleLog(long id)
+    {
+        if (!_retryingLogId.Add(id)) return;
+        StateHasChanged();
+        try
+        {
+            await Api.RetryModuleLogAsync(id);
+        }
+        catch { }
+        _retryingLogId.Remove(id);
+        StateHasChanged();
+    }
+
+    public void Dispose()
+    {
+        StageHub.MockApprovalEventsChanged -= OnMockEventsChanged;
+        StageHub.ExecLogChanged -= OnExecLogChanged;
+    }
+}

@@ -1,0 +1,66 @@
+@inject BackendHealthService Health
+@inject NavigationManager NavManager
+@implements IDisposable
+
+@* ════════════════════════════════════════════════
+   项目导航底部连接状态（独立组件）。
+
+   为什么独立成组件：Blazor 里父组件调用 StateHasChanged 会连带重渲染整棵子树。
+   优化前探测逻辑写在 MainLayout 里，每 15 秒探测一次两个后端后重渲染布局，
+   当前正在渲染的页面（@Body）也跟着整树重渲染，交互多时能感觉到卡顿。
+   独立后只有本组件每 15 秒重渲染自己，页面树完全不受影响。
+
+   数据源：BackendHealthService（单一数据源）。本组件不再自己探测，
+   只订阅该服务渲染状态；AutomationHub 每 1s 回报的 /api/wcs/status 结果
+   让 WCS 后端状态比 15 秒探测更实时。null=未知（首次探测前）/ true=在线 / false=离线。
+   ════════════════════════════════════════════════ *@
+<div class="sidebar-status">
+    <div class="ss-card" title="WCS 后端管理接口 — http://localhost:8230">
+        <span class="ss-dot @DotClass(Health.WcsOnline)"></span>
+        <span class="ss-name">WCS 后端</span>
+        <span class="ss-state @DotStateClass(Health.WcsOnline)">@DotStateText(Health.WcsOnline)</span>
+        <span class="ss-port">8230</span>
+    </div>
+    <div class="ss-card" title="GRCS 后端接口 — http://localhost:8224">
+        <span class="ss-dot @DotClass(Health.GrcsOnline)"></span>
+        <span class="ss-name">GRCS 后端</span>
+        <span class="ss-state @DotStateClass(Health.GrcsOnline)">@DotStateText(Health.GrcsOnline)</span>
+        <span class="ss-port">8224</span>
+    </div>
+    <div class="ss-front" title="WCS 前端当前运行地址">前端 · @NavManager.BaseUri</div>
+</div>
+
+@code {
+    protected override void OnInitialized()
+    {
+        Health.Changed += OnChanged;
+    }
+
+    private void OnChanged() => InvokeAsync(StateHasChanged);
+
+    private static string DotClass(bool? online) => online switch
+    {
+        true => "on",
+        false => "off",
+        null => ""
+    };
+
+    private static string DotStateText(bool? online) => online switch
+    {
+        true => "在线",
+        false => "离线",
+        null => "检测中"
+    };
+
+    private static string DotStateClass(bool? online) => online switch
+    {
+        true => "on",
+        false => "off",
+        null => "probe"
+    };
+
+    public void Dispose()
+    {
+        Health.Changed -= OnChanged;
+    }
+}

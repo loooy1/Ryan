@@ -1,0 +1,1458 @@
+@page "/wcs-simulator/dispatch"
+@inject IWcsService WcsService
+@inject IJSRuntime Js
+@inject LocalStoreService LocalStore
+@inject TaskLedgerService Ledger
+@inject WcsApiClient Api
+@implements IDisposable
+
+@* ════════════════════════════════════════════════
+   页面职责：WCS 模拟器的「容器任务下发」页
+   ── 数据流 ──
+    ① 任务类型来自 TaskTypeRegistry 注册表（每个模板 = 起点 + 终点，两点各绑定
+       起点之前/起点之后/终点之后的功能模块）；选中后编辑任务的容器 + 起点 + 终点
+   ② 站点编码按地图类型转换为实际下发编码（储位 → mark_1、接驳位 → mark_0）
+   ③ 组装 WcsTaskGroup 报文 POST 到 GRCS WCS 任务组接口
+   ④ 下发结果写入任务台账（TaskLedgerService，唯一数据源），
+      供任务看板展示、信号交互页按模板「离开起点前工作」生成 container_remove 等卡片
+   ── 交互服务 ──
+   IWcsService：任务组下发 + GRCS 库存查询
+   TaskLedgerService：台账写入；LocalStoreService：表单快照/模板持久化
+   ════════════════════════════════════════════════ *@
+<PageTitle>WCS 任务下发</PageTitle>
+
+<div class="section-card">
+    <div class="section-header collapsible" @onclick="ToggleContainer" title="点击折叠/展开">
+        📦 容器任务下发
+        <span class="hint-text" style="margin:0;">任务组配置 · 选择任务类型 · 编辑任务 · 响应结果</span>
+        <span class="collapse-arrow">@(IsCollapsed("container") ? "▸ 展开" : "▾ 收起")</span>
+    </div>
+    @if (!IsCollapsed("container"))
+    {
+
+    <div class="sub-header">📋 任务组配置 <span class="badge-info" style="margin-left:2px;">ZkWcsTaskGroupInfo</span></div>
+
+    <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;">
+        <div class="form-group" style="flex:1;min-width:140px;max-width:220px;">
+            <label>任务组 ID</label>
+            <input type="text" @bind="_groupId" readonly>
+        </div>
+        <div class="form-group" style="flex:1;min-width:140px;max-width:200px;">
+            <label>下发时间</label>
+            <input type="text" value="@_msgTime" readonly title="实时时间，随当前时刻自动刷新">
+        </div>
+        <div class="form-group" style="flex:1;min-width:150px;max-width:250px;">
+            <label>优先级 (0-1000)</label>
+            <div style="display:flex;align-items:center;gap:10px;">
+                <input type="range" min="0" max="1000" step="10" @bind="_priority" style="flex:1;">
+                <span style="font-weight:700;color:#38bdf8;min-width:36px;text-align:center;">@_priority</span>
+            </div>
+        </div>
+    </div>
+
+    <div class="section-divider"></div>
+
+    <div class="sub-header">
+        🎯 选择任务类型
+        @if (!string.IsNullOrEmpty(_selectedType))
+        {
+            <span class="badge-selected">@_selectedType</span>
+        }
+        else
+        {
+            <span class="badge-empty">未选择</span>
+        }
+        <button class="btn btn-primary btn-sm" @onclick="OpenTemplateModal" style="margin-left:auto;">+ 添加模板</button>
+    </div>
+
+    @* 任务类型芯片网格，点击选中；自定义模板右上角带 ✏️ 编辑 / ✕ 删除 *@
+    <div class="task-type-grid">
+        @for (int ci = 0; ci < TaskTypeRegistry.All.Count; ci++)
+        {
+            var tt = TaskTypeRegistry.All[ci];
+            var isSelected = tt.Value == _selectedType;
+            var isCustom = TaskTypeRegistry.IsCustom(tt.Value);
+            var moduleCount = (tt.Start.BeforeModules?.Count ?? 0) + (tt.Start.AfterModules?.Count ?? 0) + (tt.End.AfterModules?.Count ?? 0);
+            <div class="tt-card @(isSelected ? "selected" : "")"
+                 @onclick="() => SelectType(tt)">
+                @if (isCustom)
+                {
+                    <div class="tt-card-tools">
+                        <button type="button" class="chip-edit" @onclick="() => EditTemplate(tt.Value)" @onclick:stopPropagation title="编辑该模板">✏️</button>
+                        <button type="button" class="chip-delete" @onclick="() => RequestDeleteTemplate(tt.Value, tt.Label)" @onclick:stopPropagation title="删除该模板">✕</button>
+                    </div>
+                }
+                <div class="tt-card-head">
+                    <span class="tt-card-icon">@CategoryIcon(tt.Category)</span>
+                    <span class="chip-title">@tt.Label</span>
+                </div>
+                <div class="chip-desc">@tt.Description</div>
+                <div class="tt-card-foot">
+                    <code class="chip-type-code">@tt.Value</code>
+                </div>
+                <div class="tt-card-meta">
+                    <span class="badge-info">@CategoryName(tt.Category)</span>
+            @if (tt.NeedsContainer)
+            {
+                <span class="badge-selected">需容器</span>
+            }
+                    else
+                    {
+                        <span class="badge-empty">无容器</span>
+                    }
+                    @if (moduleCount > 0)
+                    {
+                        <span class="badge-info">@(moduleCount) 模块绑定</span>
+                    }
+                </div>
+            </div>
+        }
+        @if (TaskTypeRegistry.All.Count == 0)
+        {
+            <div class="hint-text" style="grid-column:1/-1;">暂无任务类型，点击右上角「+ 添加模板」创建（起点 + 终点，各绑定功能模块）。</div>
+        }
+    </div>
+
+    @* 选中后显示起点 → 终点提示 *@
+    <div class="hint-text">
+        @if (string.IsNullOrEmpty(_selectedType))
+        {
+            <text>请选择任务类型</text>
+        }
+        else
+        {
+            var tt = TaskTypeRegistry.All.First(t => t.Value == _selectedType);
+            <text>@tt.Label：起点(@(string.Join("+", MapStationTypeBits.DecodeNames(tt.Start.StationTypeBits)))) → 终点(@(string.Join("+", MapStationTypeBits.DecodeNames(tt.End.StationTypeBits))))</text>
+        }
+    </div>
+
+    <div class="section-divider"></div>
+
+    <div class="sub-header">
+        📝 编辑任务
+        <button class="btn btn-primary btn-sm" @onclick="AddTaskCard" style="margin-left:auto;">+ 添加任务</button>
+    </div>
+
+    <div style="display:flex;flex-direction:column;gap:10px;">
+        @for (int i = 0; i < _taskCards.Count; i++)
+        {
+            var idx = i;                         // 捕获循环变量，防止闭包问题
+            var card = _taskCards[i];
+
+            <div class="task-card">
+                <div style="flex:1;display:flex;flex-direction:column;gap:8px;">
+                    @* 任务ID + 类型徽章 *@
+                    <div style="display:flex;gap:10px;align-items:center;">
+                        <span class="badge-info">@_selectedType</span>
+                        <input type="text" @bind="card.TaskId" @onblur="SaveFormState" placeholder="任务ID (唯一)" style="flex:1;">
+                    </div>
+
+                     @* 容器行（模板需要容器时显示；随机生成则为只读、不可手填）*@
+                    @if (SelectedTemplate?.NeedsContainer ?? false)
+                    {
+                        <div style="display:flex;align-items:center;gap:8px;">
+                            <span class="station-label">容器</span>
+                            <div style="position:relative;display:flex;flex:1;">
+                                <input type="text" value="@card.ContainerCode"
+                                        readonly="@(SelectedTemplate?.RandomContainer ?? false ? "readonly" : null)"
+                                        @oninput="@(SelectedTemplate?.RandomContainer ?? false ? null : (e) => OnContainerInput(idx, e))"
+                                        @onfocus="@(SelectedTemplate?.RandomContainer ?? false ? null : () => OpenContainerPicker(idx))"
+                                        @onblur="SaveFormState"
+                                        placeholder="@(SelectedTemplate?.RandomContainer ?? false ? "自动生成" : "输入容器号（必填）")"
+                                        style="flex:1;border-top-right-radius:0;border-bottom-right-radius:0;min-width:0;">
+                                    @if (!(SelectedTemplate?.RandomContainer ?? false)) { <button type="button" class="picker-toggle" @onclick="() => ToggleContainerPicker(idx)" title="选择容器">▾</button> }
+                                    @if (_pickerContainer == idx)
+                                    {
+                                        <div class="picker-overlay" @onclick="CloseContainerPicker"></div>
+                                        <div class="picker-panel">
+                                            <div class="picker-list">
+                                                @if (string.IsNullOrWhiteSpace(card.ContainerCode))
+                                                {
+                                                    <div class="hint-text" style="padding:8px;">请输入关键词搜索容器</div>
+                                                }
+                                                else
+                                                {
+                                                    @foreach (var c in ContainerPickerResults(card.ContainerCode))
+                                                    {
+                                                        <div class="picker-item" @onclick="() => PickContainer(idx, c)">
+                                                            <span class="picker-mark">@c</span>
+                                                        </div>
+                                                    }
+                                                    @if (!ContainerPickerResults(card.ContainerCode).Any())
+                                                    {
+                                                        <div class="hint-text" style="padding:8px;">无匹配容器</div>
+                                                    }
+                                                }
+                                            </div>
+                                        </div>
+                                    }
+                                }
+                            </div>
+                        </div>
+                    }
+
+                    @* 起点 / 终点两行站点输入 *@
+                    <div style="display:flex;flex-direction:column;gap:4px;">
+                        @for (int j = 0; j < card.StationCodes.Count; j++)
+                        {
+                            var sj = j;
+                            <div style="display:flex;flex-direction:column;gap:2px;">
+                                <div style="display:flex;gap:8px;align-items:center;">
+                                    <span class="station-label">@PointLabel(sj)</span>
+                                    <div style="position:relative;display:flex;flex:1;">
+                                        <input type="text" value="@card.StationCodes[sj]"
+                                               @oninput="(e) => OnStationInput(idx, sj, e)"
+                                               @onfocus="() => OpenStationPicker(idx, sj)"
+                                               placeholder="输入搜索 / 选择站点编码"
+                                               style="flex:1;border-top-right-radius:0;border-bottom-right-radius:0;min-width:0;">
+                                        <button type="button" class="picker-toggle" @onclick="() => ToggleStationPicker(idx, sj)" title="选择站点">▾</button>
+                                        @if (_pickerCard == idx && _pickerStation == sj)
+                                        {
+                                            <div class="picker-overlay" @onclick="CloseStationPicker"></div>
+                                            <div class="picker-panel">
+                                                <div class="picker-list">
+                                                    @if (string.IsNullOrWhiteSpace(card.StationCodes[sj]))
+                                                    {
+                                                        <div class="hint-text" style="padding:8px;">请输入关键词搜索站点</div>
+                                                    }
+                                                    else
+                                                    {
+                                                        @foreach (var st in StationPickerResults())
+                                                        {
+                                                            <div class="picker-item" @onclick="() => PickStation(idx, sj, st.Mark)">
+                                                                <span class="picker-mark">@st.Mark</span>
+                                                                <span class="picker-type">@string.Join("+", MapStationTypeBits.DecodeNames(st.StationType))</span>
+                                                            </div>
+                                                        }
+                                                        @if (!StationPickerResults().Any())
+                                                        {
+                                                            <div class="hint-text" style="padding:8px;">无匹配站点</div>
+                                                        }
+                                                    }
+                                                </div>
+                                            </div>
+                                        }
+                                    </div>
+                                </div>
+                                <div class="station-hint">@StationCodeHint(card.StationCodes[sj])</div>
+                            </div>
+                        }
+                    </div>
+                </div>
+
+                @* 删除按钮 *@
+                <button class="btn btn-danger btn-xs" @onclick="() => RemoveTaskCard(idx)" style="align-self:flex-start;margin-left:12px;">✕</button>
+            </div>
+        }
+    </div>
+
+    @* 操作按钮行 *@
+    <div style="display:flex;gap:10px;align-items:center;margin-top:14px;flex-wrap:wrap;">
+        <button class="btn btn-primary" @onclick="SendTasks" disabled="@_sending">
+            @(_sending ? "⏳ 发送中..." : "🚀 下发任务")
+        </button>
+        <button class="btn btn-outline" @onclick="ResetForm">🔄 重置</button>
+        @if (!string.IsNullOrEmpty(_validationError))
+        {
+            <span style="color:#f87171;font-size:0.85rem;align-self:center;">@_validationError</span>
+        }
+    </div>
+
+    <div class="section-divider"></div>
+
+    <div class="sub-header">📨 响应结果</div>
+    <div class="response-panel @_respClass">@_responseText</div>
+    }
+
+</div>
+
+<div class="section-card">
+    <div class="section-header collapsible" @onclick="ToggleVehicle" title="点击折叠/展开">
+        🚚 移动任务下发
+        <span class="badge-selected">MOVE_ONLY 纯移动</span>
+        <span class="collapse-arrow">@(IsCollapsed("vehicle") ? "▸ 展开" : "▾ 收起")</span>
+    </div>
+    @if (!IsCollapsed("vehicle"))
+    {
+
+    <div class="hint-text">
+        MOVE_ONLY 支持多站点，车辆将按顺序依次前往每个目标站点执行纯移动任务；
+        不指定车辆时由调度器自动匹配空闲车辆；优先级 ≤10 时转为停车待命（Standby）。
+    </div>
+
+    <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;margin-top:10px;">
+        <div class="form-group" style="flex:1;min-width:140px;max-width:220px;">
+            <label>任务 ID</label>
+            <input type="text" @bind="_orderId" readonly>
+        </div>
+        <div class="form-group" style="flex:1;min-width:120px;max-width:200px;">
+            <label>任务名称</label>
+            <input type="text" @bind="_orderName" placeholder="可选">
+        </div>
+        <div class="form-group" style="flex:1;min-width:140px;max-width:220px;">
+            <label>指定车辆</label>
+            <input type="text" @bind="_vehicleName" placeholder="不填=自动分配">
+        </div>
+        <div class="form-group" style="flex:1;min-width:150px;max-width:250px;">
+            <label>优先级 (0-1000)</label>
+            <div style="display:flex;align-items:center;gap:10px;">
+                <input type="range" min="0" max="1000" step="10" @bind="_vehiclePriority" style="flex:1;">
+                <span style="font-weight:700;color:#38bdf8;min-width:36px;text-align:center;">@_vehiclePriority</span>
+            </div>
+        </div>
+    </div>
+    <div class="hint-text" style="margin-top:4px;">留空车辆=自动分配；优先级 ≤10 = Standby（停车待命）</div>
+
+    <div style="border-top:1px solid #334155;margin:14px 0;padding-top:14px;"></div>
+
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;">
+        <span style="font-weight:600;font-size:0.85rem;">目标站点</span>
+        <button class="btn btn-primary btn-sm" @onclick="AddVehicleStation">+ 添加站点</button>
+    </div>
+
+    <div style="display:flex;flex-direction:column;gap:8px;">
+        @for (int j = 0; j < _stations.Count; j++)
+        {
+            var sj = j;
+            <div style="display:flex;gap:8px;align-items:center;">
+                <span class="station-label">站点 @(sj+1)</span>
+                <div style="position:relative;flex:1;display:flex;min-width:0;">
+                    <input type="text" value="@_stations[sj]"
+                           @oninput="(e) => OnVehicleStationInput(sj, e)"
+                           @onfocus="() => OpenVehiclePicker(sj)"
+                           placeholder="输入搜索 / 选择站点编码"
+                           style="flex:1;border-top-right-radius:0;border-bottom-right-radius:0;min-width:0;">
+                    <button type="button" class="picker-toggle" @onclick="() => ToggleVehiclePicker(sj)" title="选择站点">▾</button>
+                    @if (_openVehiclePicker == sj)
+                    {
+                        <div class="picker-overlay" @onclick="CloseVehiclePicker"></div>
+                        <div class="picker-panel">
+                            <div class="picker-list">
+                                @if (string.IsNullOrWhiteSpace(_stations[sj]))
+                                {
+                                    <div class="hint-text" style="padding:8px;">请输入关键词搜索站点</div>
+                                }
+                                else
+                                {
+                                    @foreach (var st in VehiclePickerResults(sj))
+                                    {
+                                        <div class="picker-item" @onclick="() => PickVehicleStation(sj, st)">
+                                            <span class="picker-mark">@st.Mark</span>
+                                            <span class="picker-type">@string.Join("+", MapStationTypeBits.DecodeNames(st.StationType))</span>
+                                        </div>
+                                    }
+                                    @if (VehiclePickerResults(sj).Count == 0)
+                                    {
+                                        <div class="hint-text" style="padding:8px;">无匹配站点</div>
+                                    }
+                                }
+                            </div>
+                        </div>
+                    }
+                </div>
+                @if (_stations.Count > 1)
+                {
+                    <button class="btn btn-danger btn-xs" @onclick="() => RemoveVehicleStation(sj)">✕</button>
+                }
+            </div>
+        }
+    </div>
+
+    @* 操作按钮行 *@
+    <div style="display:flex;gap:10px;align-items:center;margin-top:14px;flex-wrap:wrap;">
+        <button class="btn btn-primary" @onclick="SendVehicleOrder" disabled="@_vehicleSending">
+            @(_vehicleSending ? "⏳ 发送中..." : "🚚 下发车辆任务")
+        </button>
+        <button class="btn btn-outline" @onclick="ResetVehicleForm">🔄 重置</button>
+    </div>
+
+    <div class="section-divider"></div>
+
+    <div class="sub-header">📨 响应结果</div>
+    <div class="response-panel @_vehicleRespClass">@_vehicleRespText</div>
+    }
+
+</div>
+
+@* ════════════════════════════════════════════════
+    添加任务类型模板弹窗：任务仅两类点 —— 起点 + 终点。
+    起点：选站点类型，下面分两段模块（起点之前=下发前执行 / 起点之后=下发 success 后执行）。
+    终点：选站点类型，下面仅一段模块（终点之后=任务 FINISHED 后执行）。
+   ════════════════════════════════════════════════ *@
+@if (_showTemplateModal)
+{
+    <div class="template-modal-overlay" @onclick="CloseTemplateModal">
+        <div class="template-modal tpl-modal" @onclick:stopPropagation>
+            <div class="tpl-modal-header">
+                <div class="tpl-modal-title">
+                    <span class="tpl-modal-icon">🧩</span>
+                    <div>
+                        <div>@(_editingTemplate == null ? "添加任务类型模板" : "编辑任务类型模板")</div>
+                        <div class="tpl-modal-sub">起点（之前/之后）+ 终点（之后）· 每点可绑定功能模块</div>
+                    </div>
+                </div>
+                <button type="button" class="tpl-modal-close" @onclick="CloseTemplateModal" title="关闭">✕</button>
+            </div>
+
+            <div class="tpl-modal-body">
+                @* ── 基本信息 ── *@
+                <div class="tpl-section">
+                    <div class="tpl-section-title">📋 基本信息</div>
+                    <div class="form-grid2">
+                        <div class="form-group">
+                            <label>协议值 Value <span class="req-star">*</span></label>
+                            <input type="text" @bind="_draft.Value" placeholder="如 CARGO_OUTBOUND，必填且全局唯一">
+                        </div>
+                        <div class="form-group">
+                            <label>显示名称 Label <span class="req-star">*</span></label>
+                            <input type="text" @bind="_draft.Label" placeholder="如 出库-段1：搬运带载">
+                        </div>
+                        <div class="form-group">
+                            <label>描述 Description</label>
+                            <input type="text" @bind="_draft.Description" placeholder="如 AMR库→输送线">
+                        </div>
+                        <div class="form-group">
+                            <label>分类 Category</label>
+                            <select @bind="_draft.Category">
+                                <option value="in">in（入库）</option>
+                                <option value="out">out（出库）</option>
+                                <option value="sort">sort（分拣）</option>
+                                <option value="move">move（移库）</option>
+                                <option value="other">other（其他）</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="tpl-container-box">
+                        <span class="tpl-container-title">📦 容器设置</span>
+                        <label class="tpl-switch-line" @onclick="() => _draft.NeedsContainer = !_draft.NeedsContainer">
+                            <span class="tpl-switch-label">需要容器</span>
+                            <span class="toggle-switch @(_draft.NeedsContainer ? "on" : "")">
+                                <span class="toggle-track"><span class="toggle-thumb"></span></span>
+                            </span>
+                        </label>
+                        @if (_draft.NeedsContainer)
+                        {
+                            <div class="form-group tpl-inline">
+                                <label>容器号前缀</label>
+                                <input type="text" @bind="_draft.ContainerPrefix" placeholder="如 Container（留空默认 Container）" />
+                            </div>
+                            <label class="tpl-switch-line" @onclick="() => _draft.RandomContainer = !_draft.RandomContainer">
+                                <span class="tpl-switch-label">随机生成容器号</span>
+                                <span class="toggle-switch @(_draft.RandomContainer ? "on" : "")">
+                                    <span class="toggle-track"><span class="toggle-thumb"></span></span>
+                                </span>
+                            </label>
+                        }
+                    </div>
+                </div>
+
+                @* 容器号由用户填写（模板默认需要容器，见 TaskTemplateDto.NeedsContainer）*@
+
+                @* ── 三个执行时机：起点 / 起点之后 / 终点 ── *@
+                <div class="tpl-points">
+                    @* 起点 ── *@
+                    <div class="tpl-point-card tpl-point-start">
+                        <div class="tpl-point-head">
+                            <span class="tpl-point-badge">①</span>
+                            <div class="tpl-point-title">起点</div>
+                            <span class="tpl-point-tag">下发任务组之前执行</span>
+                        </div>
+                        <div class="form-group" style="margin-bottom:10px;">
+                            <label>起点站点类型 <span class="req-star">*</span></label>
+                            <select class="tpl-type-select" @onchange="e => SetPointType(_draft.Start, e.Value)">
+                                <option value="0" selected="@(SelectedPointBits(_draft.Start) == 0)">未指定(不限)</option>
+                                @foreach (var (bit, name) in MapStationTypeBits.All)
+                                {
+                                    <option value="@bit" selected="@(SelectedPointBits(_draft.Start) == bit)">@name</option>
+                                }
+                            </select>
+                        </div>
+                        <div class="tpl-module-sub">起点之前（下发任务组之前执行）</div>
+                        <div class="tpl-module-grid">
+                            @if (ModuleRegistry.All.Count == 0)
+                            {
+                                <div class="hint-text" style="margin-top:0;">暂无模块。请在「信号交互」页创建模块后再回来关联。</div>
+                            }
+                            else
+                            {
+                                @foreach (var m in ModuleRegistry.All)
+                                {
+                                    var selected = _draft.Start.BeforeModules.Contains(m.Id);
+                                    <div class="tpl-module-chip @(selected ? "on" : "")" @onclick="() => ToggleStartBeforeModule(m.Id)">
+                                        <span class="tpl-module-check">@(selected ? "✓" : "")</span>
+                                        <span class="tpl-module-name">@m.Name</span>
+                                    </div>
+                                }
+                            }
+                        </div>
+
+                        <div class="tpl-module-sub">起点之后（下发返回 success 后执行）</div>
+                        <div class="tpl-module-grid">
+                            @if (ModuleRegistry.All.Count == 0)
+                            {
+                                <div class="hint-text" style="margin-top:0;">暂无模块。请在「信号交互」页创建模块后再回来关联。</div>
+                            }
+                            else
+                            {
+                                @foreach (var m in ModuleRegistry.All)
+                                {
+                                    var selected = _draft.Start.AfterModules.Contains(m.Id);
+                                    <div class="tpl-module-chip @(selected ? "on" : "")" @onclick="() => ToggleStartAfterModule(m.Id)">
+                                        <span class="tpl-module-check">@(selected ? "✓" : "")</span>
+                                        <span class="tpl-module-name">@m.Name</span>
+                                    </div>
+                                }
+                            }
+                        </div>
+                    </div>
+
+                    @* 终点 ── *@
+                    <div class="tpl-point-card tpl-point-end">
+                        <div class="tpl-point-head">
+                            <span class="tpl-point-badge">②</span>
+                            <div class="tpl-point-title">终点</div>
+                            <span class="tpl-point-tag">选站点类型</span>
+                        </div>
+                        <div class="form-group" style="margin-bottom:10px;">
+                            <label>终点站点类型 <span class="req-star">*</span></label>
+                            <select class="tpl-type-select" @onchange="e => SetPointType(_draft.End, e.Value)">
+                                <option value="0" selected="@(SelectedPointBits(_draft.End) == 0)">未指定(不限)</option>
+                                @foreach (var (bit, name) in MapStationTypeBits.All)
+                                {
+                                    <option value="@bit" selected="@(SelectedPointBits(_draft.End) == bit)">@name</option>
+                                }
+                            </select>
+                        </div>
+                        <div class="tpl-module-sub">终点之后（任务 FINISHED 后执行）</div>
+                        <div class="tpl-module-grid">
+                            @if (ModuleRegistry.All.Count == 0)
+                            {
+                                <div class="hint-text" style="margin-top:0;">暂无模块。请在「信号交互」页创建模块后再回来关联。</div>
+                            }
+                            else
+                            {
+                                @foreach (var m in ModuleRegistry.All)
+                                {
+                                    var selected = _draft.End.AfterModules.Contains(m.Id);
+                                    <div class="tpl-module-chip @(selected ? "on" : "")" @onclick="() => ToggleEndModule(m.Id)">
+                                        <span class="tpl-module-check">@(selected ? "✓" : "")</span>
+                                        <span class="tpl-module-name">@m.Name</span>
+                                    </div>
+                                }
+                            }
+                        </div>
+                    </div>
+                </div>
+
+                @if (!string.IsNullOrEmpty(_templateError))
+                {
+                    <div class="tpl-error">@_templateError</div>
+                }
+            </div>
+
+            <div class="tpl-modal-footer">
+                <button class="btn btn-outline" @onclick="CloseTemplateModal">取消</button>
+                <button class="btn btn-primary" @onclick="ConfirmAddTemplate">✅ @(_editingTemplate == null ? "确认添加" : "保存修改")</button>
+            </div>
+        </div>
+    </div>
+}
+
+@if (_confirmVisible)
+{
+    <div class="template-modal-overlay" @onclick="CancelConfirm">
+        <div class="tpl-modal" @onclick:stopPropagation style="max-width:420px;">
+            <div class="tpl-modal-header">
+                <div class="tpl-modal-title">@_confirmTitle</div>
+                <button class="tpl-modal-close" @onclick="CancelConfirm" title="关闭">✕</button>
+            </div>
+            <div class="tpl-modal-body">
+                <div class="hint-text" style="white-space:pre-wrap;color:#e2e8f0;">@_confirmMessage</div>
+            </div>
+            <div class="tpl-modal-footer" style="display:flex;gap:10px;justify-content:flex-end;margin-top:12px;">
+                <button class="btn btn-danger" @onclick="ConfirmAsync">确认</button>
+                <button class="btn btn-outline" @onclick="CancelConfirm">取消</button>
+            </div>
+        </div>
+    </div>
+}
+@if (_noticeVisible)
+{
+    <div class="template-modal-overlay" @onclick="CloseNotice">
+        <div class="tpl-modal" @onclick:stopPropagation style="max-width:420px;">
+            <div class="tpl-modal-header">
+                <div class="tpl-modal-title">⚠️ 下发任务失败</div>
+                <button class="tpl-modal-close" @onclick="CloseNotice" title="关闭">✕</button>
+            </div>
+            <div class="tpl-modal-body">
+                <div class="hint-text" style="white-space:pre-wrap;color:#e2e8f0;">@_noticeMessage</div>
+            </div>
+            <div class="tpl-modal-footer" style="display:flex;gap:10px;justify-content:flex-end;margin-top:12px;">
+                <button class="btn btn-primary" @onclick="CloseNotice">知道了</button>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    // ── 表单字段 ──
+    private string _warehouse = "Show";                        // 场景名称（以后端系统设置为准，这里仅作报文默认值）
+    private string _groupId = "";                          // 任务组 ID（自动生成）
+    private string _msgTime = "";                          // 下发时间（实时时钟，只读）
+    private System.Threading.Timer? _clockTimer;            // 下发时间实时刷新定时器
+    private int _priority;                                  // 优先级 0-1000
+    private string _selectedType = "";                     // 当前选中的任务类型
+    private List<TaskCardData> _taskCards = new();         // 任务卡片列表
+    private bool _sending;                                  // 发送中标志
+    private string _responseText = "等待发送任务...";       // 响应面板文字
+    private string _respClass = "";                        // 响应面板样式
+    private string _validationError = "";                  // 站点校验错误
+    private int _cardCounter;                              // 任务卡片计数器（生成唯一 ID 用）
+
+    // ── 地图站点 / 容器选择器 ──
+    private List<MapStationLite> _mapStations = [];        // 地图站点缓存（grcs_map_stations）
+    private int _pickerCard = -1;                          // 展开站点选择器的卡片索引（-1=无）
+    private int _pickerStation = -1;                       // 展开站点选择器的站点索引（-1=无）
+    private int _pickerContainer = -1;                     // 展开容器选择器的卡片索引（-1=无）
+    private List<string> _containerCodes = [];             // 所有容器编号（从 GRCS 加载）
+    private List<CargoInventoryItem> _invRecords = [];     // 容器库存记录（下拉候选用）
+
+    // ── 卡片折叠状态（持久化 grcs_td_collapsed，keys: container / vehicle）──
+    private Dictionary<string, bool> _collapsed = new();
+
+    // ── 二次确认弹窗（删除任务模板）──
+    private bool _confirmVisible;
+    private string _confirmTitle = "";
+    private string _confirmMessage = "";
+    private Func<Task>? _confirmAction;
+    private void ShowConfirm(string title, string message, Func<Task> action) { _confirmTitle = title; _confirmMessage = message; _confirmAction = action; _confirmVisible = true; }
+    private void CancelConfirm() { _confirmVisible = false; _confirmAction = null; }
+    private async Task ConfirmAsync() { var act = _confirmAction; _confirmVisible = false; _confirmAction = null; if (act != null) await act(); }
+
+    private bool _noticeVisible;
+    private string _noticeMessage = "";
+    private void ShowNotice(string message) { _noticeMessage = message; _noticeVisible = true; }
+    private void CloseNotice() { _noticeVisible = false; }
+
+    // ── 添加/编辑模板弹窗 ──
+    private const string TemplateStorageKey = "grcs_td_templates";
+    private bool _showTemplateModal;
+    private TaskTemplateDto? _editingTemplate;             // 非空=编辑已有模板；null=新建
+    private TemplateDraft _draft = new();
+    private string _templateError = "";
+
+    // ════════════ 卡片折叠 ════════════
+    private bool IsCollapsed(string key) => _collapsed.TryGetValue(key, out var c) && c;
+    private async void ToggleContainer() => await ToggleCollapsed("container");
+    private async void ToggleVehicle() => await ToggleCollapsed("vehicle");
+    private async Task ToggleCollapsed(string key)
+    {
+        _collapsed[key] = !IsCollapsed(key);
+        try { await LocalStore.SetAsync(Js, "grcs_td_collapsed", System.Text.Json.JsonSerializer.Serialize(_collapsed)); } catch { }
+    }
+
+    // ════════════ 站点编码解析 ════════════
+    /// <summary>
+    /// 根据地图站点类型解析下发编码：界面显示地图原始编码 mark，
+    /// 但 GRCS 任务协议要求按站点类型带后缀 —— 储位 → mark_1、
+    /// 人工分拣台/接驳位 → mark_0、其他类型原样；ToWcsCode 完成该映射。
+    /// </summary>
+    private (string? TypeName, string? SendCode) ResolveStationCode(string mark)
+    {
+        if (string.IsNullOrWhiteSpace(mark)) return (null, null);
+        var st = _mapStations.FirstOrDefault(s => s.Mark == mark);
+        if (st == null) return (null, null);
+
+        var sendCode = st.ToWcsCode();
+        var typeName = sendCode switch
+        {
+            _ when sendCode.EndsWith("_1") => "储位",
+            _ when sendCode.EndsWith("_0") => "人工分拣台/接驳位",
+            _ => string.Join("+", MapStationTypeBits.DecodeNames(st.StationType))
+        };
+        return (string.IsNullOrEmpty(typeName) ? "未知类型" : typeName, sendCode);
+    }
+
+    /// <summary>站点编辑栏下方的提示文字：实时显示该站点实际下发的编码，站点不在地图中时警告将原样下发。</summary>
+    private string StationCodeHint(string mark)
+    {
+        if (string.IsNullOrWhiteSpace(mark)) return "";
+        var (typeName, sendCode) = ResolveStationCode(mark);
+        if (typeName == null)
+            return "⚠ 地图中未找到该站点，将原样下发";
+        return sendCode == mark
+            ? $"· {typeName}，原样下发"
+            : $"· {typeName} → 实际下发 {sendCode}";
+    }
+
+    /// <summary>按模板该点的站点类型位约束过滤下拉候选：配置了类型就只匹配该类型。</summary>
+    private bool MatchStationType(MapStationLite s, int bits)
+    {
+        if (bits == 0) return true;
+        return (s.StationType & bits) != 0;
+    }
+
+    /// <summary>取当前选中模板在指定点（0=起点 / 1=终点）配置的站点类型位，供站点选择器过滤。</summary>
+    private int PointBits(int sj)
+        => sj == 0
+            ? (SelectedTemplate?.Start.StationTypeBits ?? 0)
+            : (SelectedTemplate?.End.StationTypeBits ?? 0);
+
+    /// <summary>将界面填写的站点编码转换为实际下发的编码。</summary>
+    private string ToSendCode(string mark)
+    {
+        var (_, sendCode) = ResolveStationCode(mark);
+        return sendCode ?? mark;
+    }
+
+    // ════════════ 站点选择器 ════════════
+    private List<MapStationLite> StationPickerResults()
+    {
+        var card = _pickerCard >= 0 && _pickerCard < _taskCards.Count ? _taskCards[_pickerCard] : null;
+        var keyword = _pickerStation >= 0 && card != null && _pickerStation < card.StationCodes.Count ? card.StationCodes[_pickerStation] : "";
+        if (string.IsNullOrWhiteSpace(keyword)) return [];
+        var bits = PointBits(_pickerStation);
+        return _mapStations
+            .Where(s => s.StaEnable)
+            .Where(s => s.Mark.Contains(keyword, StringComparison.OrdinalIgnoreCase)
+                || MapStationTypeBits.DecodeNames(s.StationType).Any(n => n.Contains(keyword, StringComparison.OrdinalIgnoreCase)))
+            .Where(s => MatchStationType(s, bits))
+            .ToList();
+    }
+
+    private void OnStationInput(int cardIdx, int stationIdx, ChangeEventArgs e)
+    {
+        _taskCards[cardIdx].StationCodes[stationIdx] = e.Value?.ToString() ?? "";
+        if (_pickerCard != cardIdx || _pickerStation != stationIdx)
+        {
+            _pickerCard = cardIdx;
+            _pickerStation = stationIdx;
+        }
+    }
+    private void OpenStationPicker(int idx, int sj) { _pickerCard = idx; _pickerStation = sj; }
+    private void ToggleStationPicker(int idx, int sj)
+    {
+        if (_pickerCard == idx && _pickerStation == sj) { _pickerCard = -1; _pickerStation = -1; }
+        else { _pickerCard = idx; _pickerStation = sj; }
+    }
+    private void CloseStationPicker() { _pickerCard = -1; _pickerStation = -1; }
+    private async void PickStation(int idx, int sj, string mark)
+    {
+        _taskCards[idx].StationCodes[sj] = mark;
+        CloseStationPicker();
+        await SaveFormState();
+    }
+
+    // ════════════ 容器选择器 ════════════
+    private List<string> ContainerPickerResults(string keyword)
+    {
+        if (string.IsNullOrWhiteSpace(keyword)) return [];
+        return _containerCodes.Where(c => c.Contains(keyword, StringComparison.OrdinalIgnoreCase)).ToList();
+    }
+    private void OnContainerInput(int idx, ChangeEventArgs e)
+    {
+        _taskCards[idx].ContainerCode = e.Value?.ToString() ?? "";
+        if (_pickerContainer != idx) _pickerContainer = idx;
+    }
+    private void OpenContainerPicker(int idx) => _pickerContainer = idx;
+    private void ToggleContainerPicker(int idx) => _pickerContainer = _pickerContainer == idx ? -1 : idx;
+    private void CloseContainerPicker() => _pickerContainer = -1;
+    private async void PickContainer(int idx, string code)
+    {
+        _taskCards[idx].ContainerCode = code;
+        CloseContainerPicker();
+        await SaveFormState();
+    }
+
+    // ════════════ 模板注册表 / 弹窗 ════════════
+    private TaskTemplateDto? SelectedTemplate => TaskTypeRegistry.All.FirstOrDefault(t => t.Value == _selectedType);
+
+    /// <summary>分类图标（任务类型卡片头部）。</summary>
+    private static string CategoryIcon(string category) => category.Trim().ToLowerInvariant() switch
+    {
+        "in" => "📥",
+        "out" => "📤",
+        "sort" => "🔀",
+        "move" => "🔄",
+        _ => "📦"
+    };
+
+    /// <summary>分类中文名（任务类型卡片元信息）。</summary>
+    private static string CategoryName(string category) => category.Trim().ToLowerInvariant() switch
+    {
+        "in" => "入库",
+        "out" => "出库",
+        "sort" => "分拣",
+        "move" => "移库",
+        _ => "其他"
+    };
+
+    /// <summary>下发表单第 sj 行站点输入框的标签：取自模板起点/终点 Label，未配置时回退默认。</summary>
+    private string PointLabel(int sj)
+    {
+        var p = sj switch { 0 => SelectedTemplate?.Start, _ => SelectedTemplate?.End };
+        return string.IsNullOrWhiteSpace(p?.Label) ? (sj == 0 ? "起点" : "终点") : p.Label;
+    }
+
+    private void OpenTemplateModal()
+    {
+        _editingTemplate = null;
+        _draft = new TemplateDraft();
+        _templateError = "";
+        _showTemplateModal = true;
+    }
+
+    /// <summary>打开编辑已有模板的弹窗：把模板数据回填到草稿（深拷贝，取消不落库）。</summary>
+    private void EditTemplate(string value)
+    {
+        var tt = TaskTypeRegistry.All.FirstOrDefault(t => t.Value == value);
+        if (tt == null) return;
+        _editingTemplate = tt;
+        _draft = new TemplateDraft
+        {
+            Value = tt.Value,
+            Label = tt.Label,
+            Description = tt.Description,
+            Category = tt.Category,
+            NeedsContainer = tt.NeedsContainer,
+            ContainerPrefix = tt.ContainerPrefix,
+            RandomContainer = tt.RandomContainer,
+            Start = ClonePoint(tt.Start),
+            End = ClonePoint(tt.End),
+        };
+        _templateError = "";
+        _showTemplateModal = true;
+    }
+
+    /// <summary>深拷贝一个点（取消编辑不污染原模板）。</summary>
+    private static TaskPointDto ClonePoint(TaskPointDto? src) => new()
+    {
+        Label = src?.Label ?? "",
+        BeforeModules = src?.BeforeModules?.ToList() ?? [],
+        AfterModules = src?.AfterModules?.ToList() ?? [],
+        StationTypeBits = src?.StationTypeBits ?? 0,
+    };
+
+    private void CloseTemplateModal()
+    {
+        _showTemplateModal = false;
+        _editingTemplate = null;
+    }
+
+    /// <summary>在模板草稿的起点「之前」中勾选/取消关联模块。</summary>
+    private void ToggleStartBeforeModule(string id)
+    {
+        var ps = _draft.Start.BeforeModules;
+        if (ps.Contains(id)) ps.Remove(id);
+        else ps.Add(id);
+    }
+
+    /// <summary>在模板草稿的起点「之后」中勾选/取消关联模块（下发 success 后执行）。</summary>
+    private void ToggleStartAfterModule(string id)
+    {
+        var ps = _draft.Start.AfterModules;
+        if (ps.Contains(id)) ps.Remove(id);
+        else ps.Add(id);
+    }
+
+    /// <summary>在模板草稿的终点「之后」中勾选/取消关联模块（任务 FINISHED 后执行）。</summary>
+    private void ToggleEndModule(string id)
+    {
+        var ps = _draft.End.AfterModules;
+        if (ps.Contains(id)) ps.Remove(id);
+        else ps.Add(id);
+    }
+
+    /// <summary>切换某点站点类型位约束中的一个 bit。</summary>
+    private void ToggleStationBit(TaskPointDto point, int bit, object? checkedValue)
+    {
+        var on = checkedValue is bool b && b;
+        if (on) point.StationTypeBits |= bit;
+        else point.StationTypeBits &= ~bit;
+    }
+
+    /// <summary>站点类型下拉框：把选择写回该点的 StationTypeBits（单选，单一类型位）。</summary>
+    private void SetPointType(TaskPointDto point, object? value)
+    {
+        var v = 0;
+        if (value != null) int.TryParse(value.ToString(), out v);
+        point.StationTypeBits = v;
+    }
+
+    /// <summary>站点类型下拉框的回显值：仅当恰好等于某个单类型位时回显该位，否则视为「未指定」。</summary>
+    private static int SelectedPointBits(TaskPointDto point)
+    {
+        var b = point.StationTypeBits;
+        foreach (var (bit, _) in MapStationTypeBits.All)
+            if (b == bit) return b;
+        return 0;
+    }
+
+    /// <summary>站点类型位选项（与后端 MapStationTypeBits 对齐）。</summary>
+    private static readonly (int Bit, string Name)[] StationTypeOptions =
+    {
+        (1, "普通路"), (2, "高速路"), (4, "储位"), (8, "接驳位"), (16, "停车"),
+        (32, "充电"), (64, "分拣台"), (128, "人工台"), (256, "电梯"), (512, "其他"),
+    };
+
+    /// <summary>校验弹窗输入，构造「起点 + 起点之后 + 终点」模板：新建则加入注册表，编辑则更新原模板，成功后持久化并关闭弹窗。</summary>
+    private async Task ConfirmAddTemplate()
+    {
+        _templateError = "";
+        var value = _draft.Value.Trim();
+        var label = _draft.Label.Trim();
+        if (string.IsNullOrEmpty(value)) { _templateError = "❌ 协议值 Value 不能为空"; return; }
+        if (string.IsNullOrEmpty(label)) { _templateError = "❌ 显示名称 Label 不能为空"; return; }
+
+        var tpl = new TaskTemplateDto
+        {
+            Value = value,
+            Label = label,
+            Description = _draft.Description.Trim(),
+            Category = string.IsNullOrWhiteSpace(_draft.Category) ? "other" : _draft.Category.Trim(),
+            Start = new TaskPointDto { Label = "起点", BeforeModules = _draft.Start.BeforeModules, AfterModules = _draft.Start.AfterModules, StationTypeBits = _draft.Start.StationTypeBits },
+            End = new TaskPointDto { Label = "终点", AfterModules = _draft.End.AfterModules, StationTypeBits = _draft.End.StationTypeBits },
+            NeedsContainer = _draft.NeedsContainer,
+            ContainerPrefix = _draft.ContainerPrefix.Trim(),
+            RandomContainer = _draft.RandomContainer,
+        };
+
+        // ── 编辑模式：原地替换原模板（保留原位置，排序不动；Value 变更时校验新键冲突）──
+        if (_editingTemplate != null)
+        {
+            if (value != _editingTemplate.Value && TaskTypeRegistry.All.Any(x => string.Equals(x.Value, value, StringComparison.OrdinalIgnoreCase)))
+            {
+                _templateError = $"❌ 协议值 {value} 已存在，请换一个";
+                return;
+            }
+            if (!TaskTypeRegistry.Replace(_editingTemplate.Value, tpl))
+            {
+                _templateError = "❌ 原模板不存在，请刷新页面后重试";
+                return;
+            }
+        }
+        else if (!TaskTypeRegistry.Add(tpl))
+        {
+            _templateError = $"❌ 协议值 {value} 已存在，请换一个";
+            return;
+        }
+
+        await SaveCustomTemplates();
+        _showTemplateModal = false;
+        _editingTemplate = null;
+        StateHasChanged();
+    }
+
+    /// <summary>删除自定义模板并持久化；若删除的是当前选中类型则清空选择。</summary>
+    private async Task DeleteTemplate(string value)
+    {
+        if (TaskTypeRegistry.Remove(value))
+        {
+            if (_selectedType == value) _selectedType = "";
+            try { await Api.DeleteTaskTemplateAsync(value); } catch { }
+            await SaveCustomTemplates();
+            StateHasChanged();
+        }
+    }
+
+    private void RequestDeleteTemplate(string value, string label) => ShowConfirm("确认删除", $"是否确认删除任务模板「{label} ({value})」？", () => DeleteTemplate(value));
+
+    /// <summary>把自定义模板列表持久化：后端 SQLite（跨浏览器共享）+ localStorage（离线兜底）。</summary>
+    private async Task SaveCustomTemplates()
+    {
+        try
+        {
+            var list = TaskTypeRegistry.Customs.ToList();
+            await Api.SaveTaskTemplatesAsync(list);
+            await LocalStore.SetAsync(Js, TemplateStorageKey,
+                System.Text.Json.JsonSerializer.Serialize(list));
+        }
+        catch { }
+    }
+
+    /// <summary>载入自定义模板：优先后端 task_templates 表（跨浏览器共享），后端不可用时回退 localStorage。</summary>
+    private async Task LoadCustomTemplates()
+    {
+        try
+        {
+            var remote = await Api.GetTaskTemplatesAsync();
+            if (remote is { Count: > 0 })
+            {
+                TaskTypeRegistry.SetCustoms(remote);
+                return;
+            }
+        }
+        catch { /* 后端不可用，回退 localStorage */ }
+
+        try
+        {
+            var json = LocalStore[TemplateStorageKey];
+            if (string.IsNullOrEmpty(json) || json == "null") return;
+            var customs = System.Text.Json.JsonSerializer.Deserialize<List<TaskTemplateDto>>(json);
+            if (customs != null) TaskTypeRegistry.SetCustoms(customs);
+        }
+        catch { }
+    }
+
+    /// <summary>载入功能模块：优先后端 feature_modules 表，后端不可用时回退 localStorage。</summary>
+    private async Task LoadModules()
+    {
+        try
+        {
+            var remote = await Api.GetFeatureModulesAsync();
+            if (remote is { Count: > 0 })
+            {
+                ModuleRegistry.SetCustoms(remote);
+                return;
+            }
+        }
+        catch { /* 后端不可用，回退 localStorage */ }
+
+        try
+        {
+            var json = LocalStore["grcs_si_modules"];
+            if (string.IsNullOrEmpty(json) || json == "null") return;
+            var modules = System.Text.Json.JsonSerializer.Deserialize<List<FeatureModuleDto>>(json);
+            if (modules != null) ModuleRegistry.SetCustoms(modules);
+        }
+        catch { }
+    }
+
+    // ════════════ 数据模型 ════════════
+    /// <summary>单个任务卡片的数据模型：容器 + 起点 + 终点（两个站点）。</summary>
+    private class TaskCardData
+    {
+        public string TaskId { get; set; } = "";
+        public string ContainerCode { get; set; } = "";
+        public List<string> StationCodes { get; set; } = ["", ""];
+    }
+
+    /// <summary>表单快照：序列化到 localStorage 键 grcs_td_state，每次编辑失焦即写回，刷新页面后整表恢复。</summary>
+    private class FormState
+    {
+        public string Warehouse { get; set; } = "";
+        public string GroupId { get; set; } = "";
+        public string MsgTime { get; set; } = "";
+        public int Priority { get; set; }
+        public string SelectedType { get; set; } = "";
+        public List<TaskCardData> TaskCards { get; set; } = [];
+        public int CardCounter { get; set; }
+    }
+
+    /// <summary>添加模板弹窗的草稿数据（点直接用 TaskPointDto 承载模块与站点类型）。</summary>
+    private class TemplateDraft
+    {
+        public string Value { get; set; } = "";
+        public string Label { get; set; } = "";
+        public string Description { get; set; } = "";
+        public string Category { get; set; } = "other";
+        public TaskPointDto Start { get; set; } = new();
+        public TaskPointDto End { get; set; } = new();
+        public bool NeedsContainer { get; set; } = true;
+        public string ContainerPrefix { get; set; } = "";
+        public bool RandomContainer { get; set; }
+    }
+
+    // ════════════ 初始化 / 持久化 ════════════
+    /// <summary>
+    /// 初始化：从 localStorage 依次恢复共享配置（场景名）、表单快照（grcs_td_state）、
+    /// 地图站点缓存、折叠状态，并载入用户自定义模板；未恢复成功则生成默认组 ID/时间与一张空白卡片。
+    /// </summary>
+    protected override async Task OnInitializedAsync()
+    {
+        var restored = false;
+
+        await LoadCustomTemplates();
+        await LoadModules();
+
+        try
+        {
+            string? V(string k) => LocalStore[k] is { } v && v != "null" ? v : null;
+
+            if (V("grcs_warehouse") is string wh) _warehouse = wh;
+
+            if (V("grcs_td_state") is string stateJson)
+            {
+                var state = System.Text.Json.JsonSerializer.Deserialize<FormState>(stateJson);
+                if (state != null)
+                {
+                    if (!string.IsNullOrEmpty(state.Warehouse)) _warehouse = state.Warehouse;
+                    _groupId = !string.IsNullOrEmpty(state.GroupId) ? state.GroupId : "GRP_" + DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString("x").ToUpper();
+                    _priority = state.Priority;
+                    _selectedType = state.SelectedType;
+                    _taskCards = state.TaskCards;
+                    _cardCounter = state.CardCounter;
+                    restored = true;
+                }
+            }
+
+            if (V("grcs_map_stations") is string mapJ)
+            {
+                var cache = System.Text.Json.JsonSerializer.Deserialize<MapStationCache>(mapJ);
+                _mapStations = cache?.Stations ?? [];
+            }
+
+            if (V("grcs_td_collapsed") is string cjson)
+            {
+                var c = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, bool>>(cjson);
+                if (c != null) _collapsed = c;
+            }
+        }
+        catch { }
+
+        if (!restored)
+        {
+            _groupId = "GRP_" + DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString("x").ToUpper();
+            AddTaskCard();
+        }
+        _msgTime = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
+        StartClock();
+        await LoadContainerCodes();
+    }
+
+    /// <summary>启动下发时间实时时钟：每秒刷新 _msgTime 并触发重渲染（只读展示，不再由用户编辑）。</summary>
+    private void StartClock()
+    {
+        _clockTimer ??= new System.Threading.Timer(_ =>
+        {
+            _msgTime = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
+            InvokeAsync(StateHasChanged);
+        }, null, TimeSpan.Zero, TimeSpan.FromSeconds(1));
+    }
+
+    /// <summary>释放实时时钟定时器。</summary>
+    public void Dispose()
+    {
+        _clockTimer?.Dispose();
+        _clockTimer = null;
+    }
+
+    /// <summary>加载容器库存（容器编号下拉候选用）：调用 WcsService.QueryCargoInventoryAsync 查询 GRCS 库存接口。</summary>
+    private async Task LoadContainerCodes()
+    {
+        try
+        {
+            var (ok, _, json) = await WcsService.QueryCargoInventoryAsync("");
+            if (ok)
+            {
+                var result = System.Text.Json.JsonSerializer.Deserialize<CargoQueryResult>(json,
+                    new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+                if (result?.Data?.Records != null)
+                {
+                    _invRecords = result.Data.Records
+                        .Where(c => !string.IsNullOrEmpty(c.Code) && !string.IsNullOrEmpty(c.CurrentStationCode))
+                        .ToList();
+                    _containerCodes = _invRecords.Select(c => c.Code!).Distinct().OrderBy(c => c).ToList();
+                }
+            }
+        }
+        catch { }
+    }
+
+    /// <summary>把当前表单整体序列化到 localStorage 键 grcs_td_state（防刷新丢表单）。</summary>
+    private async Task SaveFormState()
+    {
+        try
+        {
+            var state = new FormState
+            {
+                Warehouse = _warehouse,
+                GroupId = _groupId,
+                MsgTime = _msgTime,
+                Priority = _priority,
+                SelectedType = _selectedType,
+                TaskCards = _taskCards,
+                CardCounter = _cardCounter
+            };
+            await LocalStore.SetAsync(Js, "grcs_td_state",
+                System.Text.Json.JsonSerializer.Serialize(state));
+        }
+        catch { }
+    }
+
+    /// <summary>选中一个任务类型：把各卡片站点行数固定为 2（起点/终点）并持久化；
+    /// 模板要求随机生成容器号时，为空白卡片补发随机容器号。</summary>
+    private async void SelectType(TaskTemplateDto tt)
+    {
+        _selectedType = tt.Value;
+        foreach (var card in _taskCards)
+        {
+            while (card.StationCodes.Count < 2) card.StationCodes.Add("");
+            if (card.StationCodes.Count > 2) card.StationCodes.RemoveRange(2, card.StationCodes.Count - 2);
+            if (!tt.NeedsContainer)
+                card.ContainerCode = "";
+            else if (tt.RandomContainer)
+                card.ContainerCode = GenerateContainerCode(tt.ContainerPrefix);
+        }
+        await SaveFormState();
+    }
+
+    /// <summary>在列表末尾添加一张空白任务卡片（容器 + 起点 + 终点）。
+    /// 模板需要且随机生成容器时，容器号按前缀自动生成；否则由用户填写。</summary>
+    private async void AddTaskCard()
+    {
+        _cardCounter++;
+        var card = new TaskCardData
+        {
+            TaskId = "SimManual_" + DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString("x").ToUpper() + "_" + _cardCounter,
+            StationCodes = ["", ""]
+        };
+        var tt = SelectedTemplate;
+        if (tt != null && tt.NeedsContainer && tt.RandomContainer)
+            card.ContainerCode = GenerateContainerCode(tt.ContainerPrefix);
+        _taskCards.Add(card);
+        await SaveFormState();
+    }
+
+    /// <summary>按前缀生成容器号（前缀留空默认 Container）。</summary>
+    private string GenerateContainerCode(string prefix)
+    {
+        var p = string.IsNullOrWhiteSpace(prefix) ? "Container" : prefix.Trim();
+        return p + DateTime.Now.ToString("HHmmssfff") + new Random().Next(10, 99);
+    }
+
+    /// <summary>删除指定位置的任务卡片。</summary>
+    private async void RemoveTaskCard(int i) { _taskCards.RemoveAt(i); await SaveFormState(); }
+
+    /// <summary>
+    /// 下发主流程：前端校验 → 站点编码按地图类型转换 → 站点类型校验 →
+    /// 组装 WcsTaskGroup 报文 POST 到 GRCS 任务组接口 →
+    /// 结果写入任务台账（TaskLedgerService，唯一数据源）→ 成功后刷新所有任务号。
+    /// </summary>
+    private async Task SendTasks()
+    {
+        // ── 前端校验 ──
+        if (string.IsNullOrEmpty(_warehouse)) { ShowResp("❌ 请填写场景名称", "error"); return; }
+        if (string.IsNullOrEmpty(_selectedType)) { ShowResp("❌ 请选择任务类型", "error"); return; }
+        if (_taskCards.Count == 0) { ShowResp("❌ 请添加至少一个任务", "error"); return; }
+
+        // ── 从卡片数据构建 WcsTaskItem 列表（站点编码按地图类型转换后下发）──
+        var tasks = _taskCards.Select(c => new WcsTaskItem
+        {
+            TaskId = c.TaskId,
+            TaskType = _selectedType,
+            ContainerCode = c.ContainerCode,
+            StationCode = c.StationCodes.Where(s => !string.IsNullOrWhiteSpace(s)).Select(ToSendCode).ToList(),
+            AreaCode = []
+        }).ToList();
+
+        // ── 站点类型校验 ──
+        _validationError = "";
+        for (int i = 0; i < _taskCards.Count; i++)
+        {
+            var card = _taskCards[i];
+            for (int j = 0; j < card.StationCodes.Count; j++)
+            {
+                var sc = card.StationCodes[j].Trim();
+                if (string.IsNullOrWhiteSpace(sc)) continue;
+                var bits = PointBits(j);
+                var station = _mapStations.FirstOrDefault(s => s.Mark == sc);
+                if (station == null) continue; // 不在地图中，无法校验，放行
+                if (bits != 0 && !MatchStationType(station, bits))
+                {
+                    _validationError = $"❌ 任务 {i+1}「{card.TaskId}」{PointLabel(j)}「{sc}」类型不匹配：期望 {string.Join("+", MapStationTypeBits.DecodeNames(bits))}，实际 {string.Join("+", MapStationTypeBits.DecodeNames(station.StationType))}";
+                    StateHasChanged();
+                    return;
+                }
+            }
+        }
+
+        foreach (var t in tasks)
+        {
+            if (string.IsNullOrWhiteSpace(t.TaskId)) { ShowResp("❌ 存在任务缺少 TaskId", "error"); return; }
+            if (t.StationCode.Count == 0) { ShowResp("❌ 存在任务缺少站点编码", "error"); return; }
+            var tpl = TaskTypeRegistry.All.FirstOrDefault(x => x.Value == t.TaskType);
+            if (tpl is { } && tpl.NeedsContainer && string.IsNullOrWhiteSpace(t.ContainerCode))
+            {
+                ShowResp($"❌ 任务「{t.TaskId}」缺少容器号（模板「{tpl.Label}」需要容器）", "error"); return;
+            }
+        }
+
+        // ── 构建请求体（三类模块统一在后端 ModuleRunService 执行，前端不再执行）──
+        var payload = new WcsTaskGroup
+        {
+            GroupId = _groupId,
+            MsgTime = DateTime.TryParse(_msgTime, out var dt) ? dt.ToString("O") : DateTime.Now.ToString("O"),
+            PriorityCode = _priority,
+            Warehouse = _warehouse,
+            Tasks = tasks
+        };
+
+        // ── 发送：经后端统一执行器（ModuleRunService 跑起点/起点之后模块，FinishedModuleWatcher 跑终点模块）──
+        _sending = true;
+        StateHasChanged();
+
+        var sendResult = await Api.PostAsync<WcsTaskGroup, GrcsProxyResult>("/api/wcs/task/send", payload);
+        var ok = sendResult?.Ok ?? false;
+        var code = sendResult?.Code ?? 0;
+        var json = sendResult?.Json ?? "";
+        Console.WriteLine($"[TaskDispatch] task/send 结果: ok={ok} code={code} resp={json}");
+        var resp = (ok ? "✅" : "❌") + $" HTTP {code}\n\n{json}";
+        // 模块明细（起点/起点之后/终点）统一在后端执行，结果见「信号交互 → 模块执行记录」面板。
+        ShowResp(resp, ok ? "success" : "error");
+        if (!ok) ShowNotice(json ?? "下发任务失败，请查看响应面板");
+
+        // ── 保存到台账（唯一数据源，取代下发历史）。
+        //    台账同时供两个下游消费：下发历史页直接展示；
+        //    信号交互页据此按模板关联的【手动】货物移除模块生成 container_remove 待确认卡片 ──
+        try
+        {
+            var ledgerEntries = tasks.Select(t => new TaskLedgerEntry
+            {
+                TaskId = t.TaskId,
+                TaskType = t.TaskType,
+                ContainerCode = t.ContainerCode,
+                CargoCode = "",
+                StationCode = t.StationCode,
+                Warehouse = _warehouse,
+                Time = DateTime.Now.ToString("O"),
+                Ok = ok,
+                StatusCode = code
+            }).ToList();
+            await Ledger.AppendAsync(ledgerEntries);
+        }
+        catch { /* localStorage 不可用时静默忽略 */ }
+
+        // 下发后刷新所有任务号
+        if (ok)
+        {
+            _validationError = "";
+            foreach (var card in _taskCards)
+                card.TaskId = "SimManual_" + DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString("x").ToUpper() + "_" + (++_cardCounter);
+        }
+        _sending = false;
+        await SaveFormState();
+    }
+
+    /// <summary>更新响应面板内容。</summary>
+    private void ShowResp(string msg, string cls)
+    {
+        _responseText = msg;
+        _respClass = cls;
+    }
+
+    /// <summary>解析 GRCS 响应 body 的业务成功标记（success=true）。HTTP 200 只代表送达，业务成功以此为准。</summary>
+    private static bool TryGetBodySuccess(string json)
+    {
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(json);
+            return doc.RootElement.TryGetProperty("success", out var s) && s.ValueKind == System.Text.Json.JsonValueKind.True;
+        }
+        catch { return false; }
+    }
+
+    // ── 移动任务下发（MOVE_ONLY：原 VehicleDispatch 页并入本卡）──
+    private string _orderId = "MV_" + DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString("x").ToUpper();  // 车辆任务 ID
+    private string _orderName = "";                        // 任务名称
+    private string _vehicleName = "";                      // 指定车辆（留空=自动分配）
+    private int _vehiclePriority = 50;                     // 车辆任务优先级
+    private List<string> _stations = [""];                 // 目标站点列表
+    private bool _vehicleSending;                          // 车辆任务发送中标志
+    private int _openVehiclePicker = -1;                   // 展开的站点选择器行（-1=无）
+    private string _vehicleRespText = "等待发送任务...";   // 移动任务响应面板文字
+    private string _vehicleRespClass = "";                 // 移动任务响应面板样式
+
+    /// <summary>车辆站点选择器候选项：启用站点 + 关键词过滤编码或类型名。</summary>
+    private List<MapStationLite> VehiclePickerResults(int idx)
+    {
+        var keyword = idx >= 0 && idx < _stations.Count ? _stations[idx] : "";
+        return _mapStations
+            .Where(s => s.StaEnable)
+            .Where(s => keyword == ""
+                || s.Mark.Contains(keyword, StringComparison.OrdinalIgnoreCase)
+                || MapStationTypeBits.DecodeNames(s.StationType).Any(n => n.Contains(keyword, StringComparison.OrdinalIgnoreCase)))
+            .ToList();
+    }
+
+    private void OnVehicleStationInput(int idx, ChangeEventArgs e)
+    {
+        _stations[idx] = e.Value?.ToString() ?? "";
+        if (_openVehiclePicker != idx) _openVehiclePicker = idx;
+    }
+    private void OpenVehiclePicker(int idx) => _openVehiclePicker = idx;
+    private void ToggleVehiclePicker(int idx) => _openVehiclePicker = _openVehiclePicker == idx ? -1 : idx;
+    private void CloseVehiclePicker() => _openVehiclePicker = -1;
+    private void PickVehicleStation(int idx, MapStationLite st) { _stations[idx] = st.Mark; _openVehiclePicker = -1; }
+    private void AddVehicleStation() => _stations.Add("");
+    private void RemoveVehicleStation(int i) => _stations.RemoveAt(i);
+
+    /// <summary>更新移动任务响应面板内容。</summary>
+    private void ShowVehicleResp(string msg, string cls)
+    {
+        _vehicleRespText = msg;
+        _vehicleRespClass = cls;
+    }
+
+    /// <summary>下发纯移动任务：组装 VehicleOrderRequest POST 到 /api/RawOrder/ChangeFloor（经 WCS 后端代理）。</summary>
+    private async Task SendVehicleOrder()
+    {
+        if (string.IsNullOrEmpty(_orderId)) { ShowVehicleResp("❌ 任务 ID 为空", "error"); return; }
+
+        var stations = _stations.Where(s => !string.IsNullOrWhiteSpace(s)).ToList();
+        if (stations.Count == 0) { ShowVehicleResp("❌ 请至少填写一个站点", "error"); return; }
+
+        // 有地图数据时校验站点必须精确存在
+        if (_mapStations.Count > 0)
+        {
+            var missing = stations
+                .Where(m => !_mapStations.Any(s => s.Mark.Equals(m, StringComparison.OrdinalIgnoreCase)))
+                .ToList();
+            if (missing.Count > 0)
+            {
+                ShowVehicleResp($"❌ 站点不在地图数据中：{string.Join(", ", missing)}", "error"); return;
+            }
+        }
+
+        // ── 构建请求体（场景名由后端按系统设置覆盖）──
+        var payload = new VehicleOrderRequest
+        {
+            CreateTime = DateTime.Now,
+            SceneName = "",
+            OrderType = "MOVE_ONLY",
+            OrderId = _orderId,
+            OrderName = _orderName,
+            VehicleName = string.IsNullOrWhiteSpace(_vehicleName) ? null : _vehicleName.Trim(),
+            Priority = _vehiclePriority,
+            StationCodes = stations
+        };
+
+        // ── 发送 HTTP 请求（经 WCS 后端代理 → GRCS /api/RawOrder/ChangeFloor）──
+        _vehicleSending = true;
+        StateHasChanged();
+
+        var (ok, code, json) = await WcsService.SendVehicleOrderAsync("", payload);
+        ShowVehicleResp((ok ? "✅" : "❌") + $" HTTP {code}\n\n{json}", ok ? "success" : "error");
+
+        _vehicleSending = false;
+
+        // 下发成功后自动更新任务 ID，便于连续下发
+        if (ok) _orderId = "MV_" + DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString("x").ToUpper();
+    }
+
+    /// <summary>重置移动任务表单：重新生成任务 ID 并清空各字段。</summary>
+    private void ResetVehicleForm()
+    {
+        _orderId = "MV_" + DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString("x").ToUpper();
+        _orderName = "";
+        _vehicleName = "";
+        _vehiclePriority = 50;
+        _stations = [""];
+        ShowVehicleResp("等待发送任务...", "");
+    }
+
+    /// <summary>重置整个表单：重新生成组 ID/时间、清空类型与卡片并补一张空白卡片。</summary>
+    private async void ResetForm()
+    {
+        _groupId = "GRP_" + DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString("x").ToUpper();
+        _msgTime = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
+        _priority = 0;
+        _selectedType = "";
+        _taskCards.Clear();
+        _cardCounter = 0;
+        AddTaskCard();
+        _validationError = "";
+        ShowResp("等待发送任务...", "");
+        await SaveFormState();
+    }
+}

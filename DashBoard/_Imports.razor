@@ -1,0 +1,23 @@
+@* ── 全局 using：所有 .razor 文件自动引入以下命名空间 ──
+   框架基础（Blazor/MudBlazor）在前，本项目命名空间在后；
+   WcsSimulator 模块按 Models/Services/Pages/Extensions 平铺引入公用命名空间；
+   新增模块时在 Modules/ 下建目录并在此补充对应命名空间。 *@
+@using System.Net.Http
+@using System.Net.Http.Json
+@using Microsoft.AspNetCore.Components.Forms
+@using Microsoft.AspNetCore.Components.Routing
+@using Microsoft.AspNetCore.Components.Web
+@using Microsoft.AspNetCore.Components.Web.Virtualization
+@using Microsoft.AspNetCore.Components.WebAssembly.Http
+@using Microsoft.JSInterop
+@using MudBlazor
+@using GRCS.Dashboard
+@using GRCS.Dashboard.Layout
+@using GRCS.Dashboard.Modules.WcsSimulator
+@using GRCS.Dashboard.Modules.WcsSimulator.Pages
+@using GRCS.Dashboard.Modules.WcsSimulator.Services
+@using GRCS.Dashboard.Modules.WcsSimulator.Models
+@using GRCS.Dashboard.Modules.WcsSimulator.Extensions
+@using GrcsBackend.Contracts.Dtos
+@using GrcsBackend.Contracts.Entities
+@* @using GRCS.Dashboard.Modules.WcsSimulator.Components *@

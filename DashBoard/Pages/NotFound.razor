@@ -1,0 +1,10 @@
+﻿@* ════════════════════════════════════════════════
+   404 兜底页：App.razor 的 Router 在路由不匹配时渲染本页
+   ── 说明 ── 显式声明 @layout MainLayout 保持三列导航可见，
+   用户从失效链接可以直接点导航回到正常页面
+   ════════════════════════════════════════════════ *@
+@page "/not-found"
+@layout MainLayout
+
+<h3>Not Found</h3>
+<p>Sorry, the content you are looking for does not exist.</p>
