@@ -12,8 +12,24 @@ namespace GrcsBackend.Modules.Wcs.Proxy.Services;
 public class GrcsHttpClient
 {
     private readonly IHttpClientFactory _factory;
+    private readonly object _healthLock = new();
+    private bool? _grcsOnline;
+    private DateTime _healthCheckedAt = DateTime.MinValue;
 
     public GrcsHttpClient(IHttpClientFactory factory) => _factory = factory;
+
+    /// <summary>GRCS 在线状态缓存（PingAsync 每次探测写入，5 秒内有效；超期返回 null）。
+    /// 供自动发送类服务（信号自动放行等）熔断：离线时不发起真实请求。</summary>
+    public bool? GrcsOnline
+    {
+        get
+        {
+            lock (_healthLock)
+            {
+                return (DateTime.Now - _healthCheckedAt).TotalSeconds < 5 ? _grcsOnline : null;
+            }
+        }
+    }
 
     private HttpClient NewClient()
     {
@@ -121,7 +137,8 @@ public class GrcsHttpClient
         catch (Exception ex) { return (false, 0, JsonSerializer.Serialize(new { error = ex.Message })); }
     }
 
-    /// <summary>存活探测：GET 根路径，能拿到任意状态码即视为可达（2 秒短超时，供健康轮询）。</summary>
+    /// <summary>存活探测：GET 根路径，能拿到任意状态码即视为可达（2 秒短超时，供健康轮询）。
+    /// 探测结果写入 GrcsOnline 缓存（自动发送类服务熔断依据）。</summary>
     public async Task<bool> PingAsync(string baseUrl)
     {
         try
@@ -129,9 +146,14 @@ public class GrcsHttpClient
             var c = NewClient();
             c.Timeout = TimeSpan.FromSeconds(2);
             using var resp = await c.GetAsync(baseUrl.TrimEnd('/') + "/");
+            lock (_healthLock) { _grcsOnline = true; _healthCheckedAt = DateTime.Now; }
             return true;
         }
-        catch { return false; }
+        catch
+        {
+            lock (_healthLock) { _grcsOnline = false; _healthCheckedAt = DateTime.Now; }
+            return false;
+        }
     }
 
     /// <summary>通用转发：向任意 GRCS URL 发送原始 JSON 报文（功能模块/信号通用下发接口使用）。</summary>

@@ -36,6 +36,7 @@ public class SignalAutoHostedService : IHostedService
     private HashSet<string> _arrivalConfirmed = [];
     private HashSet<string> _removalConfirmed = [];
     private HashSet<string> _ssSent = [];
+    private bool _wasGrcsOffline;
     private static readonly System.Text.Json.JsonSerializerOptions Opts = new() { PropertyNameCaseInsensitive = true };
 
     public SignalAutoHostedService(GrcsHttpClient grcs, MapStoreService mapStore, WcsSettingsService settings,
@@ -87,6 +88,17 @@ public class SignalAutoHostedService : IHostedService
     private async Task TickAsync()
     {
         if (!ArrivalAuto && !RemovalAuto && !AutoSend) return;
+        // GRCS 离线熔断：暂停自动放行（不发起真实请求），状态翻转时记一条日志；恢复后自动继续
+        if (_grcs.GrcsOnline == false)
+        {
+            if (!_wasGrcsOffline)
+            {
+                _logs.Add("⛔ GRCS 不可达，自动放行已暂停（GRCS 恢复后自动继续）", "#f59e0b");
+                _wasGrcsOffline = true;
+            }
+            return;
+        }
+        _wasGrcsOffline = false;
         var mapStations = _mapStore.GetStations();
         if (mapStations.Count == 0) return;
         var finished = _stages.FinishedTaskIds;
