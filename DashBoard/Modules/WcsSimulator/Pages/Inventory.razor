@@ -1,5 +1,5 @@
 @page "/wcs-simulator/inventory"
-@inject IWcsService WcsService
+@inject WcsApiClient WcsService
 @inject IJSRuntime Js
 @inject LocalStoreService LocalStore
 @using System.Text.Json
@@ -243,7 +243,7 @@
             {
                 _cargoItems = [];
                 _cargoTotal = 0;
-                _cargoError = $"HTTP {code}";
+                _cargoError = FriendlyError(json);
                 return;
             }
             var result = JsonSerializer.Deserialize<CargoQueryResult>(json, JsonOpts);
@@ -284,7 +284,7 @@
             var (ok, code, json) = await WcsService.QueryCargoInventoryAsync(
                 "", _cargoCodeFilter, null, _cargoLockedFilter,
                 pageNo: next, pageSize: CargoPageSize);
-            if (!ok) { _cargoError = $"HTTP {code}"; return; }
+            if (!ok) { _cargoError = FriendlyError(json); return; }
             var result = JsonSerializer.Deserialize<CargoQueryResult>(json, JsonOpts);
             if (result is not { Code: 0, Data: not null })
             {
@@ -309,6 +309,23 @@
         _cargoTotal = 0;
         _cargoQueried = false;
         _cargoError = "";
+    }
+
+    /// <summary>代理失败时的友好错误文本（json 是 GRCS/后端错误信息，截断展示）。</summary>
+    private static string FriendlyError(string json)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            if (doc.RootElement.ValueKind == JsonValueKind.Object
+                && doc.RootElement.TryGetProperty("error", out var err) && err.ValueKind == JsonValueKind.String)
+            {
+                var msg = err.GetString();
+                return msg is { Length: > 0 } ? (msg.Length > 120 ? msg[..120] + "…" : msg) : "请求失败";
+            }
+        }
+        catch { }
+        return json.Length > 120 ? json[..120] + "…" : (json.Length > 0 ? json : "请求失败");
     }
 
     /// <summary>调用 /AutoContainerEnter 批量生成容器库存（场景名按系统设置）。</summary>

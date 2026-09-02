@@ -768,7 +768,7 @@
     {
         if (string.IsNullOrWhiteSpace(SceneName)) { ShowResp("❌ 未配置场景名称（地图信息页系统设置）", "error"); return; }
         var result = await WcsApi.RunNestAsync(_selectedVehicles.Count > 0 ? _selectedVehicles : null);
-        if (result == null) { ShowResp("❌ 归巢请求失败（后端未响应）", "error"); return; }
+        if (result == null) { StateHasChanged(); return; }   // 连接守卫已弹全局告警，不再重复提示
         if (!result.Success) { ShowResp("❌ " + (result.Reason ?? "归巢执行被拒绝"), "error"); return; }
         ShowResp("🚀 归巢执行中，结果见系统日志…", "success");
         StateHasChanged();
@@ -856,7 +856,6 @@
     private string _noticeMessage = "";
     private void ShowNotice(string message) { _noticeMessage = message; _noticeVisible = true; }
     private void CloseNotice() { _noticeVisible = false; }
-    private class StartResultDto { public bool Success { get; set; } public string Message { get; set; } = ""; }
     private void RequestDeleteTemplate() => ShowConfirm("确认删除", $"是否确认删除模板「{_editing.Name}」？", DeleteTemplate);
     private void RequestForceStop() => ShowConfirm("确认全部重置", "是否确认全部重置当前自动化？所有进行中的任务将不再等待完成并释放占用与站点锁，日志将被清空。", ForceStop);
 
@@ -961,9 +960,10 @@
         {
             if (_selectedIds.Count == 0) return;
             await WcsApi.PostAsync("/api/wcs/auto/interval", new { interval = _intervalSec });
-            var r = await WcsApi.PostAsync<object, StartResultDto>("/api/wcs/auto/start", new { tabId = _tabId, templateIds = _selectedIds.ToList() });
-            if (r == null || !r.Success)
-                ShowNotice(r?.Message ?? "启动轮询失败，请查看自动化日志");
+            var r = await WcsApi.StartTemplatesAsync(_tabId, _selectedIds.ToList());
+            if (r == null) return;   // 连接守卫已弹全局告警，不再重复提示
+            if (!r.Success)
+                ShowNotice(r.Message ?? "启动轮询失败，请查看自动化日志");
             else
                 await Hub.RefreshNowAsync();
         }
@@ -993,7 +993,7 @@
         _invLoading = true; StateHasChanged();
         try
         {
-            _invSummary = await WcsApi.GetAsync<InventorySummaryDto>("/api/wcs/auto/inventory-summary");
+            _invSummary = await WcsApi.GetInventorySummaryAsync();
             _invDialogOpen = _invSummary != null;
         }
         catch { _invSummary = null; }

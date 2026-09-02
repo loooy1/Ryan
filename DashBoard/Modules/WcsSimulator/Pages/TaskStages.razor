@@ -1,6 +1,5 @@
 @page "/wcs-simulator/task-stages"
 @page "/wcs-simulator/history"
-@inject IWcsService WcsService
 @inject WcsApiClient WcsApi
 @inject IJSRuntime Js
 @inject LocalStoreService LocalStore
@@ -467,7 +466,7 @@
         var entry = _ledgerMap.GetValueOrDefault(taskId);
         if (entry == null || !IsDeletable(entry)) { _lastError = "执行中的任务不可删除"; return; }
         _busy = true;
-        var (ok, code, _) = await WcsService.DeleteTaskStageAsync("", taskId);
+        var (ok, code, _) = await WcsApi.DeleteTaskStageAsync("", taskId);
         if (!ok && code != 404)
         {
             _lastError = $"删除失败 HTTP {code}";
@@ -487,7 +486,7 @@
         var deletable = _ledger.Where(IsDeletable).ToList();
         foreach (var e in deletable)
         {
-            var (ok, code, _) = await WcsService.DeleteTaskStageAsync("", e.TaskId);
+            var (ok, code, _) = await WcsApi.DeleteTaskStageAsync("", e.TaskId);
             if (!ok && code != 404)
             {
                 _lastError = $"删除 {e.TaskId} 失败 HTTP {code}";
@@ -514,7 +513,7 @@
         var taskId = _forceTaskId.Trim();
         if (string.IsNullOrEmpty(taskId)) return;
         _busy = true;
-        var (ok, code, _) = await WcsService.DeleteTaskStageAsync("", taskId);
+        var (ok, code, _) = await WcsApi.DeleteTaskStageAsync("", taskId);
         if (!ok && code != 404)
         {
             _lastError = $"强制删除失败 HTTP {code}";

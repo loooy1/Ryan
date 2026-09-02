@@ -58,16 +58,10 @@ public class MoveLoopService : IDisposable
         Changed?.Invoke();
     }
 
-    /// <summary>通知后端启动循环（互斥/参数校验由后端 AutomationGate + MoveLoopRunner 处理）。</summary>
+/// <summary>通知后端启动循环（互斥/参数校验由后端 AutomationGate + MoveLoopRunner 处理）。</summary>
     public async Task<(bool Ok, string? Reason)> StartAsync(Options opts)
     {
-        var resp = await _api.PostAsync<object, MoveLeaseResult>("/api/wcs/auto/move/start", new
-        {
-            tabId = opts.TabId,
-            interval = opts.Interval,
-            priority = opts.Priority,
-            orderIdPrefix = opts.OrderIdPrefix,
-        });
+        var resp = await _api.StartMoveLoopAsync(opts.TabId, opts.Interval, opts.Priority, opts.OrderIdPrefix);
         if (resp is not { Success: true })
         {
             LastError = resp?.Reason ?? "后端拒绝（互斥：自动化模板或另一标签页正在下发）";

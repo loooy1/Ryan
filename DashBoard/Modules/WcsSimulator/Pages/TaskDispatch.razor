@@ -1,5 +1,4 @@
 @page "/wcs-simulator/dispatch"
-@inject IWcsService WcsService
 @inject IJSRuntime Js
 @inject LocalStoreService LocalStore
 @inject TaskLedgerService Ledger
@@ -16,7 +15,7 @@
    ④ 下发结果写入任务台账（TaskLedgerService，唯一数据源），
       供任务看板展示、信号交互页按模板「离开起点前工作」生成 container_remove 等卡片
    ── 交互服务 ──
-   IWcsService：任务组下发 + GRCS 库存查询
+   WcsApiClient：任务组下发 + GRCS 库存查询
    TaskLedgerService：台账写入；LocalStoreService：表单快照/模板持久化
    ════════════════════════════════════════════════ *@
 <PageTitle>WCS 任务下发</PageTitle>
@@ -1127,12 +1126,12 @@
         _clockTimer = null;
     }
 
-    /// <summary>加载容器库存（容器编号下拉候选用）：调用 WcsService.QueryCargoInventoryAsync 查询 GRCS 库存接口。</summary>
+    /// <summary>加载容器库存（容器编号下拉候选用）：调用 Api.QueryCargoInventoryAsync 查询 GRCS 库存接口。</summary>
     private async Task LoadContainerCodes()
     {
         try
         {
-            var (ok, _, json) = await WcsService.QueryCargoInventoryAsync("");
+            var (ok, _, json) = await Api.QueryCargoInventoryAsync("");
             if (ok)
             {
                 var result = System.Text.Json.JsonSerializer.Deserialize<CargoQueryResult>(json,
@@ -1282,10 +1281,17 @@
         _sending = true;
         StateHasChanged();
 
-        var sendResult = await Api.PostAsync<WcsTaskGroup, GrcsProxyResult>("/api/wcs/task/send", payload);
-        var ok = sendResult?.Ok ?? false;
-        var code = sendResult?.Code ?? 0;
-        var json = sendResult?.Json ?? "";
+        var sendResult = await Api.SendTaskGroupAsync(payload);
+        if (sendResult == null)
+        {
+            // 连接守卫已弹全局告警（WCS/GRCS 未连接），这里不再重复提示、不记台账
+            _sending = false;
+            StateHasChanged();
+            return;
+        }
+        var ok = sendResult.Ok;
+        var code = sendResult.Code;
+        var json = sendResult.Json;
         Console.WriteLine($"[TaskDispatch] task/send 结果: ok={ok} code={code} resp={json}");
         var resp = (ok ? "✅" : "❌") + $" HTTP {code}\n\n{json}";
         // 模块明细（起点/起点之后/终点）统一在后端执行，结果见「信号交互 → 模块执行记录」面板。
@@ -1421,7 +1427,7 @@
         _vehicleSending = true;
         StateHasChanged();
 
-        var (ok, code, json) = await WcsService.SendVehicleOrderAsync("", payload);
+        var (ok, code, json) = await Api.SendVehicleOrderAsync("", payload);
         ShowVehicleResp((ok ? "✅" : "❌") + $" HTTP {code}\n\n{json}", ok ? "success" : "error");
 
         _vehicleSending = false;

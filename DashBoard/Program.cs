@@ -29,8 +29,6 @@ builder.Services.AddScoped<GRCS.Dashboard.Modules.WcsSimulator.Services.ModuleNa
 // 后端存活状态共享服务（BackendStatus 渲染 + 各页面连接判定，单一数据源）
 builder.Services.AddScoped<GRCS.Dashboard.Modules.WcsSimulator.Services.BackendHealthService>();
 builder.Services.AddScoped<GRCS.Dashboard.Modules.WcsSimulator.Services.ConnectionAlertService>();
-builder.Services.AddScoped<GRCS.Dashboard.Modules.WcsSimulator.Services.IWcsService,
-                           GRCS.Dashboard.Modules.WcsSimulator.Services.MockWcsService>();
 builder.Services.AddScoped<GRCS.Dashboard.Modules.WcsSimulator.Services.LocalStoreService>();
 // Skill E：后端遥控壳（WcsApiClient + 共享状态/日志轮询中枢 + 三个瘦壳服务）
 builder.Services.AddScoped<GRCS.Dashboard.Modules.WcsSimulator.Services.WcsApiClient>();

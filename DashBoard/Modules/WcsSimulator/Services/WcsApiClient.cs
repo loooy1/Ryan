@@ -16,9 +16,6 @@ public class WcsApiClient
     private readonly ConnectionAlertService _alert;
     private static readonly JsonSerializerOptions JsonOpts = new() { PropertyNameCaseInsensitive = true, Converters = { new FlexibleDateTimeConverter() } };
 
-    /// <summary>静默模式（AutomationHub 常驻轮询置 true）：请求不弹连接告警，避免轮询刷屏。</summary>
-    public bool SuppressConnectionAlert { get; set; }
-
     /// <summary>后端时间常为 "yyyy-MM-dd HH:mm:ss.fff"（空格）格式，System.Text.Json 默认仅认 ISO 8601；
     /// 这里做容错，避免单个时间字段解析失败导致整条列表反序列化抛异常返回 null。</summary>
     private class FlexibleDateTimeConverter : System.Text.Json.Serialization.JsonConverter<DateTime>
@@ -43,7 +40,6 @@ public class WcsApiClient
     /// <summary>WCS 后端连接前置检查：未连接时弹告警并返回 false（调用方短路返回失败值）。</summary>
     private bool ConnectionReady()
     {
-        if (SuppressConnectionAlert) return true;
         if (_health.WcsOnline == false)
         {
             _alert.Show($"无法连接 WCS 后端（{BaseUrl}）\n请确认后端服务已启动，或检查「地址设置」中的连接地址。");
@@ -55,7 +51,6 @@ public class WcsApiClient
     /// <summary>请求异常兜底：实际请求失败且后端状态非在线时弹告警（覆盖健康探测尚未翻转的场景）。</summary>
     private void NotifyIfUnreachable()
     {
-        if (SuppressConnectionAlert) return;
         if (_health.WcsOnline != true)
             _alert.Show($"无法连接 WCS 后端（{BaseUrl}）\n请确认后端服务已启动，或检查「地址设置」中的连接地址。");
     }
@@ -225,7 +220,7 @@ public class WcsApiClient
     public async Task<NestRunResult?> RunNestAsync(List<string>? vehicles = null)
     {
         if (!ConnectionReady()) return null;
-        if (!SuppressConnectionAlert && _health.GrcsOnline == false)
+        if (_health.GrcsOnline == false)
         {
             _alert.Show($"无法连接 GRCS 后端（{GrcsBaseUrl}）\n归巢需要 GRCS 车辆状态，请确认 GRCS 服务已启动。");
             return null;
@@ -237,7 +232,7 @@ public class WcsApiClient
     public async Task<List<VehicleInfoDto>> GetVehiclesAsync()
     {
         if (!ConnectionReady()) return [];
-        if (!SuppressConnectionAlert && _health.GrcsOnline == false)
+        if (_health.GrcsOnline == false)
         {
             _alert.Show($"无法连接 GRCS 后端（{GrcsBaseUrl}）\n车辆数据经 WCS 后端代理获取，请确认 GRCS 服务已启动。");
             return [];
@@ -257,6 +252,173 @@ public class WcsApiClient
     {
         try { return await GetAsync<List<GrcsApiDocDto>>("/api/wcs/grcs-api-docs") ?? []; }
         catch { return []; }
+    }
+
+    /// <summary>库存分类汇总（纯空托/带货托/纯货物/锁定中，后端按 GRCS 库存统计）。</summary>
+    public async Task<InventorySummaryDto?> GetInventorySummaryAsync()
+    {
+        if (!ConnectionReady()) return null;
+        if (_health.GrcsOnline == false)
+        {
+            _alert.Show($"无法连接 GRCS 后端（{GrcsBaseUrl}）\n库存数据经 WCS 后端代理获取，请确认 GRCS 服务已启动。");
+            return null;
+        }
+        return await GetAsync<InventorySummaryDto>("/api/wcs/auto/inventory-summary");
+    }
+
+    // ── GRCS 代理接口（原 IWcsService/MockWcsService 并入，统一 HTTP 入口）──
+
+    /// <summary>GRCS 连接守卫：WCS/GRCS 任一未连接即弹告警并返回失败（仅限经 WCS 代理请求 GRCS 数据的调用）。</summary>
+    private bool GrcsReady()
+    {
+        if (!ConnectionReady()) return false;
+        if (_health.GrcsOnline == false)
+        {
+            _alert.Show($"无法连接 GRCS 后端（{GrcsBaseUrl}）\n数据经 WCS 后端代理获取，请确认 GRCS 服务已启动。");
+            return false;
+        }
+        return true;
+    }
+
+    /// <summary>代理结果兜底：GRCS 实际不可达（连接异常文本）时弹告警，覆盖健康探测尚未翻转的场景。</summary>
+    private void NotifyGrcsIfUnreachable(string json)
+    {
+        if (_health.GrcsOnline != false
+            && (json.Contains("积极拒绝") || json.Contains("无法连接") || json.Contains("超时")
+                || json.Contains("Connection refused") || json.Contains("refused to connect")))
+        {
+            _alert.Show($"无法连接 GRCS 后端（{GrcsBaseUrl}）\n数据经 WCS 后端代理获取，请确认 GRCS 服务已启动。");
+        }
+    }
+
+    /// <summary>发送车辆任务（代理 → GRCS /api/RawOrder/ChangeFloor）。</summary>
+    public async Task<(bool Ok, int StatusCode, string Json)> SendVehicleOrderAsync(
+        string baseUrl, VehicleOrderRequest payload)
+    {
+        if (!GrcsReady()) return (false, 0, JsonSerializer.Serialize(new { error = "backend offline" }));
+        var r = await PostProxyAsync("/api/wcs/grcs/change-floor", payload);
+        if (!r.Ok) NotifyGrcsIfUnreachable(r.Json);
+        return r;
+    }
+
+    /// <summary>任务组下发（代理 → GRCS /api/v1/task_receive，含三类模块后端执行）。</summary>
+    public async Task<GrcsProxyResult?> SendTaskGroupAsync(WcsTaskGroup payload)
+    {
+        if (!GrcsReady()) return null;
+        var r = await PostAsync<WcsTaskGroup, GrcsProxyResult>("/api/wcs/task/send", payload);
+        if (r is { Ok: false }) NotifyGrcsIfUnreachable(r.Json ?? "");
+        return r;
+    }
+
+    /// <summary>启动自动化模板执行（后端 AutoTemplateRunner 循环下发 GRCS 任务）。</summary>
+    public async Task<StartResultDto?> StartTemplatesAsync(string tabId, List<string> templateIds)
+    {
+        if (!GrcsReady()) return null;
+        var r = await PostAsync<object, StartResultDto>("/api/wcs/auto/start", new { tabId, templateIds });
+        if (r is { Success: false } && r.Message?.Contains("GRCS") == true) NotifyGrcsIfUnreachable(r.Message);
+        return r;
+    }
+
+    /// <summary>启动纯移动循环（后端 MoveLoopRunner 循环下发 MOVE_ONLY 任务到 GRCS）。</summary>
+    public async Task<MoveLeaseResult?> StartMoveLoopAsync(string tabId, int interval, int priority, string orderIdPrefix)
+    {
+        if (!GrcsReady()) return null;
+        var r = await PostAsync<object, MoveLeaseResult>("/api/wcs/auto/move/start", new
+        {
+            tabId,
+            interval,
+            priority,
+            orderIdPrefix,
+        });
+        if (r is { Success: false } && r.Reason?.Contains("GRCS") == true) NotifyGrcsIfUnreachable(r.Reason);
+        return r;
+    }
+
+    public class StartResultDto
+    {
+        public bool Success { get; set; }
+        public string Message { get; set; } = "";
+    }
+
+    /// <summary>查询容器库存（代理 → GRCS /api/Cargo，分页；场景按后端设置）。</summary>
+    public async Task<(bool Ok, int StatusCode, string Json)> QueryCargoInventoryAsync(
+        string baseUrl, string? code = null, string? scene = null, string? locked = null,
+        int pageNo = 1, int pageSize = 2000)
+    {
+        if (!GrcsReady()) return (false, 0, JsonSerializer.Serialize(new { error = "backend offline" }));
+        var url = "/api/wcs/grcs/cargo" + $"?pageNo={pageNo}&pageSize={pageSize}";
+        if (!string.IsNullOrWhiteSpace(code)) url += $"&code={Uri.EscapeDataString(code)}";
+        if (!string.IsNullOrWhiteSpace(locked)) url += $"&locked={Uri.EscapeDataString(locked)}";
+        var r = await GetProxyAsync(url);
+        if (!r.Ok) NotifyGrcsIfUnreachable(r.Json);
+        return r;
+    }
+
+    /// <summary>模拟生成容器入库（代理 → GRCS /AutoContainerEnter，场景按后端设置）。</summary>
+    public async Task<(bool Ok, int StatusCode, string Json)> AutoContainerEnterAsync(string baseUrl, string sceneName,
+        string prefix = "container", int num = -1, int floor = -1, int type = 1)
+    {
+        if (!GrcsReady()) return (false, 0, JsonSerializer.Serialize(new { error = "backend offline" }));
+        var url = "/api/wcs/grcs/auto-container-enter"
+            + $"?prefix={Uri.EscapeDataString(prefix)}&num={num}&floor={floor}&type={type}";
+        var r = await GetProxyAsync(url);
+        if (!r.Ok) NotifyGrcsIfUnreachable(r.Json);
+        return r;
+    }
+
+    /// <summary>删除指定任务的所有阶段事件（WCS 管理接口 DELETE /api/wcs/task-stages/{taskId}）。</summary>
+    public async Task<(bool Ok, int StatusCode, string Json)> DeleteTaskStageAsync(string baseUrl, string taskId)
+    {
+        if (!ConnectionReady()) return (false, 0, JsonSerializer.Serialize(new { error = "backend offline" }));
+        return await DeleteRawAsync("/api/wcs/task-stages/" + Uri.EscapeDataString(taskId));
+    }
+
+    /// <summary>调 GRCS 代理（GET）：后端返回 { ok, code, json }，解析为调用方 (Ok, StatusCode, Json)。</summary>
+    private async Task<(bool Ok, int StatusCode, string Json)> GetProxyAsync(string url)
+    {
+        try
+        {
+            var resp = await _http.GetAsync(U(url));
+            var body = await resp.Content.ReadAsStringAsync();
+            return ParseProxy(body);
+        }
+        catch (Exception ex) { return (false, 0, JsonSerializer.Serialize(new { error = ex.Message })); }
+    }
+
+    private async Task<(bool Ok, int StatusCode, string Json)> PostProxyAsync<T>(string path, T payload)
+    {
+        try
+        {
+            var resp = await _http.PostAsJsonAsync(U(path), payload);
+            var body = await resp.Content.ReadAsStringAsync();
+            return ParseProxy(body);
+        }
+        catch (Exception ex) { return (false, 0, JsonSerializer.Serialize(new { error = ex.Message })); }
+    }
+
+    private async Task<(bool Ok, int StatusCode, string Json)> DeleteRawAsync(string path)
+    {
+        try
+        {
+            var resp = await _http.DeleteAsync(U(path));
+            var body = await resp.Content.ReadAsStringAsync();
+            return (resp.IsSuccessStatusCode, (int)resp.StatusCode, body);
+        }
+        catch (Exception ex) { return (false, 0, JsonSerializer.Serialize(new { error = ex.Message })); }
+    }
+
+    private static (bool Ok, int StatusCode, string Json) ParseProxy(string json)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            var root = doc.RootElement;
+            bool ok = root.TryGetProperty("ok", out var okEl) && okEl.ValueKind == JsonValueKind.True;
+            int code = root.TryGetProperty("code", out var cEl) && cEl.ValueKind == JsonValueKind.Number ? cEl.GetInt32() : 0;
+            string inner = root.TryGetProperty("json", out var jEl) ? jEl.GetString() ?? json : json;
+            return (ok, code, inner);
+        }
+        catch { return (false, 0, json); }
     }
 
     // ── 通用 Mock 规则（入站可配）──
