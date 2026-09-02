@@ -12,7 +12,12 @@ public class WcsApiClient
 {
     private readonly HttpClient _http;
     private readonly LocalStoreService _store;
+    private readonly BackendHealthService _health;
+    private readonly ConnectionAlertService _alert;
     private static readonly JsonSerializerOptions JsonOpts = new() { PropertyNameCaseInsensitive = true, Converters = { new FlexibleDateTimeConverter() } };
+
+    /// <summary>静默模式（AutomationHub 常驻轮询置 true）：请求不弹连接告警，避免轮询刷屏。</summary>
+    public bool SuppressConnectionAlert { get; set; }
 
     /// <summary>后端时间常为 "yyyy-MM-dd HH:mm:ss.fff"（空格）格式，System.Text.Json 默认仅认 ISO 8601；
     /// 这里做容错，避免单个时间字段解析失败导致整条列表反序列化抛异常返回 null。</summary>
@@ -27,10 +32,32 @@ public class WcsApiClient
             => writer.WriteStringValue(value.ToString("yyyy-MM-dd HH:mm:ss"));
     }
 
-    public WcsApiClient(HttpClient http, LocalStoreService store)
+    public WcsApiClient(HttpClient http, LocalStoreService store, BackendHealthService health, ConnectionAlertService alert)
     {
         _http = http;
         _store = store;
+        _health = health;
+        _alert = alert;
+    }
+
+    /// <summary>WCS 后端连接前置检查：未连接时弹告警并返回 false（调用方短路返回失败值）。</summary>
+    private bool ConnectionReady()
+    {
+        if (SuppressConnectionAlert) return true;
+        if (_health.WcsOnline == false)
+        {
+            _alert.Show($"无法连接 WCS 后端（{BaseUrl}）\n请确认后端服务已启动，或检查「地址设置」中的连接地址。");
+            return false;
+        }
+        return true;
+    }
+
+    /// <summary>请求异常兜底：实际请求失败且后端状态非在线时弹告警（覆盖健康探测尚未翻转的场景）。</summary>
+    private void NotifyIfUnreachable()
+    {
+        if (SuppressConnectionAlert) return;
+        if (_health.WcsOnline != true)
+            _alert.Show($"无法连接 WCS 后端（{BaseUrl}）\n请确认后端服务已启动，或检查「地址设置」中的连接地址。");
     }
 
     public string BaseUrl
@@ -42,10 +69,21 @@ public class WcsApiClient
         }
     }
 
+    /// <summary>GRCS 后端地址（grcs_grcs_url，地图信息页地址设置保存），缺省 http://localhost:8224。</summary>
+    public string GrcsBaseUrl
+    {
+        get
+        {
+            var url = _store["grcs_grcs_url"];
+            return string.IsNullOrEmpty(url) || url == "null" ? "http://localhost:8224" : url;
+        }
+    }
+
     private string U(string path) => BaseUrl.TrimEnd('/') + path;
 
     public async Task<T?> GetAsync<T>(string path)
     {
+        if (!ConnectionReady()) return default;
         try
         {
             var json = await _http.GetStringAsync(U(path));
@@ -65,22 +103,24 @@ public class WcsApiClient
             }
             return JsonSerializer.Deserialize<T>(json, JsonOpts);
         }
-        catch { return default; }
+        catch { NotifyIfUnreachable(); return default; }
     } 
 
     public async Task<T?> PostAsync<TReq, T>(string path, TReq body)
     {
+        if (!ConnectionReady()) return default;
         try
         {
             var resp = await _http.PostAsJsonAsync(U(path), body);
             var json = await resp.Content.ReadAsStringAsync();
             return resp.IsSuccessStatusCode ? JsonSerializer.Deserialize<T>(json, JsonOpts) : default;
         }
-        catch { return default; }
+        catch { NotifyIfUnreachable(); return default; }
     }
 
     public async Task<string> PostAsync<TReq>(string path, TReq body)
     {
+        if (!ConnectionReady()) return JsonSerializer.Serialize(new { error = "backend offline" });
         try
         {
             var resp = await _http.PostAsJsonAsync(U(path), body);
@@ -88,36 +128,39 @@ public class WcsApiClient
             if (resp.IsSuccessStatusCode) return json;
             return JsonSerializer.Serialize(new { error = $"HTTP {(int)resp.StatusCode}" });
         }
-        catch (Exception ex) { return JsonSerializer.Serialize(new { error = ex.Message }); }
+        catch (Exception ex) { NotifyIfUnreachable(); return JsonSerializer.Serialize(new { error = ex.Message }); }
     }
 
     public async Task<T?> PutAsync<TReq, T>(string path, TReq body)
     {
+        if (!ConnectionReady()) return default;
         try
         {
             var resp = await _http.PutAsJsonAsync(U(path), body);
             var json = await resp.Content.ReadAsStringAsync();
             return resp.IsSuccessStatusCode ? JsonSerializer.Deserialize<T>(json, JsonOpts) : default;
         }
-        catch { return default; }
+        catch { NotifyIfUnreachable(); return default; }
     }
 
     /// <summary>带状态码的 PUT：无论成功失败都返回响应体（用于保存校验失败时的错误透传）。</summary>
     public async Task<(bool Ok, int StatusCode, string Json)> PutWithStatusAsync<TReq>(string path, TReq body)
     {
+        if (!ConnectionReady()) return (false, 0, "backend offline");
         try
         {
             var resp = await _http.PutAsJsonAsync(U(path), body);
             var json = await resp.Content.ReadAsStringAsync();
             return (resp.IsSuccessStatusCode, (int)resp.StatusCode, json);
         }
-        catch (Exception ex) { return (false, 0, ex.Message); }
+        catch (Exception ex) { NotifyIfUnreachable(); return (false, 0, ex.Message); }
     }
 
     public async Task<bool> DeleteAsync(string path)
     {
+        if (!ConnectionReady()) return false;
         try { return (await _http.DeleteAsync(U(path))).IsSuccessStatusCode; }
-        catch { return false; }
+        catch { NotifyIfUnreachable(); return false; }
     }
 
     // ── 任务类型模板 / 功能模板（后端 SQLite 持久化，跨浏览器共享）──
@@ -181,12 +224,24 @@ public class WcsApiClient
     /// <summary>执行归巢（vehicles = 本次车队车名，可空 = 后端自动捕获当前就绪车）。</summary>
     public async Task<NestRunResult?> RunNestAsync(List<string>? vehicles = null)
     {
+        if (!ConnectionReady()) return null;
+        if (!SuppressConnectionAlert && _health.GrcsOnline == false)
+        {
+            _alert.Show($"无法连接 GRCS 后端（{GrcsBaseUrl}）\n归巢需要 GRCS 车辆状态，请确认 GRCS 服务已启动。");
+            return null;
+        }
         return await PostAsync<object, NestRunResult>("/api/wcs/auto/nest/run", new { vehicles });
     }
 
     /// <summary>GRCS 全部车辆（归巢车辆多选用）。</summary>
     public async Task<List<VehicleInfoDto>> GetVehiclesAsync()
     {
+        if (!ConnectionReady()) return [];
+        if (!SuppressConnectionAlert && _health.GrcsOnline == false)
+        {
+            _alert.Show($"无法连接 GRCS 后端（{GrcsBaseUrl}）\n车辆数据经 WCS 后端代理获取，请确认 GRCS 服务已启动。");
+            return [];
+        }
         try
         {
             var json = await GetAsync<JsonElement>("/api/wcs/auto/vehicles");

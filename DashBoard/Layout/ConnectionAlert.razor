@@ -1,0 +1,59 @@
+@inject ConnectionAlertService Alert
+@inject BackendHealthService Health
+@implements IDisposable
+
+@if (!string.IsNullOrEmpty(Alert.Current))
+{
+    <div class="template-modal-overlay" @onclick="Dismiss">
+        <div class="template-modal tpl-modal" @onclick:stopPropagation style="max-width:440px;">
+            <div class="tpl-modal-header">
+                <div class="tpl-modal-title">
+                    <span class="tpl-modal-icon">⚠️</span>
+                    <div>
+                        <div class="tpl-modal-title-text">无法连接后端</div>
+                        <div class="tpl-modal-sub">数据请求失败，请确认后端服务已启动后重试</div>
+                    </div>
+                </div>
+                <button type="button" class="tpl-modal-close" @onclick="Dismiss" title="关闭">✕</button>
+            </div>
+            <div class="tpl-modal-body">
+                <div style="color:#e2e8f0;font-size:0.9rem;line-height:1.7;white-space:pre-wrap;">@Alert.Current</div>
+            </div>
+            <div class="tpl-modal-footer" style="display:flex;gap:10px;justify-content:flex-end;margin-top:12px;">
+                <button class="btn btn-primary" @onclick="Dismiss">知道了</button>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    protected override void OnInitialized()
+    {
+        Alert.Shown += OnShown;
+        Health.Changed += OnHealthChanged;
+    }
+
+    private void OnShown(string _) => StateHasChanged();
+
+    // 后端恢复在线时自动关闭告警弹窗
+    private void OnHealthChanged()
+    {
+        if (Alert.Current != null && Health.WcsOnline == true && Health.GrcsOnline != false)
+        {
+            Alert.Dismiss();
+            StateHasChanged();
+        }
+    }
+
+    private void Dismiss()
+    {
+        Alert.Dismiss();
+        StateHasChanged();
+    }
+
+    public void Dispose()
+    {
+        Alert.Shown -= OnShown;
+        Health.Changed -= OnHealthChanged;
+    }
+}

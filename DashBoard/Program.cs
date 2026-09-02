@@ -28,6 +28,7 @@ builder.Services.AddScoped(sp => new HttpClient
 builder.Services.AddScoped<GRCS.Dashboard.Modules.WcsSimulator.Services.ModuleNavigationService>();
 // 后端存活状态共享服务（BackendStatus 渲染 + 各页面连接判定，单一数据源）
 builder.Services.AddScoped<GRCS.Dashboard.Modules.WcsSimulator.Services.BackendHealthService>();
+builder.Services.AddScoped<GRCS.Dashboard.Modules.WcsSimulator.Services.ConnectionAlertService>();
 builder.Services.AddScoped<GRCS.Dashboard.Modules.WcsSimulator.Services.IWcsService,
                            GRCS.Dashboard.Modules.WcsSimulator.Services.MockWcsService>();
 builder.Services.AddScoped<GRCS.Dashboard.Modules.WcsSimulator.Services.LocalStoreService>();

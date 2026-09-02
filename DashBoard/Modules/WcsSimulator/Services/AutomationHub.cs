@@ -66,36 +66,45 @@ public class AutomationHub : IDisposable
 
     private async Task PollAsync()
     {
-        var st = await _api.GetAsync<AutoStatusSnapshot>("/api/wcs/auto/status");
-        if (st != null) Status = st;
-
-        // 选点范围（自动化任务页「开启/关闭限制」等跨标签页同步）
-        var range = await _api.GetAsync<RangeConfigDto>("/api/wcs/auto/range");
-        if (range != null) Range = range;
-
-        // 进入申请状态（用于后端健康判定；进入信号已由 MockApprovalService 取代）
-        var adm = await _api.GetAsync<AdmittanceStatusDto>("/api/wcs/status");
-        _health.ReportWcs(adm != null);
-
-        // 信号确认状态（跨标签页同步，SignalInteraction 事实源）
-        var wf = await _api.GetAsync<Dictionary<string, List<WorkflowStateRow>>>("/api/wcs/signal-confirm");
-        if (wf != null) ConfirmState = wf;
-
-        // 按轮次分组的日志（每轮一个标题；任务完成后后端清除该轮）
-        var rounds = await _api.GetAsync<List<LogRoundDto>>("/api/wcs/auto/logs");
-        if (rounds != null)
+        // 常驻轮询 = 探测性质，不弹连接告警（连接弹窗只由用户主动操作触发，避免每 1s 刷屏）
+        _api.SuppressConnectionAlert = true;
+        try
         {
-            lock (_lock)
-            {
-                Rounds.Clear();
-                Rounds.AddRange(rounds);
-            }
-        }
+            var st = await _api.GetAsync<AutoStatusSnapshot>("/api/wcs/auto/status");
+            if (st != null) Status = st;
 
-        // 健康探测：GRCS 经 WCS 代理轻量探测（后端 2s 短超时）→ 回报共享健康服务
-        var grcs = await _api.GetAsync<GrcsProxyResult>("/api/wcs/grcs/health");
-        _health.ReportGrcs(grcs?.Ok == true);
-        Changed?.Invoke();
+            // 选点范围（自动化任务页「开启/关闭限制」等跨标签页同步）
+            var range = await _api.GetAsync<RangeConfigDto>("/api/wcs/auto/range");
+            if (range != null) Range = range;
+
+            // 进入申请状态（用于后端健康判定；进入信号已由 MockApprovalService 取代）
+            var adm = await _api.GetAsync<AdmittanceStatusDto>("/api/wcs/status");
+            _health.ReportWcs(adm != null);
+
+            // 信号确认状态（跨标签页同步，SignalInteraction 事实源）
+            var wf = await _api.GetAsync<Dictionary<string, List<WorkflowStateRow>>>("/api/wcs/signal-confirm");
+            if (wf != null) ConfirmState = wf;
+
+            // 按轮次分组的日志（每轮一个标题；任务完成后后端清除该轮）
+            var rounds = await _api.GetAsync<List<LogRoundDto>>("/api/wcs/auto/logs");
+            if (rounds != null)
+            {
+                lock (_lock)
+                {
+                    Rounds.Clear();
+                    Rounds.AddRange(rounds);
+                }
+            }
+
+            // 健康探测：GRCS 经 WCS 代理轻量探测（后端 2s 短超时）→ 回报共享健康服务
+            var grcs = await _api.GetAsync<GrcsProxyResult>("/api/wcs/grcs/health");
+            _health.ReportGrcs(grcs?.Ok == true);
+            Changed?.Invoke();
+        }
+        finally
+        {
+            _api.SuppressConnectionAlert = false;
+        }
     }
 
     public void ClearLogs()
