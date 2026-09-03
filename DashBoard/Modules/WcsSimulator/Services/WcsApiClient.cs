@@ -113,6 +113,18 @@ public class WcsApiClient
         catch { NotifyIfUnreachable(); return default; }
     }
 
+    /// <summary>同步库存账本（清空重建，以 GRCS 为准；有在途任务时后端返回 400 与拒绝原因）。</summary>
+    public async Task<(bool ok, string json)> SyncInventoryAsync()
+    {
+        if (!ConnectionReady()) return (false, "backend offline");
+        try
+        {
+            var resp = await _http.PostAsJsonAsync(U("/api/wcs/inventory/sync"), new { });
+            return (resp.IsSuccessStatusCode, await resp.Content.ReadAsStringAsync());
+        }
+        catch (Exception ex) { NotifyIfUnreachable(); return (false, ex.Message); }
+    }
+
     public async Task<string> PostAsync<TReq>(string path, TReq body)
     {
         if (!ConnectionReady()) return JsonSerializer.Serialize(new { error = "backend offline" });

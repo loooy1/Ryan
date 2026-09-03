@@ -6,13 +6,11 @@ using GrcsBackend.Modules.Wcs.Proxy.Services;
 namespace GrcsBackend.Modules.Wcs.Console.Services;
 
 /// <summary>
-/// GRCS 库存后台轮询缓存：每 2 秒查询 /api/Cargo 全量记录，
-/// 供自动化选点（选托盘/选货物/终点占用判断）与库存统计共用同一份最新数据源，
-/// 避免每次选点都阻塞式 HTTP 查询 GRCS。
-/// 查询失败保留旧缓存（仅状态翻转时记日志，不刷屏）；
-/// 任务完成后可调用 RefreshNowAsync 强制刷新一次，保证链式步骤选点前缓存已反映刚搬动的货。
+/// GRCS 库存查询缓存：按需查询 /api/Cargo 全量记录（无后台轮询）。
+/// 供「查库存」按钮实时统计与同步/合并账本使用；查询失败保留旧缓存。
+/// 自动化选池已改用 WcsInventoryStore 账本，不再依赖本缓存。
 /// </summary>
-public class GrcsInventoryCacheService : IHostedService
+public class GrcsInventoryCacheService
 {
     private readonly GrcsHttpClient _grcs;
     private readonly WcsSettingsService _settings;
@@ -23,8 +21,6 @@ public class GrcsInventoryCacheService : IHostedService
     private List<CargoInventoryItem> _records = [];
     private DateTime _snapshotTime = DateTime.MinValue;
     private bool _lastOk;
-    private CancellationTokenSource? _cts;
-    private const int IntervalSeconds = 2;
 
     private static readonly JsonSerializerOptions JsonOpts = new() { PropertyNameCaseInsensitive = true };
 
@@ -50,28 +46,11 @@ public class GrcsInventoryCacheService : IHostedService
     /// <summary>是否有过至少一次成功快照（可据此区分「真空库存」与「查询失败」）。</summary>
     public bool Ready => SnapshotTime != DateTime.MinValue;
 
-    public Task StartAsync(CancellationToken ct)
+    /// <summary>全量同步入口（同步按钮/启动轮询建账本）：刷新缓存并返回最新记录。</summary>
+    public async Task<List<CargoInventoryItem>> SyncAllAsync()
     {
-        _cts = new CancellationTokenSource();
-        _ = LoopAsync(_cts.Token);
-        return Task.CompletedTask;
-    }
-
-    public Task StopAsync(CancellationToken ct)
-    {
-        _cts?.Cancel();
-        return Task.CompletedTask;
-    }
-
-    private async Task LoopAsync(CancellationToken ct)
-    {
-        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(IntervalSeconds));
-        while (!ct.IsCancellationRequested)
-        {
-            try { await RefreshCoreAsync(); }
-            catch (Exception ex) { _logger.LogWarning(ex, "库存缓存轮询异常"); }
-            try { if (!await timer.WaitForNextTickAsync(ct)) break; } catch { break; }
-        }
+        await RefreshNowAsync();
+        return Records;
     }
 
     /// <summary>强制刷新一次（任务完成后调用，保证下一步选点前缓存最新）。

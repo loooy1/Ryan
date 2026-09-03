@@ -1,5 +1,7 @@
 using GrcsBackend.Modules.Wcs;
 using GrcsBackend.Modules.Shared;
+using Microsoft.EntityFrameworkCore;
+using GrcsBackend.Modules.Shared.Infrastructure;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -41,6 +43,14 @@ builder.Services.AddSharedModule();
 builder.Services.AddWcsModule();
 
 var app = builder.Build();
+
+// 启动时应用未执行的 EF 迁移（wcs_inventory 等新表自动建表）
+using (var scope = app.Services.CreateScope())
+{
+    var db = scope.ServiceProvider.GetRequiredService<IDbContextFactory<GrcsBackend.Modules.Shared.Infrastructure.GrcsDbContext>>().CreateDbContext();
+    db.Database.Migrate();
+    db.Dispose();
+}
 
 app.UseCors();
 app.MapControllers();

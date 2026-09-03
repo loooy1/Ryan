@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Text.Json;
 using GrcsBackend.Modules.Wcs.Console.Services;
 using GrcsBackend.Modules.Wcs.Infrastructure;
+using InvItem = GrcsBackend.Modules.Wcs.Infrastructure.WcsInventoryStore.InvItem;
 using GrcsBackend.Contracts.Dtos;
 using GrcsBackend.Modules.Wcs.Proxy.Services;
 using Microsoft.Extensions.Hosting;
@@ -34,6 +35,7 @@ public class AutoTemplateRunner : IHostedService
     private readonly AutoTemplateStore _templates;
     private readonly MockRuleStore _mocks;
     private readonly GrcsInventoryCacheService _inventoryCache;
+    private readonly WcsInventoryStore _invStore;
     private readonly ILogger<AutoTemplateRunner> _logger;
 
     // 选点/加锁/占用合并临界区：多模板并发串行化「选点→加锁」，避免竞态选中同一点；occupied 合并计算同锁保护
@@ -53,26 +55,21 @@ private readonly object _stateLock = new();
     // 任务号 → 锁定的起点 mark（FINISHED 后释放）
     private readonly ConcurrentDictionary<string, string> _lockByTask = new(StringComparer.OrdinalIgnoreCase);
 
-    // 已占用容器（选托盘/选货物后加入，任务 FINISHED 后移除）；跨轮次排除，避免下一轮重复选中
-private readonly object _busyLock = new();
-    private readonly HashSet<string> _busyContainers = new(StringComparer.OrdinalIgnoreCase);
-    // 选点已锁定、尚未下发的「主容器单元」（托盘优先；货物码只进 _busyContainers 不计数）；
-    // 下发成功/失败后移除，链 finally 回收无绑定的残留。锁定中计数 = 任务数 + 本集合数（货+托算一个单元）
-    private readonly HashSet<string> _pendingUnits = new(StringComparer.OrdinalIgnoreCase);
-// 任务号 → 锁定的终点 mark（FINISHED 后释放）
+    // 任务号 → 锁定的终点 mark（FINISHED 后释放）
     private readonly ConcurrentDictionary<string, string> _endLockByTask = new(StringComparer.OrdinalIgnoreCase);
-    // 任务号 → 该任务占用的所有容器号（托盘号/货物号混存，最多 2 个；任务 FINISHED 后移除）
-    private readonly ConcurrentDictionary<string, List<string>> _containersByTask = new(StringComparer.OrdinalIgnoreCase);
+    // 容器占用/选池已迁移到 WcsInventoryStore 账本（SQLite 持久化），不再使用内存集合。
 
     public AutoTemplateRunner(
         MapStoreService map, RangeConfigService range, WcsSettingsService settings,
         StationLockStore locks, AutomationLogService log, ITaskStageService stage, AutomationGate gate,
         ModuleRunService modules, TaskTemplateStore taskTemplates, AutoTemplateStore templates,
-        MockRuleStore mocks, GrcsInventoryCacheService inventoryCache, ILogger<AutoTemplateRunner> logger)
+        MockRuleStore mocks, GrcsInventoryCacheService inventoryCache, WcsInventoryStore invStore,
+        ILogger<AutoTemplateRunner> logger)
     {
         _map = map; _range = range; _settings = settings; _locks = locks; _log = log;
         _stage = stage; _gate = gate; _modules = modules; _taskTemplates = taskTemplates;
-        _templates = templates; _mocks = mocks; _inventoryCache = inventoryCache; _logger = logger;
+        _templates = templates; _mocks = mocks; _inventoryCache = inventoryCache; _invStore = invStore;
+        _logger = logger;
     }
 
     // ── 状态 ──
@@ -147,6 +144,8 @@ _activeTemplateIds = ids;
         _cts = new CancellationTokenSource();
         _log.Add($"自动化模板轮询启动：{ActiveTemplateName}", "#4ade80");
         _ = PollLoop(_cts.Token);
+        // 库存账本初始化：账本空 → 从 GRCS 全量建账；选点范围新增点位 → 增量合并；无变化 → 不查 GRCS。
+        _ = InitLedgerAsync();
         return (true, "");
     }
 
@@ -162,6 +161,53 @@ _activeTemplateIds = ids;
         try { _cts?.Cancel(); } catch { }
         _cts = null;
         _log.Add("自动化模板轮询停止", "#fbbf24");
+    }
+
+    /// <summary>
+    /// 库存账本初始化（Start 时异步执行）：账本空 → 从 GRCS 全量建账；
+    /// 选点范围新增点位 → 增量合并（已有点位不动账本）；无变化 → 不查 GRCS。
+    /// </summary>
+    private async Task InitLedgerAsync()
+    {
+        try
+        {
+            var range = _range.Get();
+            var marks = (range.Enabled && range.Marks.Count > 0)
+                ? new HashSet<string>(range.Marks, StringComparer.OrdinalIgnoreCase)
+                : null;
+            if (_invStore.All().Count == 0)
+            {
+                _log.Add("库存账本为空，正在从 GRCS 全量同步建立账本…", "#fbbf24");
+                var records = await _inventoryCache.SyncAllAsync();
+                if (records.Count == 0 && !_inventoryCache.Ready)
+                {
+                    _log.Add("库存同步失败（GRCS 未响应），等待下轮重试", "#f87171");
+                    return;
+                }
+                _invStore.RebuildFromGrcs(records);
+                _invStore.SetSyncedMarks(marks ?? new HashSet<string>());
+                _log.Add($"库存账本已建立：{records.Count} 条", "#4ade80");
+                return;
+            }
+            if (marks == null) return;   // 范围未启用：无 diff 概念，不查 GRCS
+            var synced = _invStore.GetSyncedMarks();
+            var added = marks.Except(synced).ToList();
+            if (added.Count == 0) return;   // 选点无变化，直接用账本
+            _log.Add($"选点范围新增 {added.Count} 个点位，正在增量同步库存…", "#fbbf24");
+            var all = await _inventoryCache.SyncAllAsync();
+            if (!_inventoryCache.Ready)
+            {
+                _log.Add("库存同步失败（GRCS 未响应），沿用现有账本", "#f87171");
+                return;
+            }
+            _invStore.SyncMerge(all, marks);
+            _invStore.SetSyncedMarks(marks);
+            _log.Add("选点范围库存已增量合并", "#4ade80");
+        }
+        catch (Exception ex)
+        {
+            _log.Add("库存账本初始化异常：" + ex.Message, "#f87171");
+        }
     }
 
     /// <summary>强制结束：停止轮询、无限等待的本轮任务不再等待 FINISHED、释放所有站点锁与容器占用、清空所有自动化日志。</summary>
@@ -181,10 +227,9 @@ lock (_stateLock)
         // 释放所有站点锁与容器占用
         foreach (var kv in _lockByTask) { try { _locks.Release(kv.Value); } catch { } }
         foreach (var kv in _endLockByTask) { try { _locks.Release(kv.Value); } catch { } }
-_lockByTask.Clear();
+        _lockByTask.Clear();
         _endLockByTask.Clear();
-        _containersByTask.Clear();
-        lock (_busyLock) { _busyContainers.Clear(); _pendingUnits.Clear(); }
+        _invStore.ClearBusy();   // 账本占用全部释放（持久化）
         // 清空所有自动化轮次日志
         _log.Clear();
         _log.Add("⚠ 已强制结束当前轮次：所有任务不再等待 FINISHED，相关占用已释放", "#f87171");
@@ -270,8 +315,6 @@ var (ids, details) = await RunTemplates(tpls, parentId);
         _log.Add($"✓ {title} 全部完成 — 发起 {start} · 完成 {end} · 共 {taskIds.Count} 个任务：{detailStr} ，日志已自动清除", "#4ade80");
         _log.ClearRound(parentId);
     }
-
-    private record InvItem(string Code, string Mark, bool IsLoaded, string? CargoCode = null, string? Station = null);
 
     /// <summary>按模板集合执行一轮（一次轮询下发一次选中的模板实例）。
     /// 共用同一份库存快照：每个模板各自一条执行链(ctx)，选托盘/选货物在 lock 下从共享池抽取并移除，
@@ -359,7 +402,7 @@ for (var i = 0; i < tpl.Steps.Count; i++)
                             if (pool.Count == 0) { _log.Add(childId, $"步骤 {stepNo} 选托盘失败：{step.PalletFilter} 池为空，等待下轮下发｜诊断：{diagText}", "#f87171"); _log.AddOrUpdate("[模板步骤失败]", $"模板「{name}」：选托盘失败（{step.PalletFilter} 池为空），等待下轮下发", "#f87171"); return; }
                             pick = pool[Random.Shared.Next(pool.Count)];
                             emptyPallets.Remove(pick); loadedPallets.Remove(pick);
-lock (_busyLock) { _busyContainers.Add(pick.Code); _pendingUnits.Add(pick.Code); } // 占用中，跨轮排除
+                            _invStore.Pick(pick.Code);   // 账本占用（picked，持久化）
                             pickedBusy.Add(pick.Code);
                         }
 ctx.PalletCode = pick.Code; ctx.PalletMark = pick.Mark; ctx.ContainerCode = pick.Code;
@@ -376,6 +419,8 @@ ctx.PalletCode = pick.Code; ctx.PalletMark = pick.Mark; ctx.ContainerCode = pick
                             if (cargos.Count == 0) { _log.Add(childId, $"步骤 {stepNo} 选货物失败：货物池为空，等待下轮下发", "#f87171"); _log.AddOrUpdate("[模板步骤失败]", $"模板「{name}」：选货物失败（货物池为空），等待下轮下发", "#f87171"); return; }
                             pick = cargos[Random.Shared.Next(cargos.Count)];
                             cargos.Remove(pick);
+                            _invStore.Pick(pick.Code);   // 账本占用（picked，持久化）
+                            pickedBusy.Add(pick.Code);
                         }
 ctx.CargoCode = pick.Code; ctx.CargoMark = pick.Mark; ctx.ContainerCode = pick.Code;
                         ctx.PickedByStep[i + 1] = pick.Code;
@@ -391,8 +436,8 @@ ctx.CargoCode = pick.Code; ctx.CargoMark = pick.Mark; ctx.ContainerCode = pick.C
                             if (loadedPallets.Count == 0) { _log.Add(childId, $"步骤 {stepNo} 选带货托失败：带货托池为空，等待下轮下发｜诊断：{diagText}", "#f87171"); _log.AddOrUpdate("[模板步骤失败]", $"模板「{name}」：选带货托失败（带货托池为空），等待下轮下发", "#f87171"); return; }
                             pick = loadedPallets[Random.Shared.Next(loadedPallets.Count)];
                             loadedPallets.Remove(pick);
-lock (_busyLock) { _busyContainers.Add(pick.Code); _pendingUnits.Add(pick.Code); } // 占用中，跨轮排除（托盘号 = 主容器单元）
-                            if (!string.IsNullOrEmpty(pick.CargoCode)) lock (_busyLock) _busyContainers.Add(pick.CargoCode);
+                            _invStore.Pick(pick.Code);   // 账本占用（picked，持久化；托盘号 = 主容器单元）
+                            if (!string.IsNullOrEmpty(pick.CargoCode)) _invStore.Pick(pick.CargoCode);
                             pickedBusy.Add(pick.Code);
                             if (!string.IsNullOrEmpty(pick.CargoCode)) pickedBusy.Add(pick.CargoCode);
                         }
@@ -424,19 +469,11 @@ catch (Exception ex)
             }
             finally
             {
-                // 回收本模板选过但没有任何进行中任务绑定的容器（下发失败/未下发/已完成 → 放回可选池）；
-                // 仍在运行的任务（_containersByTask 有记录）保留到 FINISHED，避免下一轮重复取货
+                // 回收本模板选过但未下发的容器（picked 残留 = 未下发/下发失败已标记 fail → picked 直接放回）；
+                // 下发成功的已 MarkBusy（busy 保留到 FINISHED），不受影响
                 if (pickedBusy.Count > 0)
                 {
-                    lock (_busyLock)
-                    {
-                        foreach (var c in pickedBusy)
-                        {
-                            if (_containersByTask.Values.Any(list => list.Any(x => string.Equals(x, c, StringComparison.OrdinalIgnoreCase)))) continue;
-                            _busyContainers.Remove(c);
-                        }
-                        _pendingUnits.RemoveWhere(c => !_containersByTask.Values.Any(list => list.Any(x => string.Equals(x, c, StringComparison.OrdinalIgnoreCase))));
-                    }
+                    _invStore.RecyclePicked(pickedBusy);
                 }
             }
         }
@@ -599,7 +636,7 @@ string? container;
         lock (_chainLock)
         {
 // 每步重建最新占用集合（缓存权威；任务完成时已 RefreshNowAsync，货入位/移走即刻反映）
-            var occ = BuildOccupiedFromCache();
+            var occ = BuildOccupiedFromLedger();
 
             if (usePickedStart)
             {
@@ -697,27 +734,29 @@ if (endBits != 0 && stations.Any(s => (s.StationType & endBits) != 0)
         if (!_running && _halted)
         {
             _log.Add(roundId, $"步骤 {stepNo} 模板[{tpl.Label}] 已强制结束，跳过下发（{startWcs}→{destWcs}）", "#fbbf24");
-            lock (_busyLock) { _busyContainers.Remove(container); if (!string.IsNullOrEmpty(ctx.PalletCode)) _busyContainers.Remove(ctx.PalletCode); _pendingUnits.Remove(ctx.PalletCode ?? ""); _pendingUnits.Remove(container ?? ""); }
+            var pc = new List<string> { container ?? "" };
+            if (!string.IsNullOrEmpty(ctx.PalletCode) && !string.Equals(ctx.PalletCode, container, StringComparison.OrdinalIgnoreCase)) pc.Add(ctx.PalletCode);
+            _invStore.RecyclePicked(pc);   // 强制结束：本次选中的容器放回账本
             return null;
         }
 
         // 统一经 ModuleRunService：起点模块(下发前) → 下发 → 起点之后模块(下发成功后)
         var (ok, code, json) = await _modules.SendTaskWithModulesAsync(group, roundId);
+        // 任务占用的容器号（主容器号：托盘或货物；带货托补记托盘号，与主容器号不同才追加）
+        var taskContainers = new List<string> { container ?? "" };
+        if (!string.IsNullOrEmpty(ctx.PalletCode) && !string.Equals(ctx.PalletCode, container, StringComparison.OrdinalIgnoreCase))
+            taskContainers.Add(ctx.PalletCode);
         if (ok)
         {
             Interlocked.Increment(ref _executed);
             taskIds.Add(taskId);
-taskDetails[taskId] = $"{tpl.Label} [{container}] {startWcs}->{destWcs}";
-            var taskContainers = new List<string> { container ?? "" }; // 任务占用的容器号（主容器号：托盘或货物）
-            if (!string.IsNullOrEmpty(ctx.PalletCode) && !string.Equals(ctx.PalletCode, container, StringComparison.OrdinalIgnoreCase))
-                taskContainers.Add(ctx.PalletCode); // 带货托补记托盘号（与主容器号不同才追加）
-            _containersByTask[taskId] = taskContainers; // 任务→占用的容器号，FINISHED 后解除占用
-            lock (_busyLock) { _pendingUnits.Remove(ctx.PalletCode ?? ""); _pendingUnits.Remove(container ?? ""); } // 选点单元转入任务维度（任务计数接管）
+            taskDetails[taskId] = $"{tpl.Label} [{container}] {startWcs}->{destWcs}";
+            _invStore.MarkBusy(taskContainers, taskId);   // 账本：picked → busy（持久化，FINISHED 后释放）
             _log.Add(roundId, $"✓ 步骤 {stepNo} 完成！", "#4ade80");
             // 本步终点作为后续步骤（起点取自前置终点）的前置终点
             ctx.LastEndMark = dest.Mark;
-            // FINISHED 后释放起点锁
-            _ = ReleaseOnFinishAsync(taskId);
+            // FINISHED 后释放起点锁与账本占用
+            _ = ReleaseOnFinishAsync(taskId, dest.Mark);
             // 终点模块由自动化任务自己跑（避免 FinishedModuleWatcher 重复执行 Auto_ 任务）。
             // 有终点模块 → 强制等待 FINISHED 后跑终点模块（等其 success）；无终点模块 → 按 WaitForFinish 等 FINISHED。
             var endIds = tpl.End?.AfterModules ?? [];
@@ -737,15 +776,10 @@ taskDetails[taskId] = $"{tpl.Label} [{container}] {startWcs}->{destWcs}";
             {
                 _log.Add(roundId, $"步骤 {stepNo} 终点阶段异常 {taskId}：{ex.Message}", "#f87171");
             }
-            // 等待/终点模块完成后同步释放本站点锁与容器占用（ReleaseOnFinishAsync 稍后幂等再跑一遍），
+            // 等待/终点模块完成后同步释放本站点锁与账本占用（ReleaseOnFinishAsync 稍后幂等再跑一遍），
             // 保证下一步骤选点立刻看到锁已释放，避免链式衔接选点被上一任务残留锁排除
             ReleaseTaskLocks(taskId);
-lock (_busyLock)
-            {
-                if (_containersByTask.TryRemove(taskId, out var codes)) foreach (var cc in codes) _busyContainers.Remove(cc);
-            }
-            // 任务已完成、货已搬动：即时刷新库存缓存，下一步选点前 occ 重建即为最新状态（失败静默，沿用旧缓存，2 秒后台轮询自愈）
-            await _inventoryCache.RefreshNowAsync();
+            _invStore.Release(taskId, dest.Mark);   // 账本：busy → idle，位置更新到终点
             return taskId;
         }
         else
@@ -753,19 +787,24 @@ lock (_busyLock)
             _log.Add(roundId, $"步骤 {stepNo} 下发失败 {taskId}：HTTP {code} {json[..Math.Min(json.Length, 200)]}", "#f87171");
             _log.AddOrUpdate("[模板步骤失败]", $"模板「{tpl.Label}」：下发失败 HTTP {code} {json[..Math.Min(json.Length, 200)]}", "#f87171");
             ReleaseTaskLocks(taskId);
-// 下发失败立即释放本次占用的容器（带货托需同时释放托盘与货物）
-            lock (_busyLock) { _busyContainers.Remove(container); if (!string.IsNullOrEmpty(ctx.PalletCode)) _busyContainers.Remove(ctx.PalletCode); _pendingUnits.Remove(ctx.PalletCode ?? ""); _pendingUnits.Remove(container ?? ""); }
+            // 下发失败：账本占用保留（fail 前缀），下轮快照对照 GRCS 缓存确认后回收——防「超时但 GRCS 已收」重复选
+            _invStore.MarkFail(taskContainers, taskId);
         }
         return null;
     }
 
-    private async Task ReleaseOnFinishAsync(string taskId)
+    private async Task ReleaseOnFinishAsync(string taskId, string destMark)
     {
         try { await _stage.WaitFinishedAsync(taskId); }
-        catch { }
-ReleaseTaskLocks(taskId);
-        if (_containersByTask.TryRemove(taskId, out var codes))
-            lock (_busyLock) foreach (var cc in codes) _busyContainers.Remove(cc);
+        catch
+        {
+            // 等待被中断（停止/强制结束时刻）：任务未必完成——账本占用保留防重复选，站点锁保守释放
+            _log.Add($"⚠ 任务 {taskId} 等待 FINISHED 被中断，账本占用保留（防重复选货）", "#f59e0b");
+            ReleaseTaskLocks(taskId);
+            return;
+        }
+        ReleaseTaskLocks(taskId);
+        _invStore.Release(taskId, destMark);
     }
 
     /// <summary>释放某个任务持有的全部站点锁（起点 + 终点）。</summary>
@@ -782,15 +821,21 @@ ReleaseTaskLocks(taskId);
     public async Task<InventorySummaryDto> GetInventorySummaryAsync()
     {
         var dto = new InventorySummaryDto();
-        // 点击查库存 = 实时拉取 GRCS 最新库存再统计（失败静默沿用旧缓存，2 秒后台轮询自愈）
+        // 点击查库存 = 实时拉取 GRCS 最新库存再统计（失败静默沿用旧缓存；分类统计以 GRCS 为准，锁定统计以账本为准）
         await _inventoryCache.RefreshNowAsync();
         var settings = _settings.Get();
         if (settings == null || !_inventoryCache.Ready) return dto;
         var range = _range.Get();
         var rangeSet = (range.Enabled && range.Marks.Count > 0)
             ? new HashSet<string>(range.Marks, StringComparer.OrdinalIgnoreCase) : null;
-        // 锁定中 = 移动单元数（运行任务 + 选点未下发的主容器单元）
-        lock (_busyLock) dto.Locked = _containersByTask.Count + _pendingUnits.Count;
+        // 锁定中 = 账本占用单元数（busy 按任务去重 + picked 数；GRCS 锁定/下发失败保留不计入）
+        var inv = _invStore.All();
+        var busyTasks = inv.Where(r => r.Status == "busy" && !string.IsNullOrEmpty(r.TaskId)
+            && !r.TaskId.StartsWith(WcsInventoryStore.FailPrefix, StringComparison.OrdinalIgnoreCase)
+            && !r.TaskId.StartsWith(WcsInventoryStore.GrcsLockPrefix, StringComparison.OrdinalIgnoreCase))
+            .Select(r => r.TaskId).Distinct(StringComparer.OrdinalIgnoreCase).Count();
+        var pickedCount = inv.Count(r => r.Status == "picked");
+        dto.Locked = busyTasks + pickedCount;
         var records = _inventoryCache.Records;
         // 仅统计「储位」内的库存（与选池一致，排除分拣/接驳位流转中的货）
         var stations = _map.GetStations();
@@ -812,26 +857,27 @@ ReleaseTaskLocks(taskId);
             }
             else if (code.Contains("Container", StringComparison.OrdinalIgnoreCase)) containerStations.Add(c.CurrentStationCode ?? "");
         }
-        // 锁定明细：站点从库存记录补充（在途/无记录 = 空站点）
+        // 锁定明细：账本 busy（按任务合并主容器+CargoCode）与 picked（选点未下发）
         var lockedCodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var kv in _containersByTask)
+        foreach (var g in inv.Where(r => r.Status == "busy" && !string.IsNullOrEmpty(r.TaskId)
+            && !r.TaskId.StartsWith(WcsInventoryStore.FailPrefix, StringComparison.OrdinalIgnoreCase)
+            && !r.TaskId.StartsWith(WcsInventoryStore.GrcsLockPrefix, StringComparison.OrdinalIgnoreCase))
+            .GroupBy(r => r.TaskId, StringComparer.OrdinalIgnoreCase))
         {
-            var codes = kv.Value;
-            var pallet = codes.FirstOrDefault(c => (c ?? "").Contains("Container", StringComparison.OrdinalIgnoreCase));
-            var main = pallet ?? codes.FirstOrDefault(c => !string.IsNullOrEmpty(c)) ?? "";
-            var cargoCode = codes.FirstOrDefault(c => (c ?? "").Contains("Cargo", StringComparison.OrdinalIgnoreCase));
+            var rows = g.ToList();
+            var pallet = rows.FirstOrDefault(r => (r.Code ?? "").Contains("Container", StringComparison.OrdinalIgnoreCase));
+            var main = pallet?.Code ?? rows.FirstOrDefault(r => !string.IsNullOrEmpty(r.Code))?.Code ?? "";
+            var cargoCode = rows.FirstOrDefault(r => (r.Code ?? "").Contains("Cargo", StringComparison.OrdinalIgnoreCase))?.Code;
             if (string.IsNullOrEmpty(main)) continue;
             dto.LockedItems.Add(new InventoryDetailItem { Code = main, CargoCode = cargoCode });
             lockedCodes.Add(main);
         }
-        lock (_busyLock)
+        foreach (var r in inv.Where(x => x.Status == "picked"))
         {
-            foreach (var c in _pendingUnits)
-            {
-                dto.LockedItems.Add(new InventoryDetailItem { Code = c });
-                lockedCodes.Add(c);
-            }
+            dto.LockedItems.Add(new InventoryDetailItem { Code = r.Code });
+            lockedCodes.Add(r.Code);
         }
+        var occupiedCodes = new HashSet<string>(inv.Where(r => r.Status == "busy" || r.Status == "picked").Select(r => r.Code), StringComparer.OrdinalIgnoreCase);
         foreach (var c in records)
         {
             if (rangeSet != null && !rangeSet.Contains(c.CurrentStationCode ?? "")) continue;
@@ -841,7 +887,7 @@ ReleaseTaskLocks(taskId);
                 var item = dto.LockedItems.FirstOrDefault(x => string.Equals(x.Code, code, StringComparison.OrdinalIgnoreCase));
                 if (item != null && string.IsNullOrEmpty(item.Station)) item.Station = c.CurrentStationCode;
             }
-            bool busy; lock (_busyLock) busy = _busyContainers.Contains(code);
+            bool busy = occupiedCodes.Contains(code);
             if (busy) continue; // 被任务锁定的容器不计入分类（已算在「锁定中」）
             if (code.Contains("Cargo", StringComparison.OrdinalIgnoreCase))
             {
@@ -871,69 +917,31 @@ ReleaseTaskLocks(taskId);
         return dto;
     }
 
-private async Task<(List<InvItem> Empty, List<InvItem> Loaded, List<InvItem> Cargo, bool Ok,
+/// <summary>从 WCS 库存账本构建本轮选池（范围过滤 + 仅储位 + 排除 busy/picked）。
+    /// 上一轮下发失败的占用（fail 前缀）在此对照 GRCS 缓存确认：容器仍存在 → 放回账本；否则保持排除。</summary>
+    private async Task<(List<InvItem> Empty, List<InvItem> Loaded, List<InvItem> Cargo, bool Ok,
         int Stored, int LockedStored, int LoadedStored, DateTime SnapshotAt)> SnapshotAsync(WcsSettingsDto settings, string roundId)
     {
-        var empty = new List<InvItem>();
-        var loaded = new List<InvItem>();
-        var cargo = new List<InvItem>();
-        int stored = 0, lockedStored = 0, loadedStored = 0;
         try
         {
-            if (!_inventoryCache.Ready) { _log.Add(roundId, "库存缓存未就绪（GRCS 库存查询未成功），跳过本轮", "#f87171"); return (empty, loaded, cargo, false, 0, 0, 0, _inventoryCache.SnapshotTime); }
+            if (_invStore.HasFailed() && _inventoryCache.Ready)
+            {
+                var records = await _inventoryCache.SyncAllAsync();
+                _invStore.RecycleFailed(records.Select(r => r.Code ?? "").Where(c => c != ""));
+            }
             var range = _range.Get();
             var rangeSet = (range.Enabled && range.Marks.Count > 0)
                 ? new HashSet<string>(range.Marks, StringComparer.OrdinalIgnoreCase)
                 : null;
-            var all = _inventoryCache.Records.Where(x => rangeSet == null || rangeSet.Contains(x.CurrentStationCode ?? "")).ToList();
-            // 仅从「储位」选：排除分拣台 / 接驳位等流转中位置的货物与托盘，避免选中正在分拣的货
-            var stations = _map.GetStations();
-            var storageMarks = new HashSet<string>(stations.Where(s => (s.StationType & MapStationTypeBits.StorageLocation) != 0).Select(s => s.Mark), StringComparer.OrdinalIgnoreCase);
-            // 第一遍：收集 Container / Cargo 的当前站点（同站点关联，保证带货托与纯货物互斥）并建立站点→货物号映射（带货托取货物号用）
-            var containerStations = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            var cargoStations = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            var cargoByStation = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-            foreach (var c in all)
-            {
-                if ((c.Code ?? "").Contains("Cargo", StringComparison.OrdinalIgnoreCase))
-                {
-                    var st = c.CurrentStationCode ?? "";
-                    cargoStations.Add(st);
-                    if (!string.IsNullOrEmpty(st) && !string.IsNullOrEmpty(c.Code) && !cargoByStation.ContainsKey(st))
-                        cargoByStation[st] = c.Code!;
-                }
-                else if ((c.Code ?? "").Contains("Container", StringComparison.OrdinalIgnoreCase)) containerStations.Add(c.CurrentStationCode ?? "");
-            }
-// 第二遍：构建候选池（带货托 = 同当前站点有关联货物；纯货物 = 无同站点托盘的独立货物）
-            foreach (var c in all)
-            {
-                var code = c.Code ?? "";
-                // 池空诊断统计：范围内储位托盘总数 / 锁定数（与池构建同口径，供「无可用托盘」日志核对）
-                if (code.Contains("Container", StringComparison.OrdinalIgnoreCase) && storageMarks.Contains(c.CurrentStationCode ?? ""))
-                {
-                    stored++;
-                    if (_busyContainers.Contains(code)) lockedStored++;
-                }
-                if (_busyContainers.Contains(code)) continue; // 跨轮排除已占用容器，避免下一轮重复选中
-                if (!storageMarks.Contains(c.CurrentStationCode ?? "")) continue; // 仅从储位选，排除非储位（分拣/接驳）位置
-                if (code.Contains("Cargo", StringComparison.OrdinalIgnoreCase))
-                {
-                    // 托盘上的货算带货托一部分，不单独进入货物池
-                    if (!containerStations.Contains(c.CurrentStationCode ?? ""))
-                        cargo.Add(new InvItem(code, c.HomeStationMark ?? "", false, null, c.CurrentStationCode));
-                }
-                else if (code.Contains("Container", StringComparison.OrdinalIgnoreCase))
-                {
-                    var st = c.CurrentStationCode ?? "";
-                    var isLoaded = !string.IsNullOrEmpty(st) && cargoStations.Contains(st);
-                    var cargoCode = isLoaded && cargoByStation.TryGetValue(st, out var cc) ? cc : null;
-                    (isLoaded ? loaded : empty).Add(new InvItem(code, c.HomeStationMark ?? "", isLoaded, cargoCode, st));
-                    if (isLoaded) loadedStored++;
-                }
-            }
+            var (empty, loaded, cargo, stored, lockedStored, loadedStored) =
+                _invStore.BuildPool(rangeSet, _invStore.StorageMarks());
+            return (empty, loaded, cargo, true, stored, lockedStored, loadedStored, DateTime.Now);
         }
-        catch (Exception ex) { _log.Add(roundId, $"库存查询异常：{ex.Message}", "#f87171"); return (empty, loaded, cargo, false, 0, 0, 0, _inventoryCache.SnapshotTime); }
-        return (empty, loaded, cargo, true, stored, lockedStored, loadedStored, _inventoryCache.SnapshotTime);
+        catch (Exception ex)
+        {
+            _log.Add(roundId, $"库存查询异常：{ex.Message}", "#f87171");
+            return (new List<InvItem>(), new List<InvItem>(), new List<InvItem>(), false, 0, 0, 0, DateTime.MinValue);
+        }
     }
 
     private static string? WcsOf(string? mark, List<MapStationLite> stations)
@@ -1007,21 +1015,21 @@ var p = string.IsNullOrWhiteSpace(prefix) ? "Container" : prefix.Trim();
         return names.Count == 0 ? $"未知({bits})" : string.Join("+", names);
     }
 
-    /// <summary>从库存缓存重建当前储位占用集合（仅储位上有货的站点；缓存未就绪时返回空，由 2 秒后台轮询补上）。</summary>
-    private HashSet<string> BuildOccupiedFromCache()
+    /// <summary>从库存账本重建当前储位占用集合（账本行位置 = 容器当前储位；busy 在途行位置仍为起点储位）。
+    /// 注意：GRCS 侧模拟入库/移库不会自动进账本，需点「同步」后账本才反映。</summary>
+    private HashSet<string> BuildOccupiedFromLedger()
     {
         var storageMarks = new HashSet<string>(
             _map.GetStations().Where(s => (s.StationType & MapStationTypeBits.StorageLocation) != 0).Select(s => s.Mark),
             StringComparer.OrdinalIgnoreCase);
         var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        if (!_inventoryCache.Ready) return set;
-        foreach (var c in _inventoryCache.Records)
+        foreach (var r in _invStore.All())
         {
-            var st = c.CurrentStationCode ?? "";
+            var st = r.Station ?? "";
             if (string.IsNullOrEmpty(st) || !storageMarks.Contains(st)) continue;
             set.Add(st);
         }
-return set;
+        return set;
     }
 
 private class ExecCtx

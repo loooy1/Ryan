@@ -342,7 +342,11 @@ public class ExceptionRecordStore
         if (!string.IsNullOrEmpty(vehicle)) q = q.Where(r => r.VehicleCode == vehicle);
         if (!string.IsNullOrEmpty(dateFrom)) q = q.Where(r => string.Compare(r.HappenedAt, dateFrom) >= 0);
         if (!string.IsNullOrEmpty(dateTo)) q = q.Where(r => string.Compare(r.HappenedAt, dateTo) <= 0);
-        if (!string.IsNullOrEmpty(status)) q = q.Where(r => r.Status == status);
+        if (!string.IsNullOrEmpty(status))
+        {
+            var statuses = status.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            q = q.Where(r => statuses.Contains(r.Status));
+        }
         if (!string.IsNullOrEmpty(dept)) q = q.Where(r => r.ResponsibleDept == dept);
         if (!string.IsNullOrEmpty(project)) q = q.Where(r => r.Project == project);
         return q.OrderByDescending(r => r.Id).ToList();

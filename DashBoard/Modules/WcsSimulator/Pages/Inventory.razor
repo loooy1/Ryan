@@ -132,8 +132,11 @@
             @(_autoLoading ? "⏳ 生成中..." : "🏭 生成容器")
         </button>
         <button class="btn btn-outline" @onclick="ResetAuto">🔄 重置条件</button>
+        <button class="btn btn-outline" @onclick="SyncLedger" disabled="@_syncLoading" style="border-color:#4ade80;color:#4ade80;">
+            @(_syncLoading ? "⏳ 同步中..." : "🔄 同步至WCS")
+        </button>
     </div>
-    <div class="hint-text" style="margin-top:4px;">调用 GRCS /AutoContainerEnter 接口（场景名按「地图信息」页系统设置），在空闲 RACK 储位上批量生成容器</div>
+    <div class="hint-text" style="margin-top:4px;">调用 GRCS /AutoContainerEnter 接口（场景名按「地图信息」页系统设置），在空闲 RACK 储位上批量生成容器。同步库存账本 = 以 GRCS 为准清空重建（有在途自动化任务时会被拒绝）</div>
     }
 </div>
 
@@ -169,6 +172,17 @@
     private int _autoFloor = 1;
     private int _autoType = 1;
     private bool _autoLoading;
+    private bool _syncLoading;
+
+    /// <summary>同步库存账本（清空重建，以 GRCS 为准；有在途自动化任务时后端拒绝）。</summary>
+    private async Task SyncLedger()
+    {
+        _syncLoading = true;
+        var (ok, json) = await WcsService.SyncInventoryAsync();
+        ShowFeedback(ok ? "✅" : "❌",
+            ok ? $"库存账本已同步（以 GRCS 为准重建）\n\n{json}" : $"同步失败：{json}");
+        _syncLoading = false;
+    }
 
     private void OnAutoTypeChanged(int type)
     {

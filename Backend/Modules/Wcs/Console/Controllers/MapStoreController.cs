@@ -13,12 +13,19 @@ namespace GrcsBackend.Modules.Wcs.Console.Controllers;
 public class MapStoreController : ControllerBase
 {
     private readonly MapStoreService _mapStore;
+    private readonly WcsInventoryStore _invStore;
 
-    public MapStoreController(MapStoreService mapStore) => _mapStore = mapStore;
+    public MapStoreController(MapStoreService mapStore, WcsInventoryStore invStore)
+    {
+        _mapStore = mapStore;
+        _invStore = invStore;
+    }
 
     [HttpPost("upload")]
     public ActionResult<object> Upload([FromBody] MapUploadDto dto)
     {
+        if (_invStore.HasInTransit())
+            return BadRequest(new { success = false, message = "存在在途自动化任务，禁止更新地图（任务依赖储位坐标）；请先停止或等待任务完成" });
         _mapStore.Save(dto);
         return Ok(new { success = true, count = dto.Stations?.Count ?? 0 });
     }
