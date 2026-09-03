@@ -19,7 +19,8 @@ public static class SharedModuleExtensions
             var env = sp.GetRequiredService<IWebHostEnvironment>();
             var connStr = new SqliteConnectionStringBuilder
             {
-                DataSource = Path.Combine(env.ContentRootPath, "grcs.db")
+                DataSource = Path.Combine(env.ContentRootPath, "grcs.db"),
+                DefaultTimeout = 30
             }.ToString();
             options.UseSqlite(connStr);
         });

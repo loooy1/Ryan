@@ -279,6 +279,8 @@ public class NestStatsDto
     public int TargetOccupied { get; set; }
     /// <summary>已下发、车正在前往途中的目标点数（等待到达，不重复派车）。</summary>
     public int TargetAssigned { get; set; }
+    /// <summary>本次归巢是否正常执行完成（true=完成并已清空车队与巢区；false=手动停止/失败，保留配置）。</summary>
+    public bool Completed { get; set; }
 }
 
 /// <summary>异常记录-复现请求体（VehicleCode 覆盖车号，空串=清空）。</summary>

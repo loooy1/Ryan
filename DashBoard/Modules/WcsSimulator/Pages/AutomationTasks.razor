@@ -757,7 +757,17 @@
 
     private void OnMoveLoopChanged() => InvokeAsync(StateHasChanged);
 
-    private void OnNestStatsChanged() => InvokeAsync(StateHasChanged);
+    private void OnNestStatsChanged()
+    {
+        // 归巢正常执行完成（后端已清空巢区配置）→ 同步清空本地车队与巢区显示；手动停止/失败不清空
+        if (StageHub.NestStats?.Completed == true)
+        {
+            _selectedVehicles = [];
+            _nestMarksText = "";
+            _ = LocalStore.SetAsync(Js, "grcs_nest_fleet", "[]");
+        }
+        InvokeAsync(StateHasChanged);
+    }
 
     // ── 归巢模式 ──
     private string _nestPreview => string.IsNullOrWhiteSpace(_nestMarksText)

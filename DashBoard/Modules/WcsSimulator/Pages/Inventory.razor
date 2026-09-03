@@ -2,6 +2,7 @@
 @inject WcsApiClient WcsService
 @inject IJSRuntime Js
 @inject LocalStoreService LocalStore
+@inherits GRCS.Dashboard.Modules.WcsSimulator.Components.PageBase
 @using System.Text.Json
 @using GRCS.Dashboard.Modules.WcsSimulator.Models
 
@@ -198,10 +199,6 @@
         _autoType = 1;
     }
 
-    // ── 反馈 ──
-    private string _feedback = "";
-    private string _feedbackClass = "";
-
     // ── 折叠状态 ──
     private Dictionary<string, bool> _collapsed = new() { ["inv_list"] = true, ["inv_auto"] = true };
     private bool IsCollapsed(string key) => _collapsed.GetValueOrDefault(key, true);
@@ -355,11 +352,5 @@
         if (ok)
             await QueryInventory();   // 生成后自动刷新库存列表
         _autoLoading = false;
-    }
-
-    private void ShowFeedback(string icon, string msg)
-    {
-        _feedback = $"{icon} {msg}";
-        _feedbackClass = msg.StartsWith("❌") || msg.Contains("失败") ? "error" : "success";
     }
 }

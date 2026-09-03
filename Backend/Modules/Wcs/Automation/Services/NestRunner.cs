@@ -35,6 +35,7 @@ public class NestRunner
 
     private readonly object _stateLock = new();
     private bool _running;
+    private bool _completed;
     private string? _lastRunAt;
     private List<string> _readyVehicles = [];
     private int _ok;
@@ -82,6 +83,7 @@ public class NestRunner
                 TargetTotal = _targetTotal,
                 TargetOccupied = _targetOccupied,
                 TargetAssigned = _targetAssigned,
+                Completed = _completed,
             };
         }
     }
@@ -94,6 +96,7 @@ public class NestRunner
         {
             if (_running) return (false, "归巢执行中，请稍候");
             _running = true;
+            _completed = false;
             _ok = 0;
             _fail = 0;
             _lastError = null;
@@ -259,13 +262,13 @@ public class NestRunner
                 if (occupiedTargets.Count >= targets.Count)
                 {
                     _logs.Add($"✅ 归巢完成：巢区 {targets.Count} 个目标点已全部被车占用（成功 {_ok} / 失败 {_fail}）", "#4ade80");
-                    await FinishAsync(null);
+                    await FinishAsync(null, true);
                     return;
                 }
                 if (outsideReady.Count == 0 && _assignments.Count == 0)
                 {
                     _logs.Add($"🕓 巢区目标点 {targets.Count} 个，已占用 {occupiedTargets.Count} 个，但无区域外就绪车可调（还差 {targets.Count - occupiedTargets.Count} 台，车可能在执行任务/不在线/非空闲），本轮结束", "#fbbf24");
-                    await FinishAsync(null);
+                    await FinishAsync(null, true);
                     return;
                 }
 
@@ -364,11 +367,23 @@ public class NestRunner
 
     private void Finish() => _logs.Add($"✅ 归巢模式执行完成：共 {_readyVehicles.Count} 台车，成功 {_ok} / 失败 {_fail}", "#4ade80");
 
-    private async Task FinishAsync(string? summary = null)
+    private async Task FinishAsync(string? summary = null, bool completed = false)
     {
         if (!string.IsNullOrEmpty(summary)) _logs.Add(summary, "#4ade80");
         else Finish();
-        lock (_stateLock) { _running = false; _cts?.Dispose(); _cts = null; }
+        lock (_stateLock)
+        {
+            if (completed)
+            {
+                _completed = true;
+                _pool = [];
+                _nestConfig.Set(new NestConfigDto());
+                _logs.Add("🧹 归巢执行完成，已清空车队与巢区（下次归巢请重新框选）", "#4ade80");
+            }
+            _running = false;
+            _cts?.Dispose();
+            _cts = null;
+        }
         Broadcast();
     }
 

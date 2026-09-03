@@ -82,6 +82,7 @@ public class AutomationConsoleController : ControllerBase
     [HttpPost("start")]
     public ActionResult<object> Start([FromBody] StartRequest? req)
     {
+        _auto.ChainTemplates = req?.ChainTemplates ?? false;
         var (ok, reason) = _auto.Start(req?.TabId, req?.TemplateIds);
         return Ok(new { success = ok, message = reason ?? "", running = _auto.Running });
     }
@@ -242,7 +243,7 @@ public class AutomationConsoleController : ControllerBase
 
 public class IntervalRequest { public int Interval { get; set; } } // 秒
 public class NestRunRequest { public List<string>? Vehicles { get; set; } } // 本次归巢车队（可空 = 自动捕获）
-public class StartRequest { public string? TabId { get; set; } public List<string>? TemplateIds { get; set; } }
+public class StartRequest { public string? TabId { get; set; } public List<string>? TemplateIds { get; set; } public bool ChainTemplates { get; set; } }
 public class TabRequest { public string? TabId { get; set; } }
 public class SignalFlagsRequest
 {

@@ -18,6 +18,8 @@ public class WcsInventoryStore
     public const string GrcsLockPrefix = "grcs_lock:";
     private const string SyncedMarksKey = "inv_synced_marks";
 
+    private static readonly object WriteLock = new(); // SQLite 不支持并发写入，全局锁序列化所有写操作
+
     private readonly IUnitOfWorkFactory _uow;
     private readonly MapStoreService _map;
 
@@ -117,18 +119,23 @@ public class WcsInventoryStore
     /// <summary>选中容器（已选未下发）：idle → picked。</summary>
     public void Pick(string code)
     {
-        using var uow = _uow.Create();
-        var repo = uow.Repository<WcsInventoryRow>();
-        var row = repo.FindAsync(code).GetAwaiter().GetResult();
-        if (row == null || row.Status != "idle") return;
-        row.Status = "picked";
-        row.UpdatedAt = DateTime.Now.ToString("O");
-        uow.CommitAsync().GetAwaiter().GetResult();
+        lock (WriteLock)
+        {
+            using var uow = _uow.Create();
+            var repo = uow.Repository<WcsInventoryRow>();
+            var row = repo.FindAsync(code).GetAwaiter().GetResult();
+            if (row == null || row.Status != "idle") return;
+            row.Status = "picked";
+            row.UpdatedAt = DateTime.Now.ToString("O");
+            uow.CommitAsync().GetAwaiter().GetResult();
+        }
     }
 
     /// <summary>下发成功：picked → busy，绑定任务。</summary>
     public void MarkBusy(IEnumerable<string> codes, string taskId)
     {
+        lock (WriteLock)
+        {
         using var uow = _uow.Create();
         var repo = uow.Repository<WcsInventoryRow>();
         foreach (var code in codes)
@@ -140,11 +147,14 @@ public class WcsInventoryStore
             row.UpdatedAt = DateTime.Now.ToString("O");
         }
         uow.CommitAsync().GetAwaiter().GetResult();
+        }
     }
 
     /// <summary>下发失败：picked → busy + fail 前缀（下轮快照确认后回收，防「超时但 GRCS 已收」重复选）。</summary>
     public void MarkFail(IEnumerable<string> codes, string taskId)
     {
+        lock (WriteLock)
+        {
         using var uow = _uow.Create();
         var repo = uow.Repository<WcsInventoryRow>();
         foreach (var code in codes)
@@ -156,11 +166,14 @@ public class WcsInventoryStore
             row.UpdatedAt = DateTime.Now.ToString("O");
         }
         uow.CommitAsync().GetAwaiter().GetResult();
+        }
     }
 
     /// <summary>链 finally 回收：选过但未下发的 picked 记录 → idle。</summary>
     public void RecyclePicked(IEnumerable<string> codes)
     {
+        lock (WriteLock)
+        {
         using var uow = _uow.Create();
         var repo = uow.Repository<WcsInventoryRow>();
         foreach (var code in codes)
@@ -172,11 +185,14 @@ public class WcsInventoryStore
             row.UpdatedAt = DateTime.Now.ToString("O");
         }
         uow.CommitAsync().GetAwaiter().GetResult();
+        }
     }
 
     /// <summary>任务 FINISHED：busy → idle，位置更新到终点，解除任务绑定。</summary>
     public void Release(string taskId, string destMark)
     {
+        lock (WriteLock)
+        {
         using var uow = _uow.Create();
         var repo = uow.Repository<WcsInventoryRow>();
         foreach (var row in repo.Query().Where(r => r.TaskId == taskId).ToList())
@@ -188,11 +204,14 @@ public class WcsInventoryStore
             row.UpdatedAt = DateTime.Now.ToString("O");
         }
         uow.CommitAsync().GetAwaiter().GetResult();
+        }
     }
 
     /// <summary>下轮快照确认：对照 GRCS 缓存回收失败的占用。容器仍存在（未锁定）→ idle 放回；不存在/锁定 → 保持排除。</summary>
     public void RecycleFailed(IEnumerable<string> stillPresent)
     {
+        lock (WriteLock)
+        {
         using var uow = _uow.Create();
         var repo = uow.Repository<WcsInventoryRow>();
         var present = new HashSet<string>(stillPresent, StringComparer.OrdinalIgnoreCase);
@@ -204,11 +223,14 @@ public class WcsInventoryStore
             row.UpdatedAt = DateTime.Now.ToString("O");
         }
         uow.CommitAsync().GetAwaiter().GetResult();
+        }
     }
 
     /// <summary>强制结束：清空全部占用（busy/picked → idle）。</summary>
     public void ClearBusy()
     {
+        lock (WriteLock)
+        {
         using var uow = _uow.Create();
         var repo = uow.Repository<WcsInventoryRow>();
         foreach (var row in repo.Query().Where(r => r.Status != "idle").ToList())
@@ -218,6 +240,7 @@ public class WcsInventoryStore
             row.UpdatedAt = DateTime.Now.ToString("O");
         }
         uow.CommitAsync().GetAwaiter().GetResult();
+        }
     }
 
     // ── 同步 ──
@@ -225,6 +248,8 @@ public class WcsInventoryStore
     /// <summary>全量重建（同步按钮）：清空账本 → 按 GRCS 记录重建；GRCS 锁定记录标 busy（grcs_lock 前缀，不视为 WCS 在途）。</summary>
     public void RebuildFromGrcs(List<CargoInventoryItem> records)
     {
+        lock (WriteLock)
+        {
         using var uow = _uow.Create();
         var repo = uow.Repository<WcsInventoryRow>();
         repo.DeleteWhereAsync(_ => true).GetAwaiter().GetResult();
@@ -234,28 +259,31 @@ public class WcsInventoryStore
             if (string.IsNullOrEmpty(code)) continue;
             repo.AddAsync(new WcsInventoryRow
             {
-                Code = code,
-                Station = r.CurrentStationCode ?? "",
-                HomeMark = r.HomeStationMark ?? "",
-                CargoCode = "",
-                Status = r.IsLocked ? "busy" : "idle",
-                TaskId = r.IsLocked ? GrcsLockPrefix + code : "",
-                UpdatedAt = DateTime.Now.ToString("O"),
+                    Code = code,
+                    Station = r.CurrentStationCode ?? "",
+                    HomeMark = r.HomeStationMark ?? "",
+                    CargoCode = "",
+                    Status = "idle",
+                    TaskId = r.IsLocked ? GrcsLockPrefix + code : "",
+                    UpdatedAt = DateTime.Now.ToString("O"),
             }).GetAwaiter().GetResult();
         }
         uow.CommitAsync().GetAwaiter().GetResult();
+        }
     }
 
     /// <summary>增量合并（新增选点点位）：只处理 stationSet 内的记录——新码插入；idle 更新位置；busy/picked 不动。</summary>
-    public void SyncMerge(List<CargoInventoryItem> records, HashSet<string> stationSet)
+    public void SyncMerge(List<CargoInventoryItem> records, HashSet<string>? stationSet)
     {
+        lock (WriteLock)
+        {
         using var uow = _uow.Create();
         var repo = uow.Repository<WcsInventoryRow>();
         foreach (var r in records)
         {
             var code = r.Code ?? "";
             if (string.IsNullOrEmpty(code)) continue;
-            if (!stationSet.Contains(r.CurrentStationCode ?? "")) continue;
+            if (stationSet != null && !stationSet.Contains(r.CurrentStationCode ?? "")) continue;
             var row = repo.FindAsync(code).GetAwaiter().GetResult();
             if (row == null)
             {
@@ -265,7 +293,7 @@ public class WcsInventoryStore
                     Station = r.CurrentStationCode ?? "",
                     HomeMark = r.HomeStationMark ?? "",
                     CargoCode = "",
-                    Status = r.IsLocked ? "busy" : "idle",
+                    Status = "idle",
                     TaskId = r.IsLocked ? GrcsLockPrefix + code : "",
                     UpdatedAt = DateTime.Now.ToString("O"),
                 }).GetAwaiter().GetResult();
@@ -278,11 +306,14 @@ public class WcsInventoryStore
             }
         }
         uow.CommitAsync().GetAwaiter().GetResult();
+        }
     }
 
     /// <summary>上次已同步过的选点范围（kv 持久化），启动轮询时做 diff。</summary>
     public HashSet<string> GetSyncedMarks()
     {
+        lock (WriteLock)
+        {
         var s = KvAccess.Get(_uow, SyncedMarksKey);
         if (string.IsNullOrEmpty(s)) return [];
         try
@@ -290,11 +321,15 @@ public class WcsInventoryStore
             return System.Text.Json.JsonSerializer.Deserialize<HashSet<string>>(s) ?? [];
         }
         catch { return []; }
+        }
     }
 
     public void SetSyncedMarks(HashSet<string> marks)
     {
+        lock (WriteLock)
+        {
         KvAccess.Set(_uow, SyncedMarksKey, System.Text.Json.JsonSerializer.Serialize(marks));
+        }
     }
 
     // ── 储位集合（选池共用的过滤条件）──

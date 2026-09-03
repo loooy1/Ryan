@@ -364,3 +364,5 @@ FodyWeavers.xsd
 
 # SQLite 数据库（程序启动自动重建，不入版本库）
 *.db
+*.db-shm
+*.db-wal

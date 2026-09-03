@@ -51,7 +51,8 @@ public class AutomationHub : IDisposable
     /// <summary>立即拉一轮（手动操作后调用，避免等下一拍）。</summary>
     public async Task RefreshNowAsync()
     {
-        try { await PollAsync(); }
+        // 不设置 SuppressAlerts，让手动操作的告警能弹出
+        try { await PollOnceAsync(); }
         catch { }
     }
 
@@ -65,6 +66,14 @@ public class AutomationHub : IDisposable
     }
 
     private async Task PollAsync()
+    {
+        _api.SuppressAlerts = true; // 自动轮询不弹告警，避免反复刷屏
+        try { await PollOnceAsync(); }
+        finally { _api.SuppressAlerts = false; } // 恢复手动操作的告警弹窗
+    }
+
+    /// <summary>执行一轮轮询（不修改 SuppressAlerts，由调用方控制）。</summary>
+    private async Task PollOnceAsync()
     {
         var st = await _api.GetAsync<AutoStatusSnapshot>("/api/wcs/auto/status");
         if (st != null) Status = st;

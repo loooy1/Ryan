@@ -14,6 +14,11 @@ public class WcsApiClient
     private readonly LocalStoreService _store;
     private readonly BackendHealthService _health;
     private readonly ConnectionAlertService _alert;
+    private bool _notifiedOffline; // WCS 后端已弹过离线告警
+    private bool _notifiedGrcsOffline; // GRCS 后端已弹过离线告警
+
+    /// <summary>抑制告警弹窗（自动轮询时设为 true，避免反复刷屏；手动操作保持 false 仍弹）。</summary>
+    public bool SuppressAlerts { get; set; }
     private static readonly JsonSerializerOptions JsonOpts = new() { PropertyNameCaseInsensitive = true, Converters = { new FlexibleDateTimeConverter() } };
 
     /// <summary>后端时间常为 "yyyy-MM-dd HH:mm:ss.fff"（空格）格式，System.Text.Json 默认仅认 ISO 8601；
@@ -40,7 +45,7 @@ public class WcsApiClient
     /// <summary>WCS 后端连接前置检查：未连接时弹告警并返回 false（调用方短路返回失败值）。</summary>
     private bool ConnectionReady()
     {
-        if (_health.WcsOnline == false)
+        if (_health.WcsOnline == false && !SuppressAlerts)
         {
             _alert.Show($"无法连接 WCS 后端（{BaseUrl}）\n请确认后端服务已启动，或检查「地址设置」中的连接地址。");
             return false;
@@ -48,11 +53,21 @@ public class WcsApiClient
         return true;
     }
 
-    /// <summary>请求异常兜底：实际请求失败且后端状态非在线时弹告警（覆盖健康探测尚未翻转的场景）。</summary>
+    /// <summary>请求异常兜底：仅在后端从"在线"变为"离线"时弹一次，避免反复刷屏。</summary>
     private void NotifyIfUnreachable()
     {
-        if (_health.WcsOnline != true)
-            _alert.Show($"无法连接 WCS 后端（{BaseUrl}）\n请确认后端服务已启动，或检查「地址设置」中的连接地址。");
+        if (_health.WcsOnline != true && _notifiedOffline == false)
+        {
+            if (!SuppressAlerts)
+            {
+                _notifiedOffline = true;
+                _alert.Show($"无法连接 WCS 后端（{BaseUrl}）\n请确认后端服务已启动，或检查「地址设置」中的连接地址。");
+            }
+        }
+        else if (_health.WcsOnline == true)
+        {
+            _notifiedOffline = false; // 恢复在线后可再次提醒
+        }
     }
 
     public string BaseUrl
@@ -234,9 +249,10 @@ public class WcsApiClient
         if (!ConnectionReady()) return null;
         if (_health.GrcsOnline == false)
         {
-            _alert.Show($"无法连接 GRCS 后端（{GrcsBaseUrl}）\n归巢需要 GRCS 车辆状态，请确认 GRCS 服务已启动。");
+            if (_notifiedGrcsOffline == false && !SuppressAlerts) { _notifiedGrcsOffline = true; _alert.Show($"无法连接 GRCS 后端（{GrcsBaseUrl}）\n归巢需要 GRCS 车辆状态，请确认 GRCS 服务已启动。"); }
             return null;
         }
+        else { _notifiedGrcsOffline = false; }
         return await PostAsync<object, NestRunResult>("/api/wcs/auto/nest/run", new { vehicles });
     }
 
@@ -246,9 +262,10 @@ public class WcsApiClient
         if (!ConnectionReady()) return [];
         if (_health.GrcsOnline == false)
         {
-            _alert.Show($"无法连接 GRCS 后端（{GrcsBaseUrl}）\n车辆数据经 WCS 后端代理获取，请确认 GRCS 服务已启动。");
+            if (_notifiedGrcsOffline == false && !SuppressAlerts) { _notifiedGrcsOffline = true; _alert.Show($"无法连接 GRCS 后端（{GrcsBaseUrl}）\n车辆数据经 WCS 后端代理获取，请确认 GRCS 服务已启动。"); }
             return [];
         }
+        else { _notifiedGrcsOffline = false; }
         try
         {
             var json = await GetAsync<JsonElement>("/api/wcs/auto/vehicles");
@@ -272,9 +289,10 @@ public class WcsApiClient
         if (!ConnectionReady()) return null;
         if (_health.GrcsOnline == false)
         {
-            _alert.Show($"无法连接 GRCS 后端（{GrcsBaseUrl}）\n库存数据经 WCS 后端代理获取，请确认 GRCS 服务已启动。");
+            if (_notifiedGrcsOffline == false && !SuppressAlerts) { _notifiedGrcsOffline = true; _alert.Show($"无法连接 GRCS 后端（{GrcsBaseUrl}）\n库存数据经 WCS 后端代理获取，请确认 GRCS 服务已启动。"); }
             return null;
         }
+        else { _notifiedGrcsOffline = false; }
         return await GetAsync<InventorySummaryDto>("/api/wcs/auto/inventory-summary");
     }
 
@@ -284,7 +302,7 @@ public class WcsApiClient
     private bool GrcsReady()
     {
         if (!ConnectionReady()) return false;
-        if (_health.GrcsOnline == false)
+        if (_health.GrcsOnline == false && !SuppressAlerts)
         {
             _alert.Show($"无法连接 GRCS 后端（{GrcsBaseUrl}）\n数据经 WCS 后端代理获取，请确认 GRCS 服务已启动。");
             return false;
@@ -297,7 +315,8 @@ public class WcsApiClient
     {
         if (_health.GrcsOnline != false
             && (json.Contains("积极拒绝") || json.Contains("无法连接") || json.Contains("超时")
-                || json.Contains("Connection refused") || json.Contains("refused to connect")))
+                || json.Contains("Connection refused") || json.Contains("refused to connect"))
+            && !SuppressAlerts)
         {
             _alert.Show($"无法连接 GRCS 后端（{GrcsBaseUrl}）\n数据经 WCS 后端代理获取，请确认 GRCS 服务已启动。");
         }

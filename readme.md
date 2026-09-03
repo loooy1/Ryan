@@ -1,151 +1,93 @@
-# WCS 模拟器（Ryan）
+# GRCS WCS 管理系统
 
-GRCS 外围系统的 WCS 部分：后端（管理面）对 GRCS 核心系统暴露 WCS 协议回调接口（`/api/v1/*`），对前端提供控制台查询/管理接口（`/api/wcs/*`）；前端（Blazor WASM 模拟器）模拟 WCS 的各类作业/信号交互，并提供台账与监控页面。
+WCS（仓库控制系统）管理面：`Backend`（.NET 后端）+ `DashBoard`（Blazor WASM 前端）+ `Contracts`（共享契约库）。
 
-> GRCS 核心后端（8224）是另一个系统，不在本仓库。
+- 后端对 **GRCS 核心系统**（8224 端口）暴露 WCS 协议回调接口 `/api/v1/*`，对前端提供管理接口 `/api/wcs/*`。
+- 前端是"薄遥控壳"：执行权（自动化模板、信号自动放行、模块执行、移动循环）全部收归后端，前端只做遥控 + 展示 + 状态同步（SignalR 实时推送）。
 
----
-
-## 目录结构
+## 项目结构
 
 ```
 Running_code/
-├─ Solutions/     解决方案：Ryan.sln（组织 Backend + Contracts + DashBoard 三项目）
-├─ Backend/       GrcsBackend：ASP.NET Core Web API 后端（管理面，端口 8230）
-├─ DashBoard/     GRCS.Dashboard：Blazor WebAssembly 前端（模拟器）
-├─ Contracts/     GrcsBackend.Contracts：共享契约类库（前后端共同引用）
-└─ 数据库备份/      grcs.db 备份（不进版本库）
+├── Backend/        # GrcsBackend：.NET 8 + EF Core + SQLite（grcs.db）+ SignalR
+├── DashBoard/      # GRCS.Dashboard：Blazor WebAssembly + MudBlazor
+├── Contracts/      # GrcsBackend.Contracts：DTO（传输）/ Entity（持久化）共享库
+├── Solutions/      # Ryan.sln 解决方案
+└── 数据库备份/      # SQLite 数据库备份
 ```
 
-单仓库管理，GitHub：https://github.com/loooy1/Ryan
+## 后端分层
 
-## 技术栈
-
-### 后端 Backend（GrcsBackend）
-
-| 项 | 内容 |
-|---|---|
-| 框架 | .NET 10（`net10.0`），ASP.NET Core Web API（`Microsoft.NET.Sdk.Web`） |
-| 数据库 | SQLite（`Microsoft.EntityFrameworkCore.Sqlite` 10.0.9，纯托管 bundle，免安装）；库文件 `grcs.db` 随编译输出复制 |
-| ORM | EF Core 10：模块化单体，`OnModelCreating` 里 `ApplyConfigurationsFromAssembly` 反射扫描（新增表零注册）、`AddDbContextFactory` 短生命周期模式 |
-| 映射 | Mapster 10.0.12（`WcsMapping.cs` 全局注册，契约 DTO ↔ 实体统一映射） |
-| 序列化 | Newtonsoft.Json 10.0.9，`yyyy-MM-dd HH:mm:ss.fff`（必须与 GRCS 解析格式对齐） |
-| 实时推送 | SignalR（`/hubs/task-stages`） |
-| HTTP 出站 | `IHttpClientFactory`（`GrcsHttpClient` 调用 GRCS 8224） |
-| 多标签页互斥 | `AutomationGate`（轮询/批量互斥闸，全后端只有一个执行者） |
-
-### 契约 Contracts（GrcsBackend.Contracts）
-
-`net8.0` 纯 POCO（无序列化特性），前后端共享：
+模块化单体：`Modules/<域>/` 目录 + `XxxModuleExtensions` 挂接 DI 注册，新增模块零侵入。
 
 ```
-Contracts/
-├─ Entities/      数据库实体
-└─ Dtos/          前后端传输模型（含 FrontendSharedModels 前端共享模型）
+Modules/
+├── Shared/            # 共享基础设施
+│   └── Infrastructure/
+│       ├── GrcsDbContext.cs      # 统一 DbContext：ApplyConfigurationsFromAssembly 自动发现实体配置
+│       └── Repository/           # 工作单元 + 泛型仓储（IDbContextFactory 短生命周期模式）
+├── Wcs/               # WCS 总模块
+│   ├── Automation/    # 自动化执行引擎
+│   │   ├── AutoTemplateRunner.cs    # 模板执行引擎（轮询/单次模式，IHostedService）
+│   │   ├── TaskDispatcher.cs        # 任务下发器：选点+加锁+组装+下发+释放
+│   │   ├── ModuleRunService.cs      # 模块执行引擎（起点前/起点后/终点三类时机）
+│   │   ├── SignalAutoHostedService.cs  # 信号自动放行（3s 轮询）
+│   │   ├── MoveLoopRunner.cs        # 纯移动任务循环
+│   │   ├── NestRunner.cs            # 归巢模式
+│   │   ├── InventoryCoordinator.cs  # 库存账本协调：选池/统计/占用
+│   │   └── TemplateValidator.cs     # 模板保存前校验
+│   ├── Proxy/          # GRCS 对接层（GrcsHttpClient：5 秒在线熔断）
+│   ├── Console/        # 控制台接口层（全部 /api/wcs/* 控制器）
+│   ├── Realtime/       # SignalR Hub（任务事件/统计/审批/模块日志）
+│   └── Infrastructure/ # Store 层 + EF 配置（12 个实体配置自动发现）
+└── Migrations/         # EF Core 迁移（启动时自动 Migrate）
 ```
 
-### 前端 DashBoard（GRCS.Dashboard）
+### 数据访问约定
 
-| 项 | 内容 |
-|---|---|
-| 框架 | .NET 10（`net10.0`），Blazor WebAssembly（`Microsoft.NET.Sdk.BlazorWebAssembly`） |
-| UI | MudBlazor 8.15.0 |
-| Excel 导出 | ClosedXML 0.105.1 |
-| 实时 | SignalR 客户端（`TaskStageHub`，任务看板事件推送，前端不轮询 task-stages） |
-| 持久化 | 浏览器 localStorage（`LocalStoreService`，如当前项目记忆） |
+- 所有 Store 均为 **Singleton**，通过 `IDbContextFactory` 短生命周期模式访问数据库（每次操作 `CreateDbContext`）。
+- SQLite 并发防护三层：**WAL 模式**（读写互不阻塞）+ **busy_timeout=30s**（写冲突排队等待）+ **应用层 WriteLock**（进程内串行化写）。
+- 库存唯一事实源：`wcs_inventory` 账本（`WcsInventoryStore`），自动化只做状态流转（idle→picked→busy→idle），**拉取 GRCS 库存写库只在手动「同步库存」时发生**。
 
-## 层与引用关系
-
-- 实体与 DTO 统一定义在 `Contracts`，`Backend` 与 `DashBoard` 均通过 `ProjectReference ..\Contracts\GrcsBackend.Contracts.csproj` 引用；DTO ↔ 实体映射由后端 `WcsMapping.cs`（Mapster）统一完成。
-- 后端为模块化单体：每个业务域一个 `Modules/<域>/` 目录，通过 `XxxModuleExtensions.AddXxxModule()` 在 `Program.cs` 挂接注册。
-
-```
-Backend/Modules/Wcs/
-├─ Proxy/              对 GRCS 的代理/转发（GrcsProxyController、GrcsHttpClient）
-├─ Automation/         自动下发引擎：模板执行 AutoTemplateRunner、纯移动循环 MoveLoopRunner、
-│                      归巢 NestRunner、统一模块执行 ModuleRunService、终点执行器
-│                      FinishedModuleWatcher、信号自动放行 SignalAutoHostedService
-├─ Console/            控制台查询/管理（Controllers + Services + Models）
-├─ Realtime/           SignalR（TaskStageRealtimeHub，任务阶段事件实时推送）
-└─ Infrastructure/     数据层（DbContext + 各 Store + 日志服务 + WcsMapping）
-```
+## 前端分层
 
 ```
 DashBoard/
-├─ Layout/                 MainLayout（两层侧边栏导航）、BackendStatus、AutomationStatusBar
-├─ Modules/WcsSimulator/   WCS 模拟器模块
-│   ├─ Pages/              9 个页面（见下方路由表）
-│   ├─ Services/           WcsApiClient（后端遥控壳）、AutomationHub（1s 轮询中枢）、
-│   │                      TaskStageHub（SignalR）、各瘦壳服务、BackendHealthService
-│   ├─ Models/             前端模型（TaskTypeRegistry / ModuleRegistry / MapFileModels 等）
-│   └─ Extensions/         扩展
-└─ _Imports.razor          全局 using 清单（新增模块在此补充命名空间）
+├── Layout/              # MainLayout（两列导航）+ 状态栏 + 连接告警
+├── Pages/               # Home / NotFound
+└── Modules/WcsSimulator/
+    ├── Components/      # PageBase（统一反馈提示）
+    ├── Pages/           # 9 个页面：任务下发/自动化/信号交互/异常台账/项目日志/任务看板/地图/库存/接口文档
+    ├── Services/        # 10 个服务
+    │   ├── WcsApiClient.cs       # 后端 API 客户端（遥控壳核心）
+    │   ├── AutomationHub.cs      # 自动化共享轮询中枢（1s 拉快照/日志/范围）
+    │   ├── TaskStageHub.cs       # SignalR 共享缓存（8 类推送，唯一实时数据源）
+    │   └── BackendHealthService.cs  # WCS/GRCS 在线状态（单数据源）
+    └── Models/           # 地图解析/任务类型/功能模块注册表
 ```
 
-## 运行
+技术栈：Blazor WebAssembly + MudBlazor + 手写 CSS + SignalR（JS 桥）+ localStorage 缓存 + ClosedXML（Excel 导出）。DI 全部 `AddScoped`（WASM 中 Scoped ≈ 每标签页单例）。
 
-后端（workdir = `Backend`，端口由 `appsettings.json` 的 `Urls` 决定，默认 http://0.0.0.0:8230）：
+## 健壮性设计
 
-```powershell
-dotnet build GrcsBackend.csproj -v q --nologo
-dotnet run
-```
+- SQLite 并发三层防护（WAL + busy_timeout + WriteLock）
+- GRCS 在线熔断：5 秒超时判离线，离线自动跳过真实请求
+- 互斥闸 `AutomationGate`：模板轮询 / 单次执行 / 移动循环三者串行（进程内）
+- 信号幂等 `SignalConfirmStore`：抢占式插入防多标签页重复发信号
+- 全局异常中间件：统一 `{"error":"..."}` 响应
+- 健康检查 `/health/ready` + 前端连接告警自动恢复
+- 日志体系（`AutomationLogService`）：按轮次分组的内存日志（**文件日志已移除，待重新设计**）
 
-前端（workdir = `DashBoard`）：
+## 已知缺口 / 待办（暂不实施）
 
-```powershell
-dotnet build GRCS.Dashboard.csproj -v q --nologo
-dotnet run
-```
+按优先级排列，后续需要时再处理：
 
-VS 联调：打开 `Solutions\Ryan.sln`（三项目一键编译运行）。
-
-> 注意：
-> - 项目面向 `net10.0`，VS 需 2026（18.x）或更高；命令行使用 .NET 10 SDK 可直接编译运行。
-> - SQLite 表结构变更/新接口上线后需**重启后端**生效；前端可硬刷新（Ctrl+F5）。
-
-## API 一览
-
-| 前缀 | 用途 |
-|---|---|
-| `api/wcs` | WCS 控制台总入口（`WcsConsoleController`）+ 通用转发（`ForwardController`） |
-| `api/wcs/auto` | 自动化：状态快照/日志/执行（`AutomationConsoleController`） |
-| `api/wcs/grcs` | 对 GRCS 的代理调用（`GrcsProxyController`） |
-| `api/wcs/exception-records` | 异常记录台账（含 `GET /projects`、`DELETE projects/{name}?password=`、`POST /{id}/reproduce`） |
-| `api/wcs/project-logs` | 项目记录台账（每日日程，同上项目隔离/删除密码） |
-| `api/wcs/ledger` / `map` / `templates` / `modules` | 台账、地图缓存、任务模板/功能模块 |
-| `api/wcs/signal-confirm` | 信号确认 |
-| `api/wcs/mocks` + `api/{*path}`（Order 999） | Mock 入站：`api/v1/*` 之外的任意路径兜底模拟 |
-| `api/wcs/grcs-api-docs` | GRCS 接口说明清单（内置静态 + 数据库动态） |
-| `hubs/task-stages` | SignalR：任务阶段事件实时推送 |
-
-## 页面路由（前端）
-
-| 路由 | 页面 | 说明 |
-|---|---|---|
-| `/wcs-simulator/dispatch` | TaskDispatch | 手动任务下发（容器/移动任务、模板化下发） |
-| `/wcs-simulator/inventory` | Inventory | 库存管理 |
-| `/wcs-simulator/map-reader` | MapReader | 地图信息 |
-| `/wcs-simulator/automation` | AutomationTasks | 自动化任务（模板执行、审批卡片、断点续跑） |
-| `/wcs-simulator/signal-interaction` | SignalInteraction | 信号交互（长连接化、信号确认） |
-| `/wcs-simulator/task-stages` `/wcs-simulator/history` | TaskStages | 任务看板（SignalR 实时） |
-| `/wcs-simulator/grcs-api-docs` | GrcsApiDocs | GRCS 接口说明 |
-| `/wcs-simulator/exception-records` | ExceptionRecords | 异常记录台账（按项目隔离） |
-| `/wcs-simulator/project-logs` | ProjectLogs | 项目记录台账（按天分组、导出） |
-
-## 数据库表
-
-`AutomationDb.Init()` 自动建表 + 迁移：`kv`、`task_records`、`workflow_state`、`task_templates`、`feature_modules`、`auto_templates`、`mock_rules`、`exception_records`、`project_logs`、`mock_request_events`、`module_exec_logs`
-
-## 核心业务约定（改动时务必遵守）
-
-1. **复现两联动**：异常记录「复现」按钮 = 复现次数 +1、复现时间 = 当前，**不修改状态**（后端 `ExceptionRecordReproduce` 与前端乐观更新均按此实现）。
-2. **项目隔离**：异常记录/项目记录均按 `project` 字段（TEXT）隔离数据；GET 必须带 `project=` 参数（空串 = 仅未分类）；下拉项目来自 `GET /projects`（DISTINCT），「未分类」不作为可选项目；当前项目记 localStorage。
-3. **删除密码**：删除单条记录与删除项目都需密码 `wayzim`，前后端双校验（后端返回 403「删除密码错误」，前端弹窗先本地校验）。删除项目后成功提示须显示**被删除的项目名**（先存变量再切换）。
-4. **日期时间格式**：后端 JSON 序列化 `yyyy-MM-dd HH:mm:ss.fff`（GRCS 解析依赖）；复现时间为 `yyyy-MM-dd HH:mm:ss`。
-5. **CORS + SignalR**：`SetIsOriginAllowed(_ => true)` + `AllowCredentials()`（不能用 `AllowAnyOrigin`，否则 SignalR 凭证请求被拦）。
-6. **DI 生命周期**：Blazor WASM 中 AddScoped 每标签页单例；依赖 Scoped 的服务必须注册 AddScoped（曾因误注册 Singleton 导致白屏）。
-7. **Razor 编码陷阱**：HTML 属性内嵌 C# 字符串双引号会截断；`&quot;` 在 `@()` 内报错；多选 checkbox 用静态数组循环渲染；`<input type="date">` 用 `value` + `@onchange`（勿用 `@bind`）。
-8. **弹窗风格**：所有确认/密码/提示对话框统一系统风格（`tpl-modal` 深色样式），不用浏览器原生 `confirm`/`prompt`。
-9. **导出 Excel**：第一行醒目标题（`{项目名}_异常记录/项目记录`，合并单元格），第二行表头按**实际列数**涂背景（`Range(2,1,2,headers.Length)`，勿用整行 `headerRow.Style`）；无数据导出时弹窗提醒（不静默）。
-10. **导航**：WCS 前端无项目层，两层导航 = 功能 → 页面。
+1. **P0 补测试**：`Repository.FindAsync` 主键探测、`BuildPool` 分类、`TemplateValidator`、`TaskDispatcher` 选点/报文组装、`StationTypeHelper` 位解码均无测试。
+2. **P0 统一异步与异常**：大量 fire-and-forget（`_ = PollLoop(...)` 等）无统一任务跟踪；多处 `catch { }` 静默吞噬，故障无痕迹。
+3. **P0 GRCS 调用重试**：`AddHttpClient` 已注册但未挂 Polly 重试/指数退避。
+4. **P1 拆分上帝类**：`Stores.cs`（437 行，聚合 10 个 Store）、`TemplateStores.cs`（407 行，聚合 4 个模板 Store）→ 独立文件。
+5. **P1 实体与 DTO 解耦**：`ExceptionRecordDto`/`ProjectLogDto` 兼作表行，字段演进互相牵制。
+6. **P1 `Repository.FindAsync` 去反射**：按实体显式注册主键类型。
+7. **P2 数据归档**：`task_records` 10000 条上限，超限后归档/导出方案。
+8. **P2 多实例考量**：`AutomationGate`/`WriteLock` 为进程内锁，水平扩展需分布式锁。
+9. **P3 前端收敛**：三套样式体系（MudBlazor + 手写 CSS + Bootstrap）并存；WASM 体积优化（懒加载）。

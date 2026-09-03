@@ -14,6 +14,7 @@ public class AutomationLogService
     private readonly List<LogRoundDto> _rounds = new();
     private long _nextId = 1;
     private const int MaxRounds = 100;
+    private const int MaxSysEntries = 500;
     private const string SysRoundId = "__sys__";
 
     private LogRoundDto EnsureSysRound()
@@ -91,6 +92,8 @@ public class AutomationLogService
             else
             {
                 r.Entries.Add(new LogEntryDto { Id = _nextId++, Time = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"), Message = message, Color = color });
+                // 系统日志环形缓冲：超出上限时丢弃最旧条目，避免长期运行 OOM
+                while (r.Entries.Count > MaxSysEntries) r.Entries.RemoveAt(0);
             }
         }
     }
