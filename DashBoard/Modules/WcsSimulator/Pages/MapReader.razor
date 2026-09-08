@@ -1,8 +1,6 @@
 @page "/wcs-simulator/map-reader"
-@inject IJSRuntime Js
-@inject HttpClient Http
-@inject LocalStoreService LocalStore
 @inject WcsApiClient WcsApi
+@inherits GRCS.Dashboard.Modules.WcsSimulator.Components.PageStateBase
 @using System.Text.Json
 @using System.IO.Compression
 @using GRCS.Dashboard.Modules.WcsSimulator.Models
@@ -41,6 +39,10 @@
                        style="position:absolute;inset:0;opacity:0;" />
         </div>
         @if (_loading) { <span class="badge-info">⏳ 解析中...</span> }
+        @if (_mapError != "")
+        {
+            <span style="color:#f87171;font-size:0.8rem;">❌ 接口读取失败：@_mapError</span>
+        }
         <span class="badge-ok" style="white-space:nowrap;opacity:@(_mapLoaded ? "1" : "0");transition:opacity 0.2s;">✅ 地图读取成功</span>
     </div>
     @if (_stations.Count > 0)
@@ -199,6 +201,7 @@
     private string _wcsBaseUrl = "http://localhost:8230";  // WCS 后端地址（持久化，所有模块共用）
     private bool _warehouseSaved;                        // 保存成功提示
     private bool _mapLoaded;                              // 地图读取成功提示
+    private string _mapError = "";                        // 接口读取失败提示
     private List<MapStationLite> _stations = [];       // 全部站点列表（精简数据，可持久化）
     private int _pathsCount;                            // 连线数量
     private bool _loading;                              // 解析中标志
@@ -219,14 +222,9 @@
 
     private static readonly JsonSerializerOptions JsonOpts = new() { PropertyNameCaseInsensitive = true };
 
-    // ── 卡片折叠状态（持久化到 localStorage 键 grcs_mr_collapsed，切走再回来保持）──
-    private Dictionary<string, bool> _collapsed = new() { ["mr_file"] = true, ["mr_settings"] = true, ["mr_overview"] = true };
-    private bool IsCollapsed(string key) => _collapsed.GetValueOrDefault(key, true);
-    private async Task Toggle(string key)
-    {
-        _collapsed[key] = !IsCollapsed(key);
-        await LocalStore.SetAsync(Js, "grcs_mr_collapsed", JsonSerializer.Serialize(_collapsed));
-    }
+    // ── 卡片折叠状态（持久化到 localStorage 键 grcs_mr_collapsed，切走再回来保持；
+    //    基类 PageStateBase 提供，本页默认全折叠、不恢复上次展开状态）──
+    protected override string CollapsedStoreKey => "grcs_mr_collapsed";
     private Task ToggleFile() => Toggle("mr_file");
     private Task ToggleSettings() => Toggle("mr_settings");
     private Task ToggleOverview() => Toggle("mr_overview");
@@ -260,7 +258,6 @@
         // 恢复 localStorage 状态（内存缓存，同步读取）
         try
         {
-            string? V(string k) => LocalStore[k] is { } v && v != "null" ? v : null;
             if (V("grcs_wcs_url") is string wcs) _wcsBaseUrl = wcs;
             if (V("grcs_grcs_url") is string grcs) _grcsBaseUrl = grcs;
             if (V("grcs_warehouse") is string wh && !string.IsNullOrEmpty(wh)) _warehouse = wh;
@@ -284,22 +281,22 @@
     /// <summary>
     /// 从 GRCS 下载地图 zip（经 WCS 后端代理 /api/wcs/grcs/map，场景名按系统设置），
     /// 流式打开 zip 找到 map.json 条目（兼容根目录或嵌套路径），
-    /// 解析成功后写入 localStorage 缓存；失败清空站点并弹窗提示。
+    /// 解析成功后写入 localStorage 缓存；失败清空站点并展示错误。
+    /// WCS/GRCS 后端未连接时由 WcsApiClient 统一弹窗告警。
     /// </summary>
     private async Task LoadFromApi()
     {
         _loading = true;
         try
         {
-            var response = await Http.GetAsync($"{_wcsBaseUrl.TrimEnd('/')}/api/wcs/grcs/map");
-            response.EnsureSuccessStatusCode();
-            var contentType = response.Content.Headers.ContentType?.MediaType ?? "";
-            if (contentType.Contains("json", StringComparison.OrdinalIgnoreCase))
+            var (ok, error, bytes) = await WcsApi.GetMapZipAsync();
+            if (!ok || bytes == null)
             {
-                var errText = await response.Content.ReadAsStringAsync();
-                throw new Exception("后端代理返回异常：" + errText);
+                _stations = [];
+                _mapError = error;
+                return;
             }
-            using var zipStream = await response.Content.ReadAsStreamAsync();
+            using var zipStream = new MemoryStream(bytes);
             using var zip = new ZipArchive(zipStream);
             var entry = zip.GetEntry("map.json") ?? zip.Entries.FirstOrDefault(e => e.Name == "map.json");
             if (entry == null) throw new Exception("zip 中未找到 map.json");
@@ -312,7 +309,7 @@
         catch (Exception ex)
         {
             _stations = [];
-            await Js.InvokeVoidAsync("alert", $"接口读取失败：{ex.Message}");
+            _mapError = ex.Message;
         }
         finally
         {
@@ -346,33 +343,18 @@
     }
 
     /// <summary>
-    /// 解析 map.json：把全量 MapFileData 精简为 MapStationLite（只保留
-    /// 下发/筛选/表格展示需要的字段），按编码排序后重置筛选条件，
+    /// 解析 map.json（MapParseService 纯转换），重置筛选条件，
     /// 并立即调用 SaveState 写入 localStorage 缓存供其他页面复用。
     /// </summary>
     private async Task ParseMapContent(string content)
     {
-        var map = JsonSerializer.Deserialize<MapFileData>(content, JsonOpts);
-        _stations = map?.Stations?.Values
-            .Select(s => new MapStationLite
-            {
-                Mark = s.Mark ?? "",
-                StationType = s.StationType,
-                X = s.X,
-                Y = s.Y,
-                Floor = s.Floor,
-                StaEnable = s.StaEnable,
-                CargoAreas = s.CargoAreas ?? [],
-                SupportLoadState = s.SupportLoadState,
-                AllowTurn = s.AllowTurn,
-                AllowAvoid = s.AllowAvoid,
-                AllowStop = s.AllowStop,
-            })
-            .OrderBy(s => s.Mark).ToList() ?? [];
-        _pathsCount = map?.Paths?.Count ?? 0;
+        var (stations, pathsCount) = MapParseService.Parse(content);
+        _stations = stations;
+        _pathsCount = pathsCount;
         _typeFilter = 0;
         _search = "";
         _enableFilter = "";
+        _mapError = "";
         await SaveState();
     }
 

@@ -1,12 +1,11 @@
 @page "/wcs-simulator/task-stages"
 @page "/wcs-simulator/history"
 @inject WcsApiClient WcsApi
-@inject IJSRuntime Js
-@inject LocalStoreService LocalStore
 @inject TaskLedgerService Ledger
 @inject TaskStageHub StageHub
 @inject AutomationHub AutoHub
 @inject BackendHealthService Health
+@inherits GRCS.Dashboard.Modules.WcsSimulator.Components.PageStateBase
 @implements IDisposable
 
 <PageTitle>任务看板</PageTitle>
@@ -227,30 +226,26 @@
     private System.Threading.Timer? _timer;         // 轮询定时器
     private bool _refreshing;                       // 重入保护
 
-    // ── 卡片折叠状态（持久化，默认全部折叠避免初始化闪烁）──
-    private Dictionary<string, bool> _collapsed = new() { ["ts_list"] = true };
-    private bool IsCollapsed(string key) => _collapsed.GetValueOrDefault(key, true);
-    private async Task Toggle(string key)
+    // ── 卡片折叠状态（基类 PageStateBase 提供，键 grcs_ts_collapsed，默认全部折叠避免初始化闪烁）──
+    protected override string CollapsedStoreKey => "grcs_ts_collapsed";
+    private async Task ToggleList()
     {
-        var wasCollapsed = IsCollapsed(key);
-        _collapsed[key] = !wasCollapsed;
-        await LocalStore.SetAsync(Js, "grcs_ts_collapsed", System.Text.Json.JsonSerializer.Serialize(_collapsed));
-        if (wasCollapsed && key == "ts_list")
+        var wasCollapsed = IsCollapsed("ts_list");
+        await Toggle("ts_list");
+        if (wasCollapsed && IsCollapsed("ts_list") == false)
         {
             await LoadEvents();
             await LoadLedger();
             StateHasChanged();
         }
     }
-    private Task ToggleList() => Toggle("ts_list");
 
     protected override async Task OnInitializedAsync()
     {
         // 恢复状态（内存缓存，同步读取，无 JS 边界）
         try
         {
-            string? V(string k) => LocalStore[k] is { } v && v != "null" ? v : null;
-            if (V("grcs_ts_collapsed") is string cjson) _collapsed = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, bool>>(cjson) ?? _collapsed;
+            RestoreCollapsed();
         }
         catch { }
 

@@ -131,7 +131,7 @@ public class WcsApiClient
     /// <summary>同步库存账本（清空重建，以 GRCS 为准；有在途任务时后端返回 400 与拒绝原因）。</summary>
     public async Task<(bool ok, string json)> SyncInventoryAsync()
     {
-        if (!ConnectionReady()) return (false, "backend offline");
+        if (!GrcsReady()) return (false, "backend offline");
         try
         {
             var resp = await _http.PostAsJsonAsync(U("/api/wcs/inventory/sync"), new { });
@@ -414,6 +414,28 @@ public class WcsApiClient
             return ParseProxy(body);
         }
         catch (Exception ex) { return (false, 0, JsonSerializer.Serialize(new { error = ex.Message })); }
+    }
+
+    /// <summary>下载地图 zip（代理 → GRCS /api/Map/GetMap，成功返回 zip 字节流；失败返回错误文本并弹 GRCS 告警兜底）。</summary>
+    public async Task<(bool Ok, string Error, byte[]? Bytes)> GetMapZipAsync()
+    {
+        if (!GrcsReady()) return (false, "backend offline", null);
+        try
+        {
+            var resp = await _http.GetAsync(U("/api/wcs/grcs/map"));
+            var contentType = resp.Content.Headers.ContentType?.MediaType ?? "";
+            if (contentType.Contains("json", StringComparison.OrdinalIgnoreCase))
+            {
+                var errText = await resp.Content.ReadAsStringAsync();
+                var (ok, _, json) = ParseProxy(errText);
+                var error = ok ? "后端代理返回异常" : json;
+                NotifyGrcsIfUnreachable(error);
+                return (false, error, null);
+            }
+            var bytes = await resp.Content.ReadAsByteArrayAsync();
+            return bytes.Length == 0 ? (false, "地图数据为空", null) : (true, "", bytes);
+        }
+        catch (Exception ex) { return (false, ex.Message, null); }
     }
 
     private async Task<(bool Ok, int StatusCode, string Json)> PostProxyAsync<T>(string path, T payload)

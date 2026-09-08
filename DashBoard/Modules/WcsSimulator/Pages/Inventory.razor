@@ -1,8 +1,6 @@
 @page "/wcs-simulator/inventory"
 @inject WcsApiClient WcsService
-@inject IJSRuntime Js
-@inject LocalStoreService LocalStore
-@inherits GRCS.Dashboard.Modules.WcsSimulator.Components.PageBase
+@inherits GRCS.Dashboard.Modules.WcsSimulator.Components.PageStateBase
 @using System.Text.Json
 @using GRCS.Dashboard.Modules.WcsSimulator.Models
 
@@ -199,14 +197,8 @@
         _autoType = 1;
     }
 
-    // ── 折叠状态 ──
-    private Dictionary<string, bool> _collapsed = new() { ["inv_list"] = true, ["inv_auto"] = true };
-    private bool IsCollapsed(string key) => _collapsed.GetValueOrDefault(key, true);
-    private async Task Toggle(string key)
-    {
-        _collapsed[key] = !IsCollapsed(key);
-        await LocalStore.SetAsync(Js, "grcs_inv_collapsed", JsonSerializer.Serialize(_collapsed));
-    }
+    // ── 折叠状态（基类 PageStateBase 提供，键 grcs_inv_collapsed）──
+    protected override string CollapsedStoreKey => "grcs_inv_collapsed";
     private Task ToggleList() => Toggle("inv_list");
     private Task ToggleAuto() => Toggle("inv_auto");
 
@@ -215,7 +207,6 @@
         // 读取 localStorage 状态（内存缓存，同步读取，无 JS 边界）
         try
         {
-            string? V(string k) => LocalStore[k] is { } v && v != "null" ? v : null;
             // 切到模块时始终折叠，不恢复之前展开状态
             if (V("grcs_cargo_inventory") is string cargoJson)
             {

@@ -1,10 +1,9 @@
 @page "/wcs-simulator/automation"
-@inject IJSRuntime Js
-@inject LocalStoreService LocalStore
 @inject WcsApiClient WcsApi
 @inject AutomationHub Hub
 @inject GRCS.Dashboard.Modules.WcsSimulator.Services.MoveLoopService MoveLoop
 @inject GRCS.Dashboard.Modules.WcsSimulator.Services.TaskStageHub StageHub
+@inherits GRCS.Dashboard.Modules.WcsSimulator.Components.PageStateBase
 @implements IDisposable
 @using System.Text.Json
 @using System.Text.RegularExpressions
@@ -634,14 +633,8 @@
     private string _responseText = "";
     private string _respClass = "";
 
-    // ── 卡片折叠状态（持久化到 localStorage 键 grcs_auto_collapsed）──
-    private Dictionary<string, bool> _collapsed = new() { ["range"] = true, ["auto"] = true };
-    private bool IsCollapsed(string key) => _collapsed.GetValueOrDefault(key, true);
-    private async Task Toggle(string key)
-    {
-        _collapsed[key] = !IsCollapsed(key);
-        await LocalStore.SetAsync(Js, "grcs_auto_collapsed", JsonSerializer.Serialize(_collapsed));
-    }
+    // ── 卡片折叠状态（基类 PageStateBase 提供，键 grcs_auto_collapsed）──
+    protected override string CollapsedStoreKey => "grcs_auto_collapsed";
     private Task ToggleRange() => Toggle("range");
     private Task ToggleAutoSection() => Toggle("auto");
 
@@ -1068,9 +1061,7 @@
 
         try
         {
-            var cjson = LocalStore["grcs_auto_collapsed"];
-            if (!string.IsNullOrEmpty(cjson) && cjson != "null")
-                _collapsed = JsonSerializer.Deserialize<Dictionary<string, bool>>(cjson) ?? _collapsed;
+            RestoreCollapsed();
         }
         catch { }
 

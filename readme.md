@@ -56,12 +56,13 @@ DashBoard/
 ├── Layout/              # MainLayout（两列导航）+ 状态栏 + 连接告警
 ├── Pages/               # Home / NotFound
 └── Modules/WcsSimulator/
-    ├── Components/      # PageBase（统一反馈提示）
+    ├── Components/      # PageBase（统一反馈提示）+ PageStateBase（折叠持久化/localStorage 辅助）
     ├── Pages/           # 9 个页面：任务下发/自动化/信号交互/异常台账/项目日志/任务看板/地图/库存/接口文档
     ├── Services/        # 10 个服务
     │   ├── WcsApiClient.cs       # 后端 API 客户端（遥控壳核心）
     │   ├── AutomationHub.cs      # 自动化共享轮询中枢（1s 拉快照/日志/范围）
     │   ├── TaskStageHub.cs       # SignalR 共享缓存（8 类推送，唯一实时数据源）
+    │   ├── MapParseService.cs    # 地图解析（map.json → 精简站点，纯数据转换）
     │   └── BackendHealthService.cs  # WCS/GRCS 在线状态（单数据源）
     └── Models/           # 地图解析/任务类型/功能模块注册表
 ```

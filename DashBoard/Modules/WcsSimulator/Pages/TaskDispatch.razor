@@ -1,8 +1,7 @@
 @page "/wcs-simulator/dispatch"
-@inject IJSRuntime Js
-@inject LocalStoreService LocalStore
 @inject TaskLedgerService Ledger
 @inject WcsApiClient Api
+@inherits GRCS.Dashboard.Modules.WcsSimulator.Components.PageStateBase
 @implements IDisposable
 
 @* ════════════════════════════════════════════════
@@ -616,8 +615,10 @@
     private List<string> _containerCodes = [];             // 所有容器编号（从 GRCS 加载）
     private List<CargoInventoryItem> _invRecords = [];     // 容器库存记录（下拉候选用）
 
-    // ── 卡片折叠状态（持久化 grcs_td_collapsed，keys: container / vehicle）──
-    private Dictionary<string, bool> _collapsed = new();
+    // ── 卡片折叠状态（基类 PageStateBase 提供，键 grcs_td_collapsed，keys: container / vehicle；
+    //    本页默认全部展开）──
+    protected override string CollapsedStoreKey => "grcs_td_collapsed";
+    protected override bool DefaultCollapsedValue => false;
 
     // ── 二次确认弹窗（删除任务模板）──
     private bool _confirmVisible;
@@ -641,14 +642,8 @@
     private string _templateError = "";
 
     // ════════════ 卡片折叠 ════════════
-    private bool IsCollapsed(string key) => _collapsed.TryGetValue(key, out var c) && c;
-    private async void ToggleContainer() => await ToggleCollapsed("container");
-    private async void ToggleVehicle() => await ToggleCollapsed("vehicle");
-    private async Task ToggleCollapsed(string key)
-    {
-        _collapsed[key] = !IsCollapsed(key);
-        try { await LocalStore.SetAsync(Js, "grcs_td_collapsed", System.Text.Json.JsonSerializer.Serialize(_collapsed)); } catch { }
-    }
+    private async void ToggleContainer() => await Toggle("container");
+    private async void ToggleVehicle() => await Toggle("vehicle");
 
     // ════════════ 站点编码解析 ════════════
     /// <summary>
@@ -1066,8 +1061,6 @@
 
         try
         {
-            string? V(string k) => LocalStore[k] is { } v && v != "null" ? v : null;
-
             if (V("grcs_warehouse") is string wh) _warehouse = wh;
 
             if (V("grcs_td_state") is string stateJson)
@@ -1093,8 +1086,7 @@
 
             if (V("grcs_td_collapsed") is string cjson)
             {
-                var c = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, bool>>(cjson);
-                if (c != null) _collapsed = c;
+                _collapsed = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, bool>>(cjson) ?? _collapsed;
             }
         }
         catch { }
