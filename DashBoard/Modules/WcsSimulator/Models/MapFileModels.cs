@@ -1,6 +1,6 @@
 using System.Text.Json;
 
-namespace GRCS.Dashboard.Modules.WcsSimulator.Models;
+namespace Dashboard.Modules.WcsSimulator.Models;
 
 /// <summary>
 /// map.json 顶层结构（对应 GRCS GetMap 接口导出的 feMap 数据）。
@@ -161,8 +161,8 @@ public class MapStationCache
     /// <summary>连线数量（用于校验地图数据是否完整加载）。</summary>
     public int PathsCount { get; set; }
 
-    /// <summary>精简站点列表（各页共享的任务下发依据；类型见 GrcsBackend.Contracts.Dtos.MapStationLite）。</summary>
-    public List<GrcsBackend.Contracts.Dtos.MapStationLite> Stations { get; set; } = [];
+    /// <summary>精简站点列表（各页共享的任务下发依据；类型见 Contracts.Dtos.MapStationLite）。</summary>
+    public List<Contracts.Dtos.MapStationLite> Stations { get; set; } = [];
 
     /// <summary>地图信息页的筛选状态（切走再回来时恢复界面）。</summary>
     public MapReaderFilterState? Filter { get; set; }

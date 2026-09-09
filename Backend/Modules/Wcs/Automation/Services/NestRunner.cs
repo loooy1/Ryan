@@ -1,12 +1,12 @@
 using System.Text.Json;
-using GrcsBackend.Modules.Wcs.Console.Services;
-using GrcsBackend.Modules.Wcs.Infrastructure;
-using GrcsBackend.Contracts.Dtos;
-using GrcsBackend.Modules.Wcs.Proxy.Services;
-using GrcsBackend.Modules.Wcs.Realtime;
+using WCSBackend.Modules.Wcs.Console.Services;
+using WCSBackend.Modules.Wcs.Infrastructure;
+using Contracts.Dtos;
+using WCSBackend.Modules.Wcs.Proxy.Services;
+using WCSBackend.Modules.Wcs.Realtime;
 using Microsoft.AspNetCore.SignalR;
 
-namespace GrcsBackend.Modules.Wcs.Automation.Services;
+namespace WCSBackend.Modules.Wcs.Automation.Services;
 
 /// <summary>
 /// 归巢模式：地图框选巢区（站点 Mark 列表），持续调度直到巢区内所有目标点都被车占用（按钮触发，可停止）。

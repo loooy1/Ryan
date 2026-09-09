@@ -1,7 +1,7 @@
-using GrcsBackend.Contracts.Dtos;
-using GRCS.Dashboard.Modules.WcsSimulator.Services;
+using Contracts.Dtos;
+using Dashboard.Modules.WcsSimulator.Services;
 
-namespace GRCS.Dashboard.Modules.WcsSimulator.Services;
+namespace Dashboard.Modules.WcsSimulator.Services;
 
 /// <summary>
 /// 任务台账遥控壳（Skill E：数据源为后端 task_records 合并表）。

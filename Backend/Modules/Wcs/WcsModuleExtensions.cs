@@ -1,9 +1,9 @@
-using GrcsBackend.Modules.Wcs.Infrastructure;
-using GrcsBackend.Modules.Wcs.Automation.Services;
-using GrcsBackend.Modules.Wcs.Console.Services;
-using GrcsBackend.Modules.Wcs.Proxy.Services;
+using WCSBackend.Modules.Wcs.Infrastructure;
+using WCSBackend.Modules.Wcs.Automation.Services;
+using WCSBackend.Modules.Wcs.Console.Services;
+using WCSBackend.Modules.Wcs.Proxy.Services;
 
-namespace GrcsBackend.Modules.Wcs;
+namespace WCSBackend.Modules.Wcs;
 
 /// <summary>
 /// Wcs 总模块的依赖注入注册（Wcs 为总目录，下面分 Automation / Proxy / Console / Realtime 子模块）。

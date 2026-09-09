@@ -1,10 +1,10 @@
-using GrcsBackend.Modules.Shared.Infrastructure.Repository;
-using GrcsBackend.Contracts.Entities;
-using GrcsBackend.Contracts.Dtos;
-using GrcsBackend.Modules.Wcs.Realtime;
+using Backend.Shared.Infrastructure.Repository;
+using Contracts.Entities;
+using Contracts.Dtos;
+using WCSBackend.Modules.Wcs.Realtime;
 using Microsoft.AspNetCore.SignalR;
 
-namespace GrcsBackend.Modules.Wcs.Infrastructure;
+namespace WCSBackend.Modules.Wcs.Infrastructure;
 
 /// <summary>
 /// 模块执行记录（内存环形缓冲 + SQLite 持久化，上限 500 条，自增 Id + sinceId 增量拉取）。

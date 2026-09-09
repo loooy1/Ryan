@@ -1,9 +1,9 @@
-using GrcsBackend.Modules.Wcs.Infrastructure;
-using GrcsBackend.Contracts.Dtos;
+using WCSBackend.Modules.Wcs.Infrastructure;
+using Contracts.Dtos;
 using Microsoft.AspNetCore.Mvc;
 using System.Text;
 
-namespace GrcsBackend.Modules.Wcs.Console.Controllers;
+namespace WCSBackend.Modules.Wcs.Console.Controllers;
 
 /// <summary>
 /// 通用 Mock 规则管理接口（/api/wcs/mocks）。
@@ -35,14 +35,14 @@ public class MockHitController : ControllerBase
 {
     private readonly MockRuleStore _store;
     private readonly ILogger<MockHitController> _logger;
-    private readonly GrcsBackend.Modules.Wcs.Console.Services.ITaskStageService? _stages;
-    private readonly GrcsBackend.Modules.Wcs.Console.Services.MockApprovalService? _mockApproval;
+    private readonly WCSBackend.Modules.Wcs.Console.Services.ITaskStageService? _stages;
+    private readonly WCSBackend.Modules.Wcs.Console.Services.MockApprovalService? _mockApproval;
     public MockHitController(MockRuleStore store, ILogger<MockHitController> logger, IServiceProvider sp)
     {
         _store = store;
         _logger = logger;
-        _stages = sp.GetService(typeof(GrcsBackend.Modules.Wcs.Console.Services.ITaskStageService)) as GrcsBackend.Modules.Wcs.Console.Services.ITaskStageService;
-        _mockApproval = sp.GetService(typeof(GrcsBackend.Modules.Wcs.Console.Services.MockApprovalService)) as GrcsBackend.Modules.Wcs.Console.Services.MockApprovalService;
+        _stages = sp.GetService(typeof(WCSBackend.Modules.Wcs.Console.Services.ITaskStageService)) as WCSBackend.Modules.Wcs.Console.Services.ITaskStageService;
+        _mockApproval = sp.GetService(typeof(WCSBackend.Modules.Wcs.Console.Services.MockApprovalService)) as WCSBackend.Modules.Wcs.Console.Services.MockApprovalService;
     }
 
     [Route("api/mock/{*path}", Order = 999)]
@@ -81,7 +81,7 @@ public class MockHitController : ControllerBase
                 {
                     // 首次命中无决策则回等待态（RCS 将循环重试），前端在请求信号中批准/拒绝后下次重试即按审批结果返回
                     _logger.LogInformation("Mock 审批等待 {Method} {Path} 规则 {Id}", method, rawPath, rule.Id);
-                    var wk = GrcsBackend.Modules.Wcs.Console.Services.MockApprovalService.ComputeKey(rule, bodyJson ?? "", queryStr);
+                    var wk = WCSBackend.Modules.Wcs.Console.Services.MockApprovalService.ComputeKey(rule, bodyJson ?? "", queryStr);
                     return Ok(new { success = false, message = "等待审批", approvalPending = true, key = wk });
                 }
                 // 已审批则按审批结果渲染 ApprovalVariable
@@ -162,7 +162,7 @@ if (rule.BoardSync)
     /// （兼容 taskId/task_code/orderNo、stage/status/state、msgTime/time 等别名）。
     /// 识别不到 taskId+stage 返回 null（不落库，避免脏数据）。
     /// </summary>
-    private GrcsBackend.Contracts.Dtos.TaskStageChangeModel? BuildBoardModel(string? bodyJson, IQueryCollection query)
+    private Contracts.Dtos.TaskStageChangeModel? BuildBoardModel(string? bodyJson, IQueryCollection query)
     {
         Newtonsoft.Json.Linq.JObject? body = null;
         if (!string.IsNullOrWhiteSpace(bodyJson))
@@ -174,7 +174,7 @@ if (rule.BoardSync)
         string? stage = Pick(body, query, "stage", "status", "state", "current_stage");
         if (string.IsNullOrEmpty(taskId) || string.IsNullOrEmpty(stage)) return null;
 
-        var model = new GrcsBackend.Contracts.Dtos.TaskStageChangeModel { TaskId = taskId, Stage = stage };
+        var model = new Contracts.Dtos.TaskStageChangeModel { TaskId = taskId, Stage = stage };
         var timeStr = Pick(body, query, "msgTime", "msg_time", "time", "timestamp");
         model.MsgTime = DateTime.TryParse(timeStr, out var t) ? t : DateTime.Now;
         model.Warehouse = Pick(body, query, "warehouse") ?? "";

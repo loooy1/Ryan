@@ -1,8 +1,7 @@
 using System.Collections;
-using GrcsBackend.Modules.Shared.Infrastructure.Repository;
 using Microsoft.EntityFrameworkCore;
 
-namespace GrcsBackend.Modules.Shared.Infrastructure.Repository;
+namespace Backend.Shared.Infrastructure.Repository;
 
 /// <summary>
 /// 工作单元实现：从 DbContextFactory 创建独立 DbContext；Repository&lt;T&gt; 按类型按需创建并缓存复用。

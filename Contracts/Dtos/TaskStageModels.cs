@@ -1,4 +1,4 @@
-namespace GrcsBackend.Contracts.Dtos;
+namespace Contracts.Dtos;
 
 /// <summary>
 /// 任务阶段变化通知（GRCS TaskStageChange 出站调用）。

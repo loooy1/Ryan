@@ -1,9 +1,9 @@
 using System.Text.Json;
-using GrcsBackend.Modules.Wcs.Infrastructure;
-using GrcsBackend.Contracts.Dtos;
-using GrcsBackend.Modules.Wcs.Proxy.Services;
+using WCSBackend.Modules.Wcs.Infrastructure;
+using Contracts.Dtos;
+using WCSBackend.Modules.Wcs.Proxy.Services;
 
-namespace GrcsBackend.Modules.Wcs.Console.Services;
+namespace WCSBackend.Modules.Wcs.Console.Services;
 
 /// <summary>
 /// GRCS 库存查询缓存：按需查询 /api/Cargo 全量记录（无后台轮询）。

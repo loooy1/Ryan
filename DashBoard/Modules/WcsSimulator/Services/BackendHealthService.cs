@@ -1,4 +1,4 @@
-namespace GRCS.Dashboard.Modules.WcsSimulator.Services;
+namespace Dashboard.Modules.WcsSimulator.Services;
 
 /// <summary>
 /// 后端存活状态共享服务（scoped = 每个浏览器标签页一个实例，纯状态持有者）。

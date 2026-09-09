@@ -1,4 +1,4 @@
-namespace GrcsBackend.Modules.Wcs.Infrastructure;
+namespace WCSBackend.Modules.Wcs.Infrastructure;
 
 /// <summary>
 /// 自动化互斥闸（进程内硬互斥 + 跨标签页协调）：

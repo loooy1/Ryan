@@ -1,7 +1,7 @@
-using GrcsBackend.Contracts.Dtos;
-using GRCS.Dashboard.Modules.WcsSimulator.Models;
+using Contracts.Dtos;
+using Dashboard.Modules.WcsSimulator.Models;
 
-namespace GRCS.Dashboard.Modules.WcsSimulator.Extensions;
+namespace Dashboard.Modules.WcsSimulator.Extensions;
 
 /// <summary>
 /// WCS 下发编码转换扩展方法。

@@ -1,10 +1,10 @@
 using System.Globalization;
 using System.Text.Json;
 using Mapster;
-using GrcsBackend.Contracts.Dtos;
-using GrcsBackend.Contracts.Entities;
+using Contracts.Dtos;
+using Contracts.Entities;
 
-namespace GrcsBackend.Modules.Wcs.Infrastructure;
+namespace WCSBackend.Modules.Wcs.Infrastructure;
 
 /// <summary>
 /// DTO ↔ 实体全量映射注册（Mapster 全局配置，启动时 Build 一次）。

@@ -1,10 +1,10 @@
-using GrcsBackend.Modules.Wcs.Infrastructure;
-using InvItem = GrcsBackend.Modules.Wcs.Infrastructure.WcsInventoryStore.InvItem;
-using GrcsBackend.Contracts.Dtos;
+using WCSBackend.Modules.Wcs.Infrastructure;
+using InvItem = WCSBackend.Modules.Wcs.Infrastructure.WcsInventoryStore.InvItem;
+using Contracts.Dtos;
 
-namespace GrcsBackend.Modules.Wcs.Automation.Services;
+namespace WCSBackend.Modules.Wcs.Automation.Services;
 
-/// <summary>WCS 库存账本协调器：选池构建 / 库存统计 / 储位占用计算。</summary>
+/// <summary>WCS 双表库存协调器：选池构建 / 库存统计 / 储位占用计算（容器表 + 储位表）。</summary>
 public class InventoryCoordinator
 {
     private readonly WcsInventoryStore _invStore;
@@ -19,8 +19,8 @@ public class InventoryCoordinator
         _map = map; _log = log;
     }
 
-    /// <summary>从 WCS 库存账本构建本轮选池（范围过滤 + 仅储位 + 排除 busy/picked）。
-    /// 自动化只做账本状态流转，不拉取 GRCS 库存写库（库存只在手动「同步库存」时以 GRCS 为准重建）。</summary>
+    /// <summary>从容器表+储位表构建本轮选池（范围过滤 + 仅储位 + 排除非 ready）。
+    /// 自动化只做容器状态流转，不拉取 GRCS 库存写库（库存只在手动「同步」时以 GRCS 为准重建）。</summary>
     public async Task<(List<InvItem> Empty, List<InvItem> Loaded, List<InvItem> Cargo, bool Ok,
         int Stored, int LockedStored, int LoadedStored, DateTime SnapshotAt)> SnapshotAsync(string roundId)
     {
@@ -41,7 +41,10 @@ public class InventoryCoordinator
         }
     }
 
-    /// <summary>从 WCS 库存账本统计 + 明细（不拉 GRCS，与选池 BuildPool 同源同规则，保证「显示」与「下发」一致）。</summary>
+    /// <summary>库存统计（储位表维度）：锁定中 = 非 ready 且非 transit 状态单元（picked 在储位/fail）；
+    /// 在途 = transit（已取走，号码保留作出发记录）单独区块；
+    /// 同一储位托盘+货物均在锁定/在途 → 合并一行（Code=托盘号, CargoCode=货物号）；
+    /// 空托/带货托/纯货物 = ready 储位行分类（有托有货=带货托；有货无托=纯货物；有托无货=空托）。</summary>
     public Task<InventorySummaryDto> GetInventorySummaryAsync()
     {
         var dto = new InventorySummaryDto();
@@ -50,88 +53,75 @@ public class InventoryCoordinator
             ? new HashSet<string>(range.Marks, StringComparer.OrdinalIgnoreCase) : null;
         var storageMarks = _invStore.StorageMarks();
 
-        var rows = _invStore.All().Where(r =>
-            (rangeSet == null || rangeSet.Contains(r.Station))
-            && storageMarks.Contains(r.Station)).ToList();
-
-        var containerStations = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var cargoStations = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var cargoByStation = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var r in rows)
+        var slots = _invStore.Slots();
+        foreach (var s in slots)
         {
-            if (r.Code.Contains("Cargo", StringComparison.OrdinalIgnoreCase))
+            if (rangeSet != null && !rangeSet.Contains(s.Mark)) continue;
+            if (!storageMarks.Contains(s.Mark)) continue;
+            var palletTransit = !string.IsNullOrEmpty(s.PalletCode) && s.PalletStatus == "transit";
+            var cargoTransit = !string.IsNullOrEmpty(s.CargoCode) && s.CargoStatus == "transit";
+            var palletLocked = !string.IsNullOrEmpty(s.PalletCode) && s.PalletStatus is "picked" or "fail";
+            var cargoLocked = !string.IsNullOrEmpty(s.CargoCode) && s.CargoStatus is "picked" or "fail";
+
+            if (palletTransit || cargoTransit)
             {
-                cargoStations.Add(r.Station);
-                if (!string.IsNullOrEmpty(r.Station) && !cargoByStation.ContainsKey(r.Station))
-                    cargoByStation[r.Station] = r.Code;
+                if (palletTransit && cargoTransit)
+                    dto.TransitItems.Add(new InventoryDetailItem { Code = s.PalletCode, Station = s.Mark, CargoCode = s.CargoCode, Status = s.PalletStatus });
+                else if (palletTransit)
+                    dto.TransitItems.Add(new InventoryDetailItem { Code = s.PalletCode, Station = s.Mark, Status = s.PalletStatus });
+                else
+                    dto.TransitItems.Add(new InventoryDetailItem { Code = s.CargoCode, Station = s.Mark, Status = s.CargoStatus });
+                continue;
             }
-            else if (r.Code.Contains("Container", StringComparison.OrdinalIgnoreCase))
-                containerStations.Add(r.Station);
-        }
-
-        var lockedCodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var g in rows.Where(r => r.Status == "busy" && !string.IsNullOrEmpty(r.TaskId)
-            && !r.TaskId.StartsWith(WcsInventoryStore.FailPrefix, StringComparison.OrdinalIgnoreCase)
-            && !r.TaskId.StartsWith(WcsInventoryStore.GrcsLockPrefix, StringComparison.OrdinalIgnoreCase))
-            .GroupBy(r => r.TaskId, StringComparer.OrdinalIgnoreCase))
-        {
-            var grp = g.ToList();
-            var pallet = grp.FirstOrDefault(r => r.Code.Contains("Container", StringComparison.OrdinalIgnoreCase));
-            var main = pallet?.Code ?? grp.FirstOrDefault(r => !string.IsNullOrEmpty(r.Code))?.Code ?? "";
-            var cargoCode = grp.FirstOrDefault(r => r.Code.Contains("Cargo", StringComparison.OrdinalIgnoreCase))?.Code;
-            if (string.IsNullOrEmpty(main)) continue;
-            dto.LockedItems.Add(new InventoryDetailItem { Code = main, CargoCode = cargoCode, Station = grp.FirstOrDefault(r => r.Code == main)?.Station });
-            lockedCodes.Add(main);
-        }
-        foreach (var r in rows.Where(x => x.Status == "picked"))
-        {
-            dto.LockedItems.Add(new InventoryDetailItem { Code = r.Code, Station = r.Station });
-            lockedCodes.Add(r.Code);
-        }
-        dto.Locked = lockedCodes.Count;
-
-        foreach (var r in rows)
-        {
-            if (r.Status != "idle") continue;
-            if (lockedCodes.Contains(r.Code)) continue;
-            if (r.Code.Contains("Cargo", StringComparison.OrdinalIgnoreCase))
+            if (palletLocked || cargoLocked)
             {
-                if (!containerStations.Contains(r.Station))
+                if (palletLocked && cargoLocked)
+                    dto.LockedItems.Add(new InventoryDetailItem { Code = s.PalletCode, Station = s.Mark, CargoCode = s.CargoCode, Status = s.PalletStatus });
+                else if (palletLocked)
+                    dto.LockedItems.Add(new InventoryDetailItem { Code = s.PalletCode, Station = s.Mark, Status = s.PalletStatus });
+                else
+                    dto.LockedItems.Add(new InventoryDetailItem { Code = s.CargoCode, Station = s.Mark, Status = s.CargoStatus });
+                continue;
+            }
+
+            if (!string.IsNullOrEmpty(s.CargoCode))
+            {
+                if (string.IsNullOrEmpty(s.PalletCode))
                 {
                     dto.Cargo++;
-                    dto.CargoItems.Add(new InventoryDetailItem { Code = r.Code, Station = r.Station });
-                }
-            }
-            else if (r.Code.Contains("Container", StringComparison.OrdinalIgnoreCase))
-            {
-                if (cargoStations.Contains(r.Station))
-                {
-                    dto.Loaded++;
-                    var cargoCode = cargoByStation.TryGetValue(r.Station, out var cc) ? cc : null;
-                    dto.LoadedItems.Add(new InventoryDetailItem { Code = r.Code, Station = r.Station, CargoCode = cargoCode });
+                    dto.CargoItems.Add(new InventoryDetailItem { Code = s.CargoCode, Station = s.Mark });
                 }
                 else
                 {
-                    dto.Empty++;
-                    dto.EmptyItems.Add(new InventoryDetailItem { Code = r.Code, Station = r.Station });
+                    dto.Loaded++;
+                    dto.LoadedItems.Add(new InventoryDetailItem { Code = s.PalletCode, Station = s.Mark, CargoCode = s.CargoCode });
                 }
             }
+            else if (!string.IsNullOrEmpty(s.PalletCode))
+            {
+                dto.Empty++;
+                dto.EmptyItems.Add(new InventoryDetailItem { Code = s.PalletCode, Station = s.Mark });
+            }
         }
+        dto.Locked = dto.LockedItems.Count;
+        dto.Transit = dto.TransitItems.Count;
         return Task.FromResult(dto);
     }
 
-    /// <summary>从库存账本重建当前储位占用集合。</summary>
+    /// <summary>从储位表重建终点选点占用集合：号码存在且非 transit 的储位（transit=已取走，物理空，可再选为终点）。</summary>
     public HashSet<string> BuildOccupied()
     {
         var storageMarks = new HashSet<string>(
             _map.GetStations().Where(s => (s.StationType & Contracts.Dtos.MapStationTypeBits.StorageLocation) != 0).Select(s => s.Mark),
             StringComparer.OrdinalIgnoreCase);
         var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var r in _invStore.All())
+        foreach (var s in _invStore.Slots())
         {
-            var st = r.Station ?? "";
-            if (string.IsNullOrEmpty(st) || !storageMarks.Contains(st)) continue;
-            set.Add(st);
+            if (!storageMarks.Contains(s.Mark)) continue;
+            var occupied = (!string.IsNullOrEmpty(s.PalletCode) && s.PalletStatus != "transit")
+                || (!string.IsNullOrEmpty(s.CargoCode) && s.CargoStatus != "transit");
+            if (occupied)
+                set.Add(s.Mark);
         }
         return set;
     }

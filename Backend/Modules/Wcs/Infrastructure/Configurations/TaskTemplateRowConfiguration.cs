@@ -1,10 +1,10 @@
 using System.Text.Json;
-using GrcsBackend.Contracts.Entities;
-using GrcsBackend.Contracts.Dtos;
+using Contracts.Entities;
+using Contracts.Dtos;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
 
-namespace GrcsBackend.Modules.Wcs.Infrastructure.Configurations;
+namespace WCSBackend.Modules.Wcs.Infrastructure.Configurations;
 
 public class TaskTemplateRowConfiguration : IEntityTypeConfiguration<TaskTemplateRow>
 {

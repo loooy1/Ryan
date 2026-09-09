@@ -1,4 +1,4 @@
-namespace GrcsBackend.Contracts.Dtos;
+namespace Contracts.Dtos;
 
 /// <summary>GRCS 硬编码接口说明条目（前端「GRCS 接口说明」模块展示，数据源与 GrcsHttpClient 实际路径保持一致）。</summary>
 public class GrcsApiDocDto

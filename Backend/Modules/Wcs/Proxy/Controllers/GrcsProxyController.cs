@@ -1,11 +1,11 @@
 using System.Text.Json;
-using GrcsBackend.Modules.Wcs.Proxy.Services;
-using GrcsBackend.Contracts.Dtos;
-using GrcsBackend.Modules.Wcs.Infrastructure;
-using GrcsBackend.Modules.Wcs.Automation.Services;
+using WCSBackend.Modules.Wcs.Proxy.Services;
+using Contracts.Dtos;
+using WCSBackend.Modules.Wcs.Infrastructure;
+using WCSBackend.Modules.Wcs.Automation.Services;
 using Microsoft.AspNetCore.Mvc;
 
-namespace GrcsBackend.Modules.Wcs.Proxy.Controllers;
+namespace WCSBackend.Modules.Wcs.Proxy.Controllers;
 
 /// <summary>
 /// GRCS 对接代理（/api/wcs/grcs/*，供 WCS 前端调用，后端代发 GRCS 8224）。

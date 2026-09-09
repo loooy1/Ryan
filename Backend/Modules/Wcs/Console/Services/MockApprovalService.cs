@@ -1,13 +1,13 @@
 using System.Text.Json;
-using GrcsBackend.Modules.Shared.Infrastructure.Repository;
-using GrcsBackend.Modules.Wcs.Infrastructure;
-using GrcsBackend.Contracts.Entities;
-using GrcsBackend.Contracts.Dtos;
-using GrcsBackend.Modules.Wcs.Realtime;
+using Backend.Shared.Infrastructure.Repository;
+using WCSBackend.Modules.Wcs.Infrastructure;
+using Contracts.Entities;
+using Contracts.Dtos;
+using WCSBackend.Modules.Wcs.Realtime;
 using Mapster;
 using Microsoft.AspNetCore.SignalR;
 
-namespace GrcsBackend.Modules.Wcs.Console.Services;
+namespace WCSBackend.Modules.Wcs.Console.Services;
 
 /// <summary>
 /// 通用 Mock 审批服务：任意 Mock 卡片（RequiresApproval=true）命中时生成一条请求任务，

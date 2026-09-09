@@ -1,9 +1,9 @@
-using GrcsBackend.Modules.Wcs.Infrastructure;
-using GrcsBackend.Contracts.Dtos;
-using GrcsBackend.Contracts.Entities;
+using WCSBackend.Modules.Wcs.Infrastructure;
+using Contracts.Dtos;
+using Contracts.Entities;
 using Microsoft.AspNetCore.Mvc;
 
-namespace GrcsBackend.Modules.Wcs.Console.Controllers;
+namespace WCSBackend.Modules.Wcs.Console.Controllers;
 
 /// <summary>
 /// 项目记录接口（/api/wcs/project-logs）：每日项目日程台账。

@@ -1,12 +1,12 @@
-using GrcsBackend.Modules.Shared.Infrastructure.Repository;
-using GrcsBackend.Contracts.Dtos;
-using GrcsBackend.Contracts.Entities;
-using GrcsBackend.Modules.Wcs.Infrastructure;
-using GrcsBackend.Modules.Wcs.Realtime;
+using Backend.Shared.Infrastructure.Repository;
+using Contracts.Dtos;
+using Contracts.Entities;
+using WCSBackend.Modules.Wcs.Infrastructure;
+using WCSBackend.Modules.Wcs.Realtime;
 using Mapster;
 using Microsoft.AspNetCore.SignalR;
 
-namespace GrcsBackend.Modules.Wcs.Console.Services;
+namespace WCSBackend.Modules.Wcs.Console.Services;
 
 /// <summary>
 /// 任务记录统一服务：合并后的 task_records 表（创建行 CREATED + 阶段行 START/LOAD_FINISH/FINISHED）。
@@ -42,6 +42,9 @@ public interface ITaskStageService
 
     /// <summary>任务到达 FINISHED 时触发（参数 = taskId）；供后端模块执行器在终点阶段跑模块。</summary>
     event Action<string>? TaskFinished;
+
+    /// <summary>任务到达 LOAD_FINISH（载货成功 = 已被取走）时触发（参数 = taskId）；供库存状态机推进 transit。</summary>
+    event Action<string>? TaskLoadFinished;
 
     /// <summary>等待任务到达 FINISHED（进程内事件驱动，默认无限等待；传入 timeout 才会限时）。</summary>
     Task WaitFinishedAsync(string taskId, TimeSpan? timeout = null);
@@ -92,6 +95,8 @@ public class TaskStageService : ITaskStageService
     }
 
     public event Action<string>? TaskFinished;
+
+    public event Action<string>? TaskLoadFinished;
 
     /// <summary>写创建行（来自下发台账）：同一任务只保留一条 CREATED，重复写入跳过。</summary>
     public void RecordCreated(List<TaskLedgerEntry> entries)
@@ -151,6 +156,8 @@ public class TaskStageService : ITaskStageService
                     tcs.TrySetResult(true);
                 TaskFinished?.Invoke(change.TaskId);
             }
+            if (string.Equals(change.Stage, "LOAD_FINISH", StringComparison.OrdinalIgnoreCase) && !string.IsNullOrEmpty(change.TaskId))
+                TaskLoadFinished?.Invoke(change.TaskId);
         }
         var newId = InsertRecord(rec);   // 持久化（锁外 IO）
         lock (_lock) { rec.Id = newId; }

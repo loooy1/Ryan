@@ -1,8 +1,8 @@
-using GrcsBackend.Contracts.Dtos;
-using GrcsBackend.Modules.Wcs.Infrastructure;
+using Contracts.Dtos;
+using WCSBackend.Modules.Wcs.Infrastructure;
 using Microsoft.AspNetCore.Mvc;
 
-namespace GrcsBackend.Modules.Wcs.Console.Controllers;
+namespace WCSBackend.Modules.Wcs.Console.Controllers;
 
 /// <summary>
 /// 地图缓存接口（/api/wcs/map/*）：

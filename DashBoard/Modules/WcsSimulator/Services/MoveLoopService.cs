@@ -1,7 +1,7 @@
-using GrcsBackend.Contracts.Dtos;
-using GRCS.Dashboard.Modules.WcsSimulator.Services;
+using Contracts.Dtos;
+using Dashboard.Modules.WcsSimulator.Services;
 
-namespace GRCS.Dashboard.Modules.WcsSimulator.Services;
+namespace Dashboard.Modules.WcsSimulator.Services;
 
 /// <summary>
 /// 纯移动任务循环遥控壳（scoped：跨页面导航存活）。

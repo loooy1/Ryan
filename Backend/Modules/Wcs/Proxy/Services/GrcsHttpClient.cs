@@ -1,9 +1,9 @@
 using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json;
-using GrcsBackend.Contracts.Dtos;
+using Contracts.Dtos;
 
-namespace GrcsBackend.Modules.Wcs.Proxy.Services;
+namespace WCSBackend.Modules.Wcs.Proxy.Services;
 
 /// <summary>
 /// GRCS 核心后端（8224）HTTP 客户端：任务下发 / 车辆任务 / 库存查询 / 出站信号。

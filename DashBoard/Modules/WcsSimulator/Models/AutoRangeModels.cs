@@ -1,9 +1,9 @@
-using GrcsBackend.Contracts.Dtos;
+using Contracts.Dtos;
 
-namespace GRCS.Dashboard.Modules.WcsSimulator.Models;
+namespace Dashboard.Modules.WcsSimulator.Models;
 
 /// <summary>
-/// 选点范围解析辅助（RangeConfigDto 的数据类在 GrcsBackend.Contracts.Dtos；
+/// 选点范围解析辅助（RangeConfigDto 的数据类在 Contracts.Dtos；
 /// 本类只保留前端专用的静态解析逻辑）。
 /// </summary>
 public static class RangeConfigHelpers

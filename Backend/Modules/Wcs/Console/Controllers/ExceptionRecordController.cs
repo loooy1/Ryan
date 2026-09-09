@@ -1,9 +1,9 @@
-using GrcsBackend.Modules.Wcs.Infrastructure;
-using GrcsBackend.Contracts.Dtos;
-using GrcsBackend.Contracts.Entities;
+using WCSBackend.Modules.Wcs.Infrastructure;
+using Contracts.Dtos;
+using Contracts.Entities;
 using Microsoft.AspNetCore.Mvc;
 
-namespace GrcsBackend.Modules.Wcs.Console.Controllers;
+namespace WCSBackend.Modules.Wcs.Console.Controllers;
 
 /// <summary>
 /// 异常记录接口（/api/wcs/exception-records）：AGV/软件异常台账。

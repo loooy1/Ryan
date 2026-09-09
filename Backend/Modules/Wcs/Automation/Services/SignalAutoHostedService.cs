@@ -1,10 +1,10 @@
-using GrcsBackend.Modules.Shared.Infrastructure.Repository;
-using GrcsBackend.Modules.Wcs.Proxy.Services;
-using GrcsBackend.Contracts.Dtos;
-using GrcsBackend.Modules.Wcs.Infrastructure;
-using GrcsBackend.Modules.Wcs.Console.Services;
+using Backend.Shared.Infrastructure.Repository;
+using WCSBackend.Modules.Wcs.Proxy.Services;
+using Contracts.Dtos;
+using WCSBackend.Modules.Wcs.Infrastructure;
+using WCSBackend.Modules.Wcs.Console.Services;
 
-namespace GrcsBackend.Modules.Wcs.Automation.Services;
+namespace WCSBackend.Modules.Wcs.Automation.Services;
 
 /// <summary>
 /// 信号自动放行服务（由前端 SignalAutoService 平移，Skill E：leader 模式整个删除，后端天然唯一）。

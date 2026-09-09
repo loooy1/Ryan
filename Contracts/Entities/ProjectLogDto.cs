@@ -1,4 +1,4 @@
-namespace GrcsBackend.Contracts.Entities;
+namespace Contracts.Entities;
 
 /// <summary>项目记录（每日项目日程，纯 HTTP 读写）。</summary>
 public class ProjectLogDto

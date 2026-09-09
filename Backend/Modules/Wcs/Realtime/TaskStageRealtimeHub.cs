@@ -1,10 +1,10 @@
-using GrcsBackend.Modules.Wcs.Automation.Services;
-using GrcsBackend.Modules.Wcs.Console.Services;
-using GrcsBackend.Modules.Wcs.Infrastructure;
-using GrcsBackend.Contracts.Dtos;
+using WCSBackend.Modules.Wcs.Automation.Services;
+using WCSBackend.Modules.Wcs.Console.Services;
+using WCSBackend.Modules.Wcs.Infrastructure;
+using Contracts.Dtos;
 using Microsoft.AspNetCore.SignalR;
 
-namespace GrcsBackend.Modules.Wcs.Realtime;
+namespace WCSBackend.Modules.Wcs.Realtime;
 
 /// <summary>
 /// 任务记录实时推送 Hub（/hubs/task-stages）。

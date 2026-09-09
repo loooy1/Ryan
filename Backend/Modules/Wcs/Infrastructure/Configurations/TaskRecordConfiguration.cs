@@ -1,11 +1,11 @@
 using System.Globalization;
 using System.Text.Json;
-using GrcsBackend.Contracts.Entities;
+using Contracts.Entities;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.ChangeTracking;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
 
-namespace GrcsBackend.Modules.Wcs.Infrastructure.Configurations;
+namespace WCSBackend.Modules.Wcs.Infrastructure.Configurations;
 
 public class TaskRecordConfiguration : IEntityTypeConfiguration<TaskRecord>
 {

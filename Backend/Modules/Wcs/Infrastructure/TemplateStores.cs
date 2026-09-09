@@ -1,10 +1,10 @@
-using GrcsBackend.Modules.Shared.Infrastructure.Repository;
-using GrcsBackend.Contracts.Entities;
-using GrcsBackend.Contracts.Dtos;
+using Backend.Shared.Infrastructure.Repository;
+using Contracts.Entities;
+using Contracts.Dtos;
 using Mapster;
 using Microsoft.AspNetCore.Http;
 
-namespace GrcsBackend.Modules.Wcs.Infrastructure;
+namespace WCSBackend.Modules.Wcs.Infrastructure;
 
 /// <summary>
 /// 任务类型模板存储（内存 + EF Core 持久化 task_templates 表）。

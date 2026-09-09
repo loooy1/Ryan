@@ -1,11 +1,11 @@
 using System.Net.Http.Json;
 using System.Text.Json;
-using GrcsBackend.Contracts.Dtos;
+using Contracts.Dtos;
 
-namespace GRCS.Dashboard.Modules.WcsSimulator.Services;
+namespace Dashboard.Modules.WcsSimulator.Services;
 
 /// <summary>
-/// GrcsBackend（8230）管理面 API 客户端（Skill E：前端只读 API + 展示）。
+/// WCSBackend（8230）管理面 API 客户端（Skill E：前端只读 API + 展示）。
 /// BaseAddress 取 localStorage grcs_wcs_url（保留的 UI 偏好），缺省 http://localhost:8230。
 /// </summary>
 public class WcsApiClient

@@ -1,8 +1,8 @@
-using GrcsBackend.Contracts.Entities;
+using Contracts.Entities;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
 
-namespace GrcsBackend.Modules.Wcs.Infrastructure.Configurations;
+namespace WCSBackend.Modules.Wcs.Infrastructure.Configurations;
 
 public class ProjectLogDtoConfiguration : IEntityTypeConfiguration<ProjectLogDto>
 {

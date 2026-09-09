@@ -1,7 +1,7 @@
-using GrcsBackend.Modules.Wcs.Infrastructure;
+using WCSBackend.Modules.Wcs.Infrastructure;
 using Microsoft.AspNetCore.Mvc;
 
-namespace GrcsBackend.Modules.Wcs.Console.Controllers;
+namespace WCSBackend.Modules.Wcs.Console.Controllers;
 
 /// <summary>
 /// 信号确认状态接口（/api/wcs/signal-confirm）：

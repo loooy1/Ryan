@@ -1,7 +1,7 @@
 using Microsoft.AspNetCore.Components.Web;
 using Microsoft.AspNetCore.Components.WebAssembly.Hosting;
 using MudBlazor.Services;
-using GRCS.Dashboard;
+using Dashboard;
 
 var builder = WebAssemblyHostBuilder.CreateDefault(args);
 builder.RootComponents.Add<App>("#app");
@@ -25,19 +25,19 @@ builder.Services.AddScoped(sp => new HttpClient
 // （ScopedInSingletonException），页面白屏"An unhandled error has occurred"
 // （2026-08-14 曾因此故障：SignalAutoService 曾被误注册为 Singleton）。
 // Module navigation state (scoped = per-browser-tab)
-builder.Services.AddScoped<GRCS.Dashboard.Modules.WcsSimulator.Services.ModuleNavigationService>();
+builder.Services.AddScoped<Dashboard.Modules.WcsSimulator.Services.ModuleNavigationService>();
 // 后端存活状态共享服务（BackendStatus 渲染 + 各页面连接判定，单一数据源）
-builder.Services.AddScoped<GRCS.Dashboard.Modules.WcsSimulator.Services.BackendHealthService>();
-builder.Services.AddScoped<GRCS.Dashboard.Modules.WcsSimulator.Services.ConnectionAlertService>();
-builder.Services.AddScoped<GRCS.Dashboard.Modules.WcsSimulator.Services.LocalStoreService>();
+builder.Services.AddScoped<Dashboard.Modules.WcsSimulator.Services.BackendHealthService>();
+builder.Services.AddScoped<Dashboard.Modules.WcsSimulator.Services.ConnectionAlertService>();
+builder.Services.AddScoped<Dashboard.Modules.WcsSimulator.Services.LocalStoreService>();
 // Skill E：后端遥控壳（WcsApiClient + 共享状态/日志轮询中枢 + 三个瘦壳服务）
-builder.Services.AddScoped<GRCS.Dashboard.Modules.WcsSimulator.Services.WcsApiClient>();
-builder.Services.AddScoped<GRCS.Dashboard.Modules.WcsSimulator.Services.AutomationHub>();
-builder.Services.AddScoped<GRCS.Dashboard.Modules.WcsSimulator.Services.SignalAutoService>();
-builder.Services.AddScoped<GRCS.Dashboard.Modules.WcsSimulator.Services.TaskLedgerService>();
+builder.Services.AddScoped<Dashboard.Modules.WcsSimulator.Services.WcsApiClient>();
+builder.Services.AddScoped<Dashboard.Modules.WcsSimulator.Services.AutomationHub>();
+builder.Services.AddScoped<Dashboard.Modules.WcsSimulator.Services.SignalAutoService>();
+builder.Services.AddScoped<Dashboard.Modules.WcsSimulator.Services.TaskLedgerService>();
 // 任务阶段事件共享轮询器：全应用唯一轮询 task-stages，替代各处各自轮询
-builder.Services.AddScoped<GRCS.Dashboard.Modules.WcsSimulator.Services.TaskStageHub>();
+builder.Services.AddScoped<Dashboard.Modules.WcsSimulator.Services.TaskStageHub>();
 // 纯移动任务循环（scoped：跨页面导航存活，离开自动化页任务继续下发）
-builder.Services.AddScoped<GRCS.Dashboard.Modules.WcsSimulator.Services.MoveLoopService>();
+builder.Services.AddScoped<Dashboard.Modules.WcsSimulator.Services.MoveLoopService>();
 
 await builder.Build().RunAsync();

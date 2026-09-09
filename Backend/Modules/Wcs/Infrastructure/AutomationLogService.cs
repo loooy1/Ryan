@@ -1,7 +1,7 @@
-using GrcsBackend.Contracts.Dtos;
+using Contracts.Dtos;
 using System.Collections.Generic;
 
-namespace GrcsBackend.Modules.Wcs.Infrastructure;
+namespace WCSBackend.Modules.Wcs.Infrastructure;
 
 /// <summary>
 /// 自动化/批量/信号执行日志（按「轮次」分组，内存存储，进程重启清空）。

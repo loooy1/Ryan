@@ -1,27 +1,28 @@
-using GrcsBackend.Contracts.Dtos;
-using GrcsBackend.Contracts.Entities;
-using GrcsBackend.Modules.Shared.Infrastructure.Repository;
+using System.Collections.Concurrent;
+using Contracts.Entities;
+using Backend.Shared.Infrastructure.Repository;
 
-namespace GrcsBackend.Modules.Wcs.Infrastructure;
+namespace WCSBackend.Modules.Wcs.Infrastructure;
 
 /// <summary>
-/// WCS 自持库存账本（wcs_inventory 表）：自动化任务选池/占用/释放的唯一事实源。
-/// 生命周期：idle（可选）→ picked（已选未下发）→ busy（在途，task_id 占用任务）→ FINISHED 回 idle 并更新位置。
-/// 下发失败记录 task_id = "fail:{id}"（下轮快照对照 GRCS 缓存确认后回收）；
-/// 同步重建时 GRCS 锁定记录 task_id = "grcs_lock:{code}"（外部状态，不视为 WCS 在途）。
+/// WCS 单表库存协调器（wcs_slots 一行管理托盘+货物）。
+/// 状态机：ready → picked（已选未下发，在储位）→ LOAD_FINISH（载货成功=已取走）→ transit（号码保留作出发记录）
+/// → FINISHED → 清残留（出发储位）+ 写终点储位行（ready）。
+/// 下发失败 → fail（在储位，保持锁定）；同步（GRCS 初始化）→ 仅取位置+号码，状态一律 ready。
+/// 任务→单元映射存内存：进程重启后映射丢失 → LOAD_FINISH/FINISHED 不推进（保持锁定），由「同步」按钮重建。
 /// </summary>
 public class WcsInventoryStore
 {
     public record InvItem(string Code, string Mark, bool IsLoaded, string? CargoCode = null, string? Station = null);
 
     public const string FailPrefix = "fail:";
-    public const string GrcsLockPrefix = "grcs_lock:";
     private const string SyncedMarksKey = "inv_synced_marks";
 
     private static readonly object WriteLock = new(); // SQLite 不支持并发写入，全局锁序列化所有写操作
 
     private readonly IUnitOfWorkFactory _uow;
     private readonly MapStoreService _map;
+    private readonly ConcurrentDictionary<string, List<string>> _units = new(StringComparer.OrdinalIgnoreCase);
 
     public WcsInventoryStore(IUnitOfWorkFactory uow, MapStoreService map)
     {
@@ -29,283 +30,345 @@ public class WcsInventoryStore
         _map = map;
     }
 
+    private static bool IsCargo(string code) => code.Contains("Cargo", StringComparison.OrdinalIgnoreCase);
+
+    private static WcsSlotRow? FindRow(IRepository<WcsSlotRow> repo, string code)
+        => repo.Query().AsEnumerable().FirstOrDefault(s =>
+            string.Equals(s.PalletCode, code, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(s.CargoCode, code, StringComparison.OrdinalIgnoreCase));
+
     // ── 查询 ──
 
-    public List<WcsInventoryRow> All()
+    public List<WcsSlotRow> Slots()
     {
         using var uow = _uow.Create();
-        return uow.Repository<WcsInventoryRow>().Query().OrderBy(r => r.Code).ToList();
+        return uow.Repository<WcsSlotRow>().Query().OrderBy(r => r.Mark).ToList();
     }
 
-    public List<WcsInventoryRow> ByStatus(string status)
+    public WcsSlotRow? FindSlot(string mark)
     {
         using var uow = _uow.Create();
-        return uow.Repository<WcsInventoryRow>().Query().Where(r => r.Status == status).ToList();
+        return uow.Repository<WcsSlotRow>().FindAsync(mark).GetAwaiter().GetResult();
     }
 
-    /// <summary>存在 WCS 在途任务（busy 且非 fail:/grcs_lock: 前缀），供同步/地图更新加锁。</summary>
+    /// <summary>存在在途/锁定单元（picked/transit，不含 fail），供同步/地图更新加锁。</summary>
     public bool HasInTransit()
     {
         using var uow = _uow.Create();
-        return uow.Repository<WcsInventoryRow>().Query()
-            .Any(r => r.Status == "busy" && r.TaskId != "" && !r.TaskId.StartsWith(FailPrefix) && !r.TaskId.StartsWith(GrcsLockPrefix));
+        return uow.Repository<WcsSlotRow>().Query()
+            .Any(s => s.PalletStatus == "picked" || s.PalletStatus == "transit"
+                || s.CargoStatus == "picked" || s.CargoStatus == "transit");
     }
 
-    /// <summary>存在下发失败保留的占用（fail 前缀），下轮快照需对照 GRCS 缓存确认回收。</summary>
-    public bool HasFailed()
+    // ── 储位表（地图镜像）──
+
+    /// <summary>全量重建储位表：清空全部储位行 → 按地图储位点重新填充（仅「同步至 WCS」时执行）。</summary>
+    public void EnsureSlots()
     {
-        using var uow = _uow.Create();
-        return uow.Repository<WcsInventoryRow>().Query().Any(r => r.TaskId.StartsWith(FailPrefix));
+        lock (WriteLock)
+        {
+            using var uow = _uow.Create();
+            var repo = uow.Repository<WcsSlotRow>();
+            repo.DeleteWhereAsync(_ => true).GetAwaiter().GetResult();
+            foreach (var m in StorageMarks())
+                repo.AddAsync(new WcsSlotRow { Mark = m, UpdatedAt = DateTime.Now.ToString("O") }).GetAwaiter().GetResult();
+            uow.CommitAsync().GetAwaiter().GetResult();
+        }
     }
 
     // ── 选池（自动化每轮调用）──
 
     /// <summary>
-    /// 从账本构建选池：范围过滤（rangeSet=null 全图）→ 仅储位 → 排除非 idle →
-    /// 分类（带货托=同站有关联货物；纯货物=无同站托盘的独立货物）。
-    /// 返回三池 + 诊断计数（范围内储位托盘总数/其中锁定数/带货托数）。
+    /// 从储位表构建选池：范围过滤 → 仅就绪（ready）单元分类。
+    /// 有托有货=带货托（托盘入口，货物跟随不单独选）；有货无托=纯货物；有托无货=空托；非 ready=锁定。
     /// </summary>
     public (List<InvItem> Empty, List<InvItem> Loaded, List<InvItem> Cargo,
             int Stored, int LockedStored, int LoadedStored) BuildPool(HashSet<string>? rangeSet, HashSet<string> storageMarks)
     {
-        var rows = All();
+        using var uow = _uow.Create();
+        var slots = uow.Repository<WcsSlotRow>().Query().ToList();
         var empty = new List<InvItem>();
         var loaded = new List<InvItem>();
         var cargo = new List<InvItem>();
         int stored = 0, lockedStored = 0, loadedStored = 0;
-        var containerStations = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var cargoStations = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var cargoByStation = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var r in rows)
+
+        foreach (var s in slots)
         {
-            if (rangeSet != null && !rangeSet.Contains(r.Station)) continue;
-            if (!storageMarks.Contains(r.Station)) continue;
-            if (r.Code.Contains("Cargo", StringComparison.OrdinalIgnoreCase))
+            if (rangeSet != null && !rangeSet.Contains(s.Mark)) continue;
+            if (!storageMarks.Contains(s.Mark)) continue;
+            var hasPallet = !string.IsNullOrEmpty(s.PalletCode);
+            var hasCargo = !string.IsNullOrEmpty(s.CargoCode);
+            if (hasPallet)
             {
-                cargoStations.Add(r.Station);
-                if (!string.IsNullOrEmpty(r.Station) && !cargoByStation.ContainsKey(r.Station))
-                    cargoByStation[r.Station] = r.Code;
-            }
-            else if (r.Code.Contains("Container", StringComparison.OrdinalIgnoreCase))
-            {
-                containerStations.Add(r.Station);
                 stored++;
-                if (r.Status != "idle") lockedStored++;
+                if (s.PalletStatus != "ready") { lockedStored++; continue; }
+                var isLoaded = hasCargo && s.CargoStatus == "ready";
+                if (isLoaded)
+                {
+                    loaded.Add(new InvItem(s.PalletCode, s.Mark, true, s.CargoCode, s.Mark));
+                    loadedStored++;
+                }
+                else
+                {
+                    empty.Add(new InvItem(s.PalletCode, s.Mark, false, null, s.Mark));
+                }
             }
-        }
-        foreach (var r in rows)
-        {
-            if (rangeSet != null && !rangeSet.Contains(r.Station)) continue;
-            if (!storageMarks.Contains(r.Station)) continue;
-            if (r.Status != "idle") continue;   // busy/picked 均排除
-            if (r.Code.Contains("Cargo", StringComparison.OrdinalIgnoreCase))
+            else if (hasCargo && s.CargoStatus == "ready")
             {
-                if (!containerStations.Contains(r.Station))
-                    cargo.Add(new InvItem(r.Code, r.HomeMark, false, null, r.Station));
-            }
-            else if (r.Code.Contains("Container", StringComparison.OrdinalIgnoreCase))
-            {
-                var isLoaded = cargoStations.Contains(r.Station);
-                var cargoCode = isLoaded && cargoByStation.TryGetValue(r.Station, out var cc) ? cc : null;
-                (isLoaded ? loaded : empty).Add(new InvItem(r.Code, r.HomeMark, isLoaded, cargoCode, r.Station));
-                if (isLoaded) loadedStored++;
+                cargo.Add(new InvItem(s.CargoCode, s.Mark, false, null, s.Mark));
             }
         }
         return (empty, loaded, cargo, stored, lockedStored, loadedStored);
     }
 
-    // ── 占用/释放 ──
+    // ── 状态推进 ──
 
-    /// <summary>选中容器（已选未下发）：idle → picked。</summary>
+    /// <summary>选中容器（已选未下发）：ready → picked（还在储位，仅锁定）。</summary>
     public void Pick(string code)
     {
         lock (WriteLock)
         {
             using var uow = _uow.Create();
-            var repo = uow.Repository<WcsInventoryRow>();
-            var row = repo.FindAsync(code).GetAwaiter().GetResult();
-            if (row == null || row.Status != "idle") return;
-            row.Status = "picked";
+            var repo = uow.Repository<WcsSlotRow>();
+            var row = FindRow(repo, code);
+            if (row == null) return;
+            if (IsCargo(code))
+            {
+                if (row.CargoStatus != "ready") return;
+                row.CargoStatus = "picked";
+            }
+            else
+            {
+                if (row.PalletStatus != "ready") return;
+                row.PalletStatus = "picked";
+            }
             row.UpdatedAt = DateTime.Now.ToString("O");
             uow.CommitAsync().GetAwaiter().GetResult();
         }
     }
 
-    /// <summary>下发成功：picked → busy，绑定任务。</summary>
-    public void MarkBusy(IEnumerable<string> codes, string taskId)
+    /// <summary>
+    /// 下发成功：登记任务→单元映射（LOAD_FINISH/FINISHED 推进依据）；单元保持在储位（picked，未取走）。
+    /// palletCode 供货物入库记录所属托盘（管理用途，本次映射已含链上托盘）。
+    /// </summary>
+    public void MarkBusy(IEnumerable<string> codes, string taskId, string? startMark = null, string? palletCode = null, bool clearSlotBoth = false)
     {
         lock (WriteLock)
         {
-        using var uow = _uow.Create();
-        var repo = uow.Repository<WcsInventoryRow>();
-        foreach (var code in codes)
-        {
-            var row = repo.FindAsync(code).GetAwaiter().GetResult();
-            if (row == null || row.Status != "picked") continue;
-            row.Status = "busy";
-            row.TaskId = taskId;
-            row.UpdatedAt = DateTime.Now.ToString("O");
-        }
-        uow.CommitAsync().GetAwaiter().GetResult();
+            var list = codes.Where(c => !string.IsNullOrEmpty(c))
+                .Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+            if (list.Count == 0) return;
+            _units[taskId] = list;
+            using var uow = _uow.Create();
+            var repo = uow.Repository<WcsSlotRow>();
+            foreach (var code in list)
+            {
+                var row = FindRow(repo, code);
+                if (row == null) continue;
+                if (IsCargo(code))
+                {
+                    if (row.CargoStatus == "ready") row.CargoStatus = "picked";
+                }
+                else
+                {
+                    if (row.PalletStatus == "ready") row.PalletStatus = "picked";
+                }
+                row.UpdatedAt = DateTime.Now.ToString("O");
+            }
+            uow.CommitAsync().GetAwaiter().GetResult();
         }
     }
 
-    /// <summary>下发失败：picked → busy + fail 前缀（下轮快照确认后回收，防「超时但 GRCS 已收」重复选）。</summary>
+    /// <summary>LOAD_FINISH（载货成功 = 已被取走）：映射命中 → 置 transit（号码保留作出发储位记录）；无映射（重启后）→ 保持锁定。</summary>
+    public void OnTaskLoadFinished(string taskId)
+    {
+        lock (WriteLock)
+        {
+            if (!_units.TryGetValue(taskId, out var codes)) return;
+            using var uow = _uow.Create();
+            var repo = uow.Repository<WcsSlotRow>();
+            foreach (var code in codes)
+            {
+                var row = FindRow(repo, code);
+                if (row == null) continue;
+                if (IsCargo(code)) row.CargoStatus = "transit";
+                else row.PalletStatus = "transit";
+                row.UpdatedAt = DateTime.Now.ToString("O");
+            }
+            uow.CommitAsync().GetAwaiter().GetResult();
+        }
+    }
+
+    /// <summary>下发失败：picked/ready → fail（号码保留，锁定中；强制结束或同步重建解除）。</summary>
     public void MarkFail(IEnumerable<string> codes, string taskId)
     {
         lock (WriteLock)
         {
-        using var uow = _uow.Create();
-        var repo = uow.Repository<WcsInventoryRow>();
-        foreach (var code in codes)
-        {
-            var row = repo.FindAsync(code).GetAwaiter().GetResult();
-            if (row == null || row.Status != "picked") continue;
-            row.Status = "busy";
-            row.TaskId = FailPrefix + taskId;
-            row.UpdatedAt = DateTime.Now.ToString("O");
-        }
-        uow.CommitAsync().GetAwaiter().GetResult();
-        }
-    }
-
-    /// <summary>链 finally 回收：选过但未下发的 picked 记录 → idle。</summary>
-    public void RecyclePicked(IEnumerable<string> codes)
-    {
-        lock (WriteLock)
-        {
-        using var uow = _uow.Create();
-        var repo = uow.Repository<WcsInventoryRow>();
-        foreach (var code in codes)
-        {
-            var row = repo.FindAsync(code).GetAwaiter().GetResult();
-            if (row == null || row.Status != "picked") continue;
-            row.Status = "idle";
-            row.TaskId = "";
-            row.UpdatedAt = DateTime.Now.ToString("O");
-        }
-        uow.CommitAsync().GetAwaiter().GetResult();
+            using var uow = _uow.Create();
+            var repo = uow.Repository<WcsSlotRow>();
+            foreach (var code in codes)
+            {
+                if (string.IsNullOrEmpty(code)) continue;
+                var row = FindRow(repo, code);
+                if (row == null) continue;
+                if (IsCargo(code))
+                {
+                    if (row.CargoStatus != "ready" && row.CargoStatus != "picked") continue;
+                    row.CargoStatus = "fail";
+                }
+                else
+                {
+                    if (row.PalletStatus != "ready" && row.PalletStatus != "picked") continue;
+                    row.PalletStatus = "fail";
+                }
+                row.UpdatedAt = DateTime.Now.ToString("O");
+            }
+            uow.CommitAsync().GetAwaiter().GetResult();
         }
     }
 
-    /// <summary>任务 FINISHED：busy → idle，位置更新到终点，解除任务绑定。</summary>
+    /// <summary>
+    /// FINISHED 落地：按任务映射清残留（出发储位记录）→ 写终点储位行（号码+ready）。
+    /// 终点非储位（接驳位/出库）= 只清残留（单元离开储位）；无映射（进程重启后）→ 不落地，保持锁定（由同步重建）。
+    /// </summary>
     public void Release(string taskId, string destMark)
     {
         lock (WriteLock)
         {
-        using var uow = _uow.Create();
-        var repo = uow.Repository<WcsInventoryRow>();
-        foreach (var row in repo.Query().Where(r => r.TaskId == taskId).ToList())
-        {
-            if (row.Status != "busy") continue;
-            row.Status = "idle";
-            row.TaskId = "";
-            if (!string.IsNullOrEmpty(destMark)) row.Station = destMark;
-            row.UpdatedAt = DateTime.Now.ToString("O");
-        }
-        uow.CommitAsync().GetAwaiter().GetResult();
+            if (!_units.TryRemove(taskId, out var codes)) return;
+            using var uow = _uow.Create();
+            var repo = uow.Repository<WcsSlotRow>();
+            foreach (var code in codes)
+            {
+                var rows = repo.Query().AsEnumerable().Where(s =>
+                    string.Equals(s.PalletCode, code, StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(s.CargoCode, code, StringComparison.OrdinalIgnoreCase)).ToList();
+                foreach (var row in rows)
+                {
+                    if (string.Equals(row.PalletCode, code, StringComparison.OrdinalIgnoreCase)) { row.PalletCode = ""; row.PalletStatus = ""; }
+                    if (string.Equals(row.CargoCode, code, StringComparison.OrdinalIgnoreCase)) { row.CargoCode = ""; row.CargoStatus = ""; }
+                    row.UpdatedAt = DateTime.Now.ToString("O");
+                }
+            }
+            if (!string.IsNullOrEmpty(destMark))
+            {
+                var dest = repo.FindAsync(destMark).GetAwaiter().GetResult();
+                if (dest != null)
+                {
+                    foreach (var code in codes)
+                    {
+                        if (IsCargo(code)) { dest.CargoCode = code; dest.CargoStatus = "ready"; }
+                        else { dest.PalletCode = code; dest.PalletStatus = "ready"; }
+                    }
+                    dest.UpdatedAt = DateTime.Now.ToString("O");
+                }
+            }
+            uow.CommitAsync().GetAwaiter().GetResult();
         }
     }
 
-    /// <summary>下轮快照确认：对照 GRCS 缓存回收失败的占用。容器仍存在（未锁定）→ idle 放回；不存在/锁定 → 保持排除。</summary>
-    public void RecycleFailed(IEnumerable<string> stillPresent)
+    /// <summary>链 finally 回收：选过但未下发的 picked 记录 → ready。</summary>
+    public void RecyclePicked(IEnumerable<string> codes)
     {
         lock (WriteLock)
         {
-        using var uow = _uow.Create();
-        var repo = uow.Repository<WcsInventoryRow>();
-        var present = new HashSet<string>(stillPresent, StringComparer.OrdinalIgnoreCase);
-        foreach (var row in repo.Query().Where(r => r.TaskId.StartsWith(FailPrefix)).ToList())
-        {
-            if (!present.Contains(row.Code)) continue;
-            row.Status = "idle";
-            row.TaskId = "";
-            row.UpdatedAt = DateTime.Now.ToString("O");
-        }
-        uow.CommitAsync().GetAwaiter().GetResult();
+            using var uow = _uow.Create();
+            var repo = uow.Repository<WcsSlotRow>();
+            foreach (var code in codes)
+            {
+                if (string.IsNullOrEmpty(code)) continue;
+                var row = FindRow(repo, code);
+                if (row == null) continue;
+                if (IsCargo(code))
+                {
+                    if (row.CargoStatus != "picked") continue;
+                    row.CargoStatus = "ready";
+                }
+                else
+                {
+                    if (row.PalletStatus != "picked") continue;
+                    row.PalletStatus = "ready";
+                }
+                row.UpdatedAt = DateTime.Now.ToString("O");
+            }
+            uow.CommitAsync().GetAwaiter().GetResult();
         }
     }
 
-    /// <summary>强制结束：清空全部占用（busy/picked → idle）。</summary>
+    /// <summary>强制结束：全部非 ready → ready（号码保留，位置可能与实际不符，同步兜底）。</summary>
     public void ClearBusy()
     {
         lock (WriteLock)
         {
-        using var uow = _uow.Create();
-        var repo = uow.Repository<WcsInventoryRow>();
-        foreach (var row in repo.Query().Where(r => r.Status != "idle").ToList())
-        {
-            row.Status = "idle";
-            row.TaskId = "";
-            row.UpdatedAt = DateTime.Now.ToString("O");
-        }
-        uow.CommitAsync().GetAwaiter().GetResult();
+            using var uow = _uow.Create();
+            var repo = uow.Repository<WcsSlotRow>();
+            foreach (var s in repo.Query().ToList())
+            {
+                if (s.PalletStatus != "" && s.PalletStatus != "ready") { s.PalletStatus = "ready"; s.UpdatedAt = DateTime.Now.ToString("O"); }
+                if (s.CargoStatus != "" && s.CargoStatus != "ready") { s.CargoStatus = "ready"; s.UpdatedAt = DateTime.Now.ToString("O"); }
+            }
+            uow.CommitAsync().GetAwaiter().GetResult();
         }
     }
 
     // ── 同步 ──
 
-    /// <summary>全量重建（同步按钮）：清空账本 → 按 GRCS 记录重建；GRCS 锁定记录标 busy（grcs_lock 前缀，不视为 WCS 在途）。</summary>
-    public void RebuildFromGrcs(List<CargoInventoryItem> records)
+    /// <summary>全量重建（同步按钮）：清空储位行占用 → 按 GRCS 记录回填（仅储位点；接驳位等非储位记录跳过，任务链会恢复）。
+    /// GRCS 仅提供初始化（位置+号码），状态一律 ready（不照搬 GRCS 锁定）；同步后旧任务映射作废（后续 FINISHED 不落地）。</summary>
+    public void RebuildFromGrcs(List<Contracts.Dtos.CargoInventoryItem> records)
     {
         lock (WriteLock)
         {
-        using var uow = _uow.Create();
-        var repo = uow.Repository<WcsInventoryRow>();
-        repo.DeleteWhereAsync(_ => true).GetAwaiter().GetResult();
-        foreach (var r in records)
-        {
-            var code = r.Code ?? "";
-            if (string.IsNullOrEmpty(code)) continue;
-            repo.AddAsync(new WcsInventoryRow
+            using var uow = _uow.Create();
+            var repo = uow.Repository<WcsSlotRow>();
+            foreach (var slot in repo.Query().ToList())
             {
-                    Code = code,
-                    Station = r.CurrentStationCode ?? "",
-                    HomeMark = r.HomeStationMark ?? "",
-                    CargoCode = "",
-                    Status = "idle",
-                    TaskId = r.IsLocked ? GrcsLockPrefix + code : "",
-                    UpdatedAt = DateTime.Now.ToString("O"),
-            }).GetAwaiter().GetResult();
-        }
-        uow.CommitAsync().GetAwaiter().GetResult();
+                slot.PalletCode = ""; slot.PalletStatus = "";
+                slot.CargoCode = ""; slot.CargoStatus = "";
+                slot.UpdatedAt = DateTime.Now.ToString("O");
+            }
+            foreach (var r in records)
+            {
+                var code = r.Code ?? "";
+                if (string.IsNullOrEmpty(code) || string.IsNullOrEmpty(r.CurrentStationCode)) continue;
+                var slot = repo.FindAsync(r.CurrentStationCode).GetAwaiter().GetResult();
+                if (slot == null) continue;
+                if (IsCargo(code)) { slot.CargoCode = code; slot.CargoStatus = "ready"; }
+                else { slot.PalletCode = code; slot.PalletStatus = "ready"; }
+                slot.UpdatedAt = DateTime.Now.ToString("O");
+            }
+            _units.Clear();
+            uow.CommitAsync().GetAwaiter().GetResult();
         }
     }
 
-    /// <summary>增量合并（新增选点点位）：只处理 stationSet 内的记录——新码插入；idle 更新位置；busy/picked 不动。</summary>
-    public void SyncMerge(List<CargoInventoryItem> records, HashSet<string>? stationSet)
+    /// <summary>增量合并（新增选点点位）：只处理 stationSet 内的储位记录——新码插入空位；占用中跳过。状态一律 ready。</summary>
+    public void SyncMerge(List<Contracts.Dtos.CargoInventoryItem> records, HashSet<string>? stationSet)
     {
         lock (WriteLock)
         {
-        using var uow = _uow.Create();
-        var repo = uow.Repository<WcsInventoryRow>();
-        foreach (var r in records)
-        {
-            var code = r.Code ?? "";
-            if (string.IsNullOrEmpty(code)) continue;
-            if (stationSet != null && !stationSet.Contains(r.CurrentStationCode ?? "")) continue;
-            var row = repo.FindAsync(code).GetAwaiter().GetResult();
-            if (row == null)
+            using var uow = _uow.Create();
+            var repo = uow.Repository<WcsSlotRow>();
+            foreach (var r in records)
             {
-                repo.AddAsync(new WcsInventoryRow
+                var code = r.Code ?? "";
+                if (string.IsNullOrEmpty(code) || string.IsNullOrEmpty(r.CurrentStationCode)) continue;
+                if (stationSet != null && !stationSet.Contains(r.CurrentStationCode)) continue;
+                var slot = repo.FindAsync(r.CurrentStationCode).GetAwaiter().GetResult();
+                if (slot == null) continue;
+                if (IsCargo(code))
                 {
-                    Code = code,
-                    Station = r.CurrentStationCode ?? "",
-                    HomeMark = r.HomeStationMark ?? "",
-                    CargoCode = "",
-                    Status = "idle",
-                    TaskId = r.IsLocked ? GrcsLockPrefix + code : "",
-                    UpdatedAt = DateTime.Now.ToString("O"),
-                }).GetAwaiter().GetResult();
+                    if (!string.IsNullOrEmpty(slot.CargoCode)) continue;
+                    slot.CargoCode = code; slot.CargoStatus = "ready";
+                }
+                else
+                {
+                    if (!string.IsNullOrEmpty(slot.PalletCode)) continue;
+                    slot.PalletCode = code; slot.PalletStatus = "ready";
+                }
+                slot.UpdatedAt = DateTime.Now.ToString("O");
             }
-            else if (row.Status == "idle")
-            {
-                row.Station = r.CurrentStationCode ?? "";
-                row.HomeMark = r.HomeStationMark ?? "";
-                row.UpdatedAt = DateTime.Now.ToString("O");
-            }
-        }
-        uow.CommitAsync().GetAwaiter().GetResult();
+            uow.CommitAsync().GetAwaiter().GetResult();
         }
     }
 
@@ -314,13 +377,13 @@ public class WcsInventoryStore
     {
         lock (WriteLock)
         {
-        var s = KvAccess.Get(_uow, SyncedMarksKey);
-        if (string.IsNullOrEmpty(s)) return [];
-        try
-        {
-            return System.Text.Json.JsonSerializer.Deserialize<HashSet<string>>(s) ?? [];
-        }
-        catch { return []; }
+            var s = KvAccess.Get(_uow, SyncedMarksKey);
+            if (string.IsNullOrEmpty(s)) return [];
+            try
+            {
+                return System.Text.Json.JsonSerializer.Deserialize<HashSet<string>>(s) ?? [];
+            }
+            catch { return []; }
         }
     }
 
@@ -328,7 +391,7 @@ public class WcsInventoryStore
     {
         lock (WriteLock)
         {
-        KvAccess.Set(_uow, SyncedMarksKey, System.Text.Json.JsonSerializer.Serialize(marks));
+            KvAccess.Set(_uow, SyncedMarksKey, System.Text.Json.JsonSerializer.Serialize(marks));
         }
     }
 
@@ -338,7 +401,7 @@ public class WcsInventoryStore
     {
         var stations = _map.GetStations();
         return new HashSet<string>(stations
-            .Where(s => (s.StationType & MapStationTypeBits.StorageLocation) != 0)
+            .Where(s => (s.StationType & Contracts.Dtos.MapStationTypeBits.StorageLocation) != 0)
             .Select(s => s.Mark), StringComparer.OrdinalIgnoreCase);
     }
 }

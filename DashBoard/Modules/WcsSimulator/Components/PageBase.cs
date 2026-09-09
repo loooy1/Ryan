@@ -1,6 +1,6 @@
 using Microsoft.AspNetCore.Components;
 
-namespace GRCS.Dashboard.Modules.WcsSimulator.Components;
+namespace Dashboard.Modules.WcsSimulator.Components;
 
 /// <summary>模拟器页面基类：统一反馈提示与状态色。</summary>
 public class PageBase : ComponentBase

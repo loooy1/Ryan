@@ -1,8 +1,8 @@
 using Microsoft.Extensions.Hosting;
-using GrcsBackend.Modules.Wcs.Console.Services;
-using GrcsBackend.Modules.Wcs.Infrastructure;
+using WCSBackend.Modules.Wcs.Console.Services;
+using WCSBackend.Modules.Wcs.Infrastructure;
 
-namespace GrcsBackend.Modules.Wcs.Automation.Services;
+namespace WCSBackend.Modules.Wcs.Automation.Services;
 
 /// <summary>
 /// 终点模块后台执行器：订阅 ITaskStageService.TaskFinished，

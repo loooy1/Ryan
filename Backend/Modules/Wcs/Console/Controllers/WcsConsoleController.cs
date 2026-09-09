@@ -1,9 +1,9 @@
-using GrcsBackend.Modules.Wcs.Automation.Services;
-using GrcsBackend.Contracts.Dtos;
-using GrcsBackend.Modules.Wcs.Console.Services;
+using WCSBackend.Modules.Wcs.Automation.Services;
+using Contracts.Dtos;
+using WCSBackend.Modules.Wcs.Console.Services;
 using Microsoft.AspNetCore.Mvc;
 
-namespace GrcsBackend.Modules.Wcs.Console.Controllers;
+namespace WCSBackend.Modules.Wcs.Console.Controllers;
 
 /// <summary>
 /// WCS 控制台接口（供 WCS 前端调用，不是 GRCS 协议接口）。

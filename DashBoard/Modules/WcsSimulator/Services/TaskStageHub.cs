@@ -1,9 +1,9 @@
-using GrcsBackend.Contracts.Dtos;
-using GrcsBackend.Contracts.Entities;
-using GRCS.Dashboard.Modules.WcsSimulator.Models;
+using Contracts.Dtos;
+using Contracts.Entities;
+using Dashboard.Modules.WcsSimulator.Models;
 using Microsoft.JSInterop;
 
-namespace GRCS.Dashboard.Modules.WcsSimulator.Services;
+namespace Dashboard.Modules.WcsSimulator.Services;
 
 /// <summary>
 /// 任务记录共享服务（scoped = 每个浏览器标签页一个实例）。

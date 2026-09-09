@@ -1,23 +1,22 @@
-using GrcsBackend.Contracts.Entities;
+using Contracts.Entities;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
 
-namespace GrcsBackend.Modules.Wcs.Infrastructure.Configurations;
+namespace WCSBackend.Modules.Wcs.Infrastructure.Configurations;
 
-public class WcsInventoryRowConfiguration : IEntityTypeConfiguration<WcsInventoryRow>
+public class WcsSlotRowConfiguration : IEntityTypeConfiguration<WcsSlotRow>
 {
-    public void Configure(EntityTypeBuilder<WcsInventoryRow> builder)
+    public void Configure(EntityTypeBuilder<WcsSlotRow> builder)
     {
-        builder.ToTable("wcs_inventory");
-        builder.HasKey(x => x.Code);
-        builder.Property(x => x.Code).HasColumnName("code").IsRequired();
-        builder.Property(x => x.Station).HasColumnName("station");
-        builder.Property(x => x.HomeMark).HasColumnName("home_mark");
+        builder.ToTable("wcs_slots");
+        builder.HasKey(x => x.Mark);
+        builder.Property(x => x.Mark).HasColumnName("mark").IsRequired();
+        builder.Property(x => x.PalletCode).HasColumnName("pallet_code");
+        builder.Property(x => x.PalletStatus).HasColumnName("pallet_status");
         builder.Property(x => x.CargoCode).HasColumnName("cargo_code");
-        builder.Property(x => x.Status).HasColumnName("status").IsRequired();
-        builder.Property(x => x.TaskId).HasColumnName("task_id");
+        builder.Property(x => x.CargoStatus).HasColumnName("cargo_status");
         builder.Property(x => x.UpdatedAt).HasColumnName("updated_at");
-        builder.HasIndex(x => x.Status).HasDatabaseName("idx_inv_status");
-        builder.HasIndex(x => x.TaskId).HasDatabaseName("idx_inv_task");
+        builder.HasIndex(x => x.PalletCode).HasDatabaseName("idx_slot_pallet");
+        builder.HasIndex(x => x.CargoCode).HasDatabaseName("idx_slot_cargo");
     }
 }

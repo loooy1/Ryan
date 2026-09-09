@@ -1,10 +1,10 @@
-using GrcsBackend.Contracts.Dtos;
+using Contracts.Dtos;
 
-namespace GRCS.Dashboard.Modules.WcsSimulator.Models;
+namespace Dashboard.Modules.WcsSimulator.Models;
 
 /// <summary>
 /// 模块注册表：运行时列表 = 用户在信号交互页创建的模块（持久化到 localStorage 键 grcs_si_modules）。
-/// 模块数据类见 GrcsBackend.Contracts.Dtos.FeatureModuleDto（Id/Name/ApiUrl/Params）。
+/// 模块数据类见 Contracts.Dtos.FeatureModuleDto（Id/Name/ApiUrl/Params）。
 /// </summary>
 public static class ModuleRegistry
 {

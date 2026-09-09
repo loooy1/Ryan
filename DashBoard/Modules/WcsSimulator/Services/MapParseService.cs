@@ -1,8 +1,8 @@
 using System.Text.Json;
-using GrcsBackend.Contracts.Dtos;
-using GRCS.Dashboard.Modules.WcsSimulator.Models;
+using Contracts.Dtos;
+using Dashboard.Modules.WcsSimulator.Models;
 
-namespace GRCS.Dashboard.Modules.WcsSimulator.Services;
+namespace Dashboard.Modules.WcsSimulator.Services;
 
 /// <summary>
 /// 地图解析服务：map.json 原始数据（MapFileData）→ 精简站点列表（MapStationLite）。

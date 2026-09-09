@@ -1,4 +1,4 @@
-namespace GrcsBackend.Contracts.Dtos;
+namespace Contracts.Dtos;
 
 /// <summary>自动化/手动运行总览快照（GET /api/wcs/auto/status）。</summary>
 public class AutoStatusSnapshot

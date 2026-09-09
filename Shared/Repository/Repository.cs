@@ -1,8 +1,7 @@
 using System.Linq.Expressions;
-using GrcsBackend.Modules.Shared.Infrastructure.Repository;
 using Microsoft.EntityFrameworkCore;
 
-namespace GrcsBackend.Modules.Shared.Infrastructure.Repository;
+namespace Backend.Shared.Infrastructure.Repository;
 
 /// <summary>泛型仓储实现：操作同一 UnitOfWork 持有的 DbContext 实例（变更由 CommitAsync 统一提交）。</summary>
 public class Repository<TEntity> : IRepository<TEntity> where TEntity : class

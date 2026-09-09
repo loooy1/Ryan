@@ -1,6 +1,6 @@
-using GrcsBackend.Contracts.Dtos;
+using Contracts.Dtos;
 
-namespace GrcsBackend.Contracts.Entities;
+namespace Contracts.Entities;
 
 /// <summary>功能模块行（feature_modules 表，固定属性列化 + Params JSON 列）。</summary>
 public class FeatureModuleRow

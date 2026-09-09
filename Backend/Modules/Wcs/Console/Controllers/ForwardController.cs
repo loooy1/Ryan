@@ -1,9 +1,9 @@
 using Newtonsoft.Json.Linq;
-using GrcsBackend.Modules.Wcs.Infrastructure;
-using GrcsBackend.Modules.Wcs.Proxy.Services;
+using WCSBackend.Modules.Wcs.Infrastructure;
+using WCSBackend.Modules.Wcs.Proxy.Services;
 using Microsoft.AspNetCore.Mvc;
 
-namespace GrcsBackend.Modules.Wcs.Console.Controllers;
+namespace WCSBackend.Modules.Wcs.Console.Controllers;
 
 /// <summary>
 /// 通用 HTTP 转发接口（/api/wcs/forward）。

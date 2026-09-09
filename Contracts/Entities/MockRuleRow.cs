@@ -1,6 +1,6 @@
-using GrcsBackend.Contracts.Dtos;
+using Contracts.Dtos;
 
-namespace GrcsBackend.Contracts.Entities;
+namespace Contracts.Entities;
 
 /// <summary>模拟规则行（mock_rules 表，固定属性全部列化 + Matchers JSON 列）。</summary>
 public class MockRuleRow

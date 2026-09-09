@@ -1,4 +1,4 @@
-namespace GrcsBackend.Modules.Shared.Infrastructure.Repository;
+namespace Backend.Shared.Infrastructure.Repository;
 
 /// <summary>
 /// 工作单元（Unit of Work）：把一批仓储操作视为一个原子单元，最后 CommitAsync 一次性提交（同一事务）。

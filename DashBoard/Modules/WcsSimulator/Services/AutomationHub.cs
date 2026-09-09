@@ -1,10 +1,10 @@
-using GrcsBackend.Contracts.Dtos;
-using GrcsBackend.Contracts.Entities;
+using Contracts.Dtos;
+using Contracts.Entities;
 
-namespace GRCS.Dashboard.Modules.WcsSimulator.Services;
+namespace Dashboard.Modules.WcsSimulator.Services;
 
 /// <summary>
-/// 自动化状态/日志共享轮询中枢（Skill E：数据源在后端 GrcsBackend）。
+/// 自动化状态/日志共享轮询中枢（Skill E：数据源在后端 WCSBackend）。
 /// 每 1 秒拉一次 /api/wcs/auto/status 快照 + /api/wcs/auto/logs?sinceId 增量日志，
 /// 以及进入申请 /api/wcs/status + /api/wcs/events（信号交互页进入信号多标签页同步）。
 /// AutoRunService / ContainerTaskService / SignalAutoService 三个瘦壳共享同一份数据与 Changed 事件。

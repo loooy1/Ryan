@@ -1,8 +1,8 @@
 @page "/wcs-simulator/inventory"
 @inject WcsApiClient WcsService
-@inherits GRCS.Dashboard.Modules.WcsSimulator.Components.PageStateBase
+@inherits Dashboard.Modules.WcsSimulator.Components.PageStateBase
 @using System.Text.Json
-@using GRCS.Dashboard.Modules.WcsSimulator.Models
+@using Dashboard.Modules.WcsSimulator.Models
 
 <PageTitle>库存管理</PageTitle>
 
@@ -178,8 +178,24 @@
     {
         _syncLoading = true;
         var (ok, json) = await WcsService.SyncInventoryAsync();
-        ShowFeedback(ok ? "✅" : "❌",
-            ok ? $"库存账本已同步（以 GRCS 为准重建）\n\n{json}" : $"同步失败：{json}");
+        string msg;
+        if (ok)
+        {
+            try
+            {
+                var j = System.Text.Json.JsonDocument.Parse(json).RootElement;
+                msg = $"同步完成（{j.GetProperty("syncedAt").GetString()}）\n" +
+                    $"GRCS 库存：{j.GetProperty("grcsCount").GetInt32()} 条\n" +
+                    $"储位更新：{j.GetProperty("slots").GetInt32()} 个储位（占用 {j.GetProperty("occupied").GetInt32()}）\n" +
+                    $"  带货托 {j.GetProperty("loaded").GetInt32()}、空托 {j.GetProperty("emptyPallets").GetInt32()}、纯货物 {j.GetProperty("cargos").GetInt32()}";
+            }
+            catch { msg = json; }
+        }
+        else
+        {
+            msg = $"同步失败：{json}";
+        }
+        ShowFeedback(ok ? "✅" : "❌", msg);
         _syncLoading = false;
     }
 

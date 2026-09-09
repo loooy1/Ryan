@@ -7,7 +7,6 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <None Remove="grcs.db" />
     <!-- Contracts 独立类库（前后端共享契约层），不作为本项目的源码编译 -->
     <Compile Remove="Contracts\**" />
     <EmbeddedResource Remove="Contracts\**" />
@@ -16,6 +15,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Contracts\Contracts.csproj" />
+    <ProjectReference Include="..\Shared\Backend.Shared.csproj" />
   </ItemGroup>
 
   <ItemGroup>
@@ -34,7 +34,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <Content Include="grcs.db">
+    <Content Include="WCS.db">
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
     </Content>
   </ItemGroup>

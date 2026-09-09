@@ -1,9 +1,9 @@
 using System.Collections.Concurrent;
-using GrcsBackend.Modules.Wcs.Console.Services;
-using GrcsBackend.Modules.Wcs.Infrastructure;
-using GrcsBackend.Contracts.Dtos;
+using WCSBackend.Modules.Wcs.Console.Services;
+using WCSBackend.Modules.Wcs.Infrastructure;
+using Contracts.Dtos;
 
-namespace GrcsBackend.Modules.Wcs.Automation.Services;
+namespace WCSBackend.Modules.Wcs.Automation.Services;
 
 /// <summary>任务下发器：选点/加锁/下发/释放，持有站点锁状态与下发临界区。</summary>
 public class TaskDispatcher
@@ -27,6 +27,7 @@ public class TaskDispatcher
     {
         _locks = locks; _stage = stage; _modules = modules; _invStore = invStore;
         _log = log; _range = range; _map = map; _taskTemplates = taskTemplates;
+        _stage.TaskLoadFinished += taskId => _invStore.OnTaskLoadFinished(taskId);
     }
 
     /// <summary>释放全部站点锁（强制结束时调用）。</summary>
@@ -186,29 +187,38 @@ public class TaskDispatcher
         {
             taskIds.Add(taskId);
             taskDetails[taskId] = $"{tpl.Label} [{container}] {startWcs}->{destWcs}";
-            _invStore.MarkBusy(taskContainers, taskId);
+            var isCargoInbound = string.Equals(tpl.Value, "CARGO_CARRY_INBOUND", StringComparison.OrdinalIgnoreCase);
+            var isCargoOutbound = string.Equals(tpl.Value, "CARGO_CARRY_OUTBOUND", StringComparison.OrdinalIgnoreCase);
+            _invStore.MarkBusy(taskContainers, taskId, startMark,
+                isCargoInbound ? ctx.PalletCode : null, isCargoOutbound);
             _log.Add(roundId, $"✓ 步骤 {stepNo} 完成！", "#4ade80");
             ctx.LastEndMark = dest.Mark;
             _ = ReleaseOnFinishAsync(taskId, dest.Mark);
             var endIds = tpl.End?.AfterModules ?? [];
+            var finished = false;
             try
             {
                 if (endIds.Count > 0)
                 {
                     await _stage.WaitFinishedAsync(taskId);
+                    finished = true;
                     await _modules.RunEndModulesAsync(taskId, mctx, roundId);
                 }
                 else if (step.WaitForFinish)
                 {
                     await _stage.WaitFinishedAsync(taskId);
+                    finished = true;
                 }
             }
             catch (Exception ex)
             {
                 _log.Add(roundId, $"步骤 {stepNo} 终点阶段异常 {taskId}：{ex.Message}", "#f87171");
             }
-            ReleaseTaskLocks(taskId);
-            _invStore.Release(taskId, dest.Mark);
+            if (finished)
+            {
+                ReleaseTaskLocks(taskId);
+                _invStore.Release(taskId, dest.Mark);
+            }
             return taskId;
         }
         else

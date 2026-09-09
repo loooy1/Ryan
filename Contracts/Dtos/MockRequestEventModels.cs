@@ -1,4 +1,4 @@
-namespace GrcsBackend.Contracts.Dtos;
+namespace Contracts.Dtos;
 
 /// <summary>Mock 审批事件（运行时模型 + SignalR 负载 + mock_request_events 表映射，三合一）。</summary>
 public class MockRequestEventDto

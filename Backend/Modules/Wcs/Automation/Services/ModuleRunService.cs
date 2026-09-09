@@ -1,11 +1,11 @@
 using System.Text.Json;
-using GrcsBackend.Modules.Wcs.Console.Services;
-using GrcsBackend.Modules.Wcs.Infrastructure;
-using GrcsBackend.Contracts.Dtos;
-using GrcsBackend.Modules.Wcs.Proxy.Services;
+using WCSBackend.Modules.Wcs.Console.Services;
+using WCSBackend.Modules.Wcs.Infrastructure;
+using Contracts.Dtos;
+using WCSBackend.Modules.Wcs.Proxy.Services;
 using Microsoft.Extensions.Logging;
 
-namespace GrcsBackend.Modules.Wcs.Automation.Services;
+namespace WCSBackend.Modules.Wcs.Automation.Services;
 
 /// <summary>
 /// 统一模块执行引擎（取代前端 ModuleRunnerService + TaskDispatch 客户端模块执行）。

@@ -1,8 +1,8 @@
-using GrcsBackend.Contracts.Dtos;
-using GrcsBackend.Modules.Wcs.Infrastructure;
+using Contracts.Dtos;
+using WCSBackend.Modules.Wcs.Infrastructure;
 using Microsoft.AspNetCore.Mvc;
 
-namespace GrcsBackend.Modules.Wcs.Console.Controllers;
+namespace WCSBackend.Modules.Wcs.Console.Controllers;
 
 /// <summary>任务台账接口（/api/wcs/ledger/*）：追加/清空（底层 task_records 创建行，上限 10000 条）。前端读取已改走 TaskStageHub SignalR 快照。</summary>
 [ApiController]

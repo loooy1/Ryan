@@ -1,13 +1,17 @@
-
+﻿
 Microsoft Visual Studio Solution File, Format Version 12.00
-# Visual Studio Version 17
-VisualStudioVersion = 17.0.31903.59
+# Visual Studio Version 18
+VisualStudioVersion = 18.9.12023.133 insiders
 MinimumVisualStudioVersion = 10.0.40219.1
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "GrcsBackend", "..\Backend\GrcsBackend.csproj", "{2973D3EB-A45B-4DFB-AD16-7CA3F6829069}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "WCSBackend", "..\Backend\WCSBackend.csproj", "{2973D3EB-A45B-4DFB-AD16-7CA3F6829069}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "GrcsBackend.Contracts", "..\Contracts\Contracts.csproj", "{73EB6D6B-3DF7-4E54-AFAC-5EFD4DF99342}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Contracts", "..\Contracts\Contracts.csproj", "{73EB6D6B-3DF7-4E54-AFAC-5EFD4DF99342}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "GRCS.Dashboard", "..\DashBoard\GRCS.Dashboard.csproj", "{47ADF6A0-2A15-4212-8883-ED1B410ECE95}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Dashboard", "..\DashBoard\Dashboard.csproj", "{47ADF6A0-2A15-4212-8883-ED1B410ECE95}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Backend.Shared", "..\Shared\Backend.Shared.csproj", "{894BC2C0-7C0C-4CDA-8D66-B54C017E82F9}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "RCSBackend", "..\RcsBackend\RCSBackend.csproj", "{8F4A22CA-F545-CCDF-DB56-CA4DE2A16B6B}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -55,8 +59,35 @@ Global
 		{47ADF6A0-2A15-4212-8883-ED1B410ECE95}.Release|x64.Build.0 = Release|Any CPU
 		{47ADF6A0-2A15-4212-8883-ED1B410ECE95}.Release|x86.ActiveCfg = Release|Any CPU
 		{47ADF6A0-2A15-4212-8883-ED1B410ECE95}.Release|x86.Build.0 = Release|Any CPU
+		{894BC2C0-7C0C-4CDA-8D66-B54C017E82F9}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{894BC2C0-7C0C-4CDA-8D66-B54C017E82F9}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{894BC2C0-7C0C-4CDA-8D66-B54C017E82F9}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{894BC2C0-7C0C-4CDA-8D66-B54C017E82F9}.Debug|x64.Build.0 = Debug|Any CPU
+		{894BC2C0-7C0C-4CDA-8D66-B54C017E82F9}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{894BC2C0-7C0C-4CDA-8D66-B54C017E82F9}.Debug|x86.Build.0 = Debug|Any CPU
+		{894BC2C0-7C0C-4CDA-8D66-B54C017E82F9}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{894BC2C0-7C0C-4CDA-8D66-B54C017E82F9}.Release|Any CPU.Build.0 = Release|Any CPU
+		{894BC2C0-7C0C-4CDA-8D66-B54C017E82F9}.Release|x64.ActiveCfg = Release|Any CPU
+		{894BC2C0-7C0C-4CDA-8D66-B54C017E82F9}.Release|x64.Build.0 = Release|Any CPU
+		{894BC2C0-7C0C-4CDA-8D66-B54C017E82F9}.Release|x86.ActiveCfg = Release|Any CPU
+		{894BC2C0-7C0C-4CDA-8D66-B54C017E82F9}.Release|x86.Build.0 = Release|Any CPU
+		{8F4A22CA-F545-CCDF-DB56-CA4DE2A16B6B}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{8F4A22CA-F545-CCDF-DB56-CA4DE2A16B6B}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{8F4A22CA-F545-CCDF-DB56-CA4DE2A16B6B}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{8F4A22CA-F545-CCDF-DB56-CA4DE2A16B6B}.Debug|x64.Build.0 = Debug|Any CPU
+		{8F4A22CA-F545-CCDF-DB56-CA4DE2A16B6B}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{8F4A22CA-F545-CCDF-DB56-CA4DE2A16B6B}.Debug|x86.Build.0 = Debug|Any CPU
+		{8F4A22CA-F545-CCDF-DB56-CA4DE2A16B6B}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{8F4A22CA-F545-CCDF-DB56-CA4DE2A16B6B}.Release|Any CPU.Build.0 = Release|Any CPU
+		{8F4A22CA-F545-CCDF-DB56-CA4DE2A16B6B}.Release|x64.ActiveCfg = Release|Any CPU
+		{8F4A22CA-F545-CCDF-DB56-CA4DE2A16B6B}.Release|x64.Build.0 = Release|Any CPU
+		{8F4A22CA-F545-CCDF-DB56-CA4DE2A16B6B}.Release|x86.ActiveCfg = Release|Any CPU
+		{8F4A22CA-F545-CCDF-DB56-CA4DE2A16B6B}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {8E2B0339-A5DD-4077-992A-9394C0D865EF}
 	EndGlobalSection
 EndGlobal

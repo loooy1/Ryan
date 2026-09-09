@@ -1,4 +1,4 @@
-namespace GrcsBackend.Contracts.Entities;
+namespace Contracts.Entities;
 
 /// <summary>
 /// 合并表记录（task_records）：一个 TaskId 的一个状态快照，替代原 ledger（台账）与 task_stage_events（阶段事件）两表。

@@ -1,4 +1,4 @@
-namespace GRCS.Dashboard.Modules.WcsSimulator.Services;
+namespace Dashboard.Modules.WcsSimulator.Services;
 
 /// <summary>
 /// 后端连接告警弹窗服务（scoped，每个标签页独立）。

@@ -1,14 +1,14 @@
 using System.Collections.Concurrent;
 using System.Text.Json;
-using GrcsBackend.Modules.Wcs.Console.Services;
-using GrcsBackend.Modules.Wcs.Infrastructure;
-using InvItem = GrcsBackend.Modules.Wcs.Infrastructure.WcsInventoryStore.InvItem;
-using GrcsBackend.Contracts.Dtos;
-using GrcsBackend.Modules.Wcs.Proxy.Services;
+using WCSBackend.Modules.Wcs.Console.Services;
+using WCSBackend.Modules.Wcs.Infrastructure;
+using InvItem = WCSBackend.Modules.Wcs.Infrastructure.WcsInventoryStore.InvItem;
+using Contracts.Dtos;
+using WCSBackend.Modules.Wcs.Proxy.Services;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
-namespace GrcsBackend.Modules.Wcs.Automation.Services;
+namespace WCSBackend.Modules.Wcs.Automation.Services;
 
 /// <summary>
 /// 自动化模板执行引擎（取代旧的硬编码两段式 AutoRunHostedService + ContainerTaskRunner）。
@@ -34,6 +34,7 @@ public class AutoTemplateRunner : IHostedService
     private readonly TaskTemplateStore _taskTemplates;
     private readonly AutoTemplateStore _templates;
     private readonly MockRuleStore _mocks;
+    private readonly GrcsInventoryCacheService _inventoryCache;
     private readonly WcsInventoryStore _invStore;
     private readonly TemplateValidator _validator;
     private readonly InventoryCoordinator _invCoord;
@@ -65,7 +66,7 @@ public class AutoTemplateRunner : IHostedService
     {
         _map = map; _range = range; _settings = settings; _locks = locks; _log = log;
         _stage = stage; _gate = gate; _modules = modules; _taskTemplates = taskTemplates;
-        _templates = templates; _mocks = mocks; _invStore = invStore;
+        _templates = templates; _mocks = mocks; _inventoryCache = inventoryCache; _invStore = invStore;
         _logger = logger;
         _validator = new TemplateValidator(map, range, taskTemplates, templates);
         _invCoord = new InventoryCoordinator(invStore, range, map, log);
@@ -370,6 +371,7 @@ public class AutoTemplateRunner : IHostedService
                                     "Any" => emptyPallets.Concat(loadedPallets).ToList(),
                                     _ => emptyPallets,
                                 };
+                                _log.Add(childId, $"步骤 {stepNo} 选托盘：{step.PalletFilter} 池 {pool.Count} 个", "#38bdf8");
                                 if (pool.Count == 0) { _log.Add(childId, $"步骤 {stepNo} 选托盘失败：{step.PalletFilter} 池为空，等待下轮下发｜诊断：{diagText}", "#f87171"); _log.AddOrUpdate("[模板步骤失败]", $"模板「{name}」：选托盘失败（{step.PalletFilter} 池为空），等待下轮下发", "#f87171"); return; }
                                 pick = pool[Random.Shared.Next(pool.Count)];
                                 emptyPallets.Remove(pick); loadedPallets.Remove(pick);
@@ -388,6 +390,7 @@ public class AutoTemplateRunner : IHostedService
                             lock (poolLock)
                             {
                                 if (cargos.Count == 0) { _log.Add(childId, $"步骤 {stepNo} 选货物失败：货物池为空，等待下轮下发", "#f87171"); _log.AddOrUpdate("[模板步骤失败]", $"模板「{name}」：选货物失败（货物池为空），等待下轮下发", "#f87171"); return; }
+                                _log.Add(childId, $"步骤 {stepNo} 选货物：货物池 {cargos.Count} 个", "#38bdf8");
                                 pick = cargos[Random.Shared.Next(cargos.Count)];
                                 cargos.Remove(pick);
                                 _invStore.Pick(pick.Code);   // 账本占用（picked，持久化）
@@ -405,6 +408,7 @@ public class AutoTemplateRunner : IHostedService
                             lock (poolLock)
                             {
                                 if (loadedPallets.Count == 0) { _log.Add(childId, $"步骤 {stepNo} 选带货托失败：带货托池为空，等待下轮下发｜诊断：{diagText}", "#f87171"); _log.AddOrUpdate("[模板步骤失败]", $"模板「{name}」：选带货托失败（带货托池为空），等待下轮下发", "#f87171"); return; }
+                                _log.Add(childId, $"步骤 {stepNo} 选带货托：带货托池 {loadedPallets.Count} 个", "#38bdf8");
                                 pick = loadedPallets[Random.Shared.Next(loadedPallets.Count)];
                                 loadedPallets.Remove(pick);
                                 _invStore.Pick(pick.Code);   // 账本占用（picked，持久化；托盘号 = 主容器单元）
@@ -434,6 +438,7 @@ public class AutoTemplateRunner : IHostedService
                     catch (Exception ex)
                     {
                         _log.Add(childId, $"步骤 {stepNo} 执行异常：{ex.Message}", "#f87171");
+                        _log.AddOrUpdate("[模板步骤失败]", $"模板「{name}」：步骤 {stepNo} 执行异常：{ex.Message}", "#f87171");
                     }
                 }
                 _log.Add(childId, $"✓ 模板「{name}」步骤链完成（{tpl.Steps.Count} 步处理完毕）", "#4ade80");

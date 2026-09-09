@@ -1,11 +1,11 @@
-using GrcsBackend.Contracts.Dtos;
+using Contracts.Dtos;
 
-namespace GRCS.Dashboard.Modules.WcsSimulator.Models;
+namespace Dashboard.Modules.WcsSimulator.Models;
 
 /// <summary>
 /// 任务类型模板注册表：内置模板已清空（本轮改版后任务类型一律由界面创建），
 /// 运行时列表 = 用户创建的自定义模板（持久化到后端 task_templates + localStorage 兜底）。
-/// 模板数据类见 GrcsBackend.Contracts.Dtos（TaskTemplateDto / TaskPointDto / WorkParamDto / WorkValueSourceDto）。
+/// 模板数据类见 Contracts.Dtos（TaskTemplateDto / TaskPointDto / WorkParamDto / WorkValueSourceDto）。
 /// </summary>
 public static class TaskTypeRegistry
 {

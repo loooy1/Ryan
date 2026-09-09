@@ -5,7 +5,7 @@
 @inject TaskStageHub StageHub
 @inject AutomationHub AutoHub
 @inject BackendHealthService Health
-@inherits GRCS.Dashboard.Modules.WcsSimulator.Components.PageStateBase
+@inherits Dashboard.Modules.WcsSimulator.Components.PageStateBase
 @implements IDisposable
 
 <PageTitle>任务看板</PageTitle>
@@ -42,7 +42,7 @@
     @if (!_pollingOk)
     {
         <div class="hint-text" style="color:#f87171;margin:8px 0;">
-            ⚠ 无法连接 WCS 后端，请确认 GrcsBackend 已启动。@_lastError
+            ⚠ 无法连接 WCS 后端，请确认 WCSBackend 已启动。@_lastError
         </div>
     }
     @if (_showMockReminder)

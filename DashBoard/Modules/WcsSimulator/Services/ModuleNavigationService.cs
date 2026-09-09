@@ -1,4 +1,4 @@
-namespace GRCS.Dashboard.Modules.WcsSimulator.Services;
+namespace Dashboard.Modules.WcsSimulator.Services;
 
 /// <summary>
 /// 两层导航状态管理：功能 → 页面。

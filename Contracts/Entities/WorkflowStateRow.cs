@@ -1,4 +1,4 @@
-namespace GrcsBackend.Contracts.Entities;
+namespace Contracts.Entities;
 
 /// <summary>信号确认状态行（workflow_state 表）。kind = arrival / removal / sent。</summary>
 public class WorkflowStateRow

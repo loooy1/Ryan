@@ -1,4 +1,4 @@
-namespace GrcsBackend.Contracts.Dtos;
+namespace Contracts.Dtos;
 
 /// <summary>自动化模板步骤类型（线性有序执行）。</summary>
 public static class AutoStepKinds

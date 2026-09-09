@@ -1,12 +1,12 @@
 using System.Text.Json;
-using GrcsBackend.Modules.Wcs.Console.Services;
-using GrcsBackend.Modules.Wcs.Infrastructure;
-using GrcsBackend.Contracts.Dtos;
-using GrcsBackend.Modules.Wcs.Proxy.Services;
-using GrcsBackend.Modules.Wcs.Realtime;
+using WCSBackend.Modules.Wcs.Console.Services;
+using WCSBackend.Modules.Wcs.Infrastructure;
+using Contracts.Dtos;
+using WCSBackend.Modules.Wcs.Proxy.Services;
+using WCSBackend.Modules.Wcs.Realtime;
 using Microsoft.AspNetCore.SignalR;
 
-namespace GrcsBackend.Modules.Wcs.Automation.Services;
+namespace WCSBackend.Modules.Wcs.Automation.Services;
 
 /// <summary>
 /// 纯移动任务循环（MOVE_ONLY）后端执行引擎。

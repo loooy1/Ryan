@@ -1,4 +1,4 @@
-namespace GrcsBackend.Modules.Wcs.Automation.Services;
+namespace WCSBackend.Modules.Wcs.Automation.Services;
 
 /// <summary>站点类型位解码工具（纯静态，供模板校验与任务下发共用）。</summary>
 public static class StationTypeHelper

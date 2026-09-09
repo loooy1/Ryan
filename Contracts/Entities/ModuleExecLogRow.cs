@@ -1,4 +1,4 @@
-namespace GrcsBackend.Contracts.Entities;
+namespace Contracts.Entities;
 
 /// <summary>模块执行记录持久化行（module_exec_logs 表）。</summary>
 public class ModuleExecLogRow

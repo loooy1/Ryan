@@ -1,11 +1,11 @@
-using GrcsBackend.Modules.Wcs.Proxy.Services;
-using GrcsBackend.Contracts.Dtos;
-using GrcsBackend.Modules.Wcs.Infrastructure;
-using GrcsBackend.Modules.Wcs.Automation.Services;
+using WCSBackend.Modules.Wcs.Proxy.Services;
+using Contracts.Dtos;
+using WCSBackend.Modules.Wcs.Infrastructure;
+using WCSBackend.Modules.Wcs.Automation.Services;
 using Microsoft.AspNetCore.Mvc;
 using System.Text.Json;
 
-namespace GrcsBackend.Modules.Wcs.Console.Controllers;
+namespace WCSBackend.Modules.Wcs.Console.Controllers;
 
 /// <summary>
 /// 自动化控制台接口（/api/wcs/auto/*，供前端遥控；不是 GRCS 协议接口）。

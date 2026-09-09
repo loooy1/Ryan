@@ -1,7 +1,7 @@
-using GrcsBackend.Modules.Wcs.Infrastructure;
-using GrcsBackend.Contracts.Dtos;
+using WCSBackend.Modules.Wcs.Infrastructure;
+using Contracts.Dtos;
 
-namespace GrcsBackend.Modules.Wcs.Automation.Services;
+namespace WCSBackend.Modules.Wcs.Automation.Services;
 
 /// <summary>自动化模板校验器：保存前校验模板步骤的结构合法性与站点类型匹配。</summary>
 public class TemplateValidator

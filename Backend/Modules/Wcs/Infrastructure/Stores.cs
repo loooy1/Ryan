@@ -1,13 +1,13 @@
 using System.Text.Json;
-using GrcsBackend.Contracts;
-using GrcsBackend.Modules.Shared.Infrastructure.Repository;
-using GrcsBackend.Contracts.Dtos;
-using GrcsBackend.Contracts.Entities;
-using Entities = GrcsBackend.Contracts.Entities;
-using GrcsBackend.Modules.Wcs.Console.Services;
+using Contracts;
+using Backend.Shared.Infrastructure.Repository;
+using Contracts.Dtos;
+using Contracts.Entities;
+using Entities = Contracts.Entities;
+using WCSBackend.Modules.Wcs.Console.Services;
 using Mapster;
 
-namespace GrcsBackend.Modules.Wcs.Infrastructure;
+namespace WCSBackend.Modules.Wcs.Infrastructure;
 
 /// <summary>kv 表读写助手（UoW 基座，统一 Key/Value 存取）。</summary>
 internal static class KvAccess

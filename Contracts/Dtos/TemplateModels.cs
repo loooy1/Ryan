@@ -1,4 +1,4 @@
-namespace GrcsBackend.Contracts.Dtos;
+namespace Contracts.Dtos;
 
 /// <summary>参数取值来源（与前端 WorkValueSource 对齐，JSON 按字符串序列化以保持可读）。</summary>
 public enum WorkValueSourceDto

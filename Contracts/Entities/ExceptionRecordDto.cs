@@ -1,4 +1,4 @@
-namespace GrcsBackend.Contracts.Entities;
+namespace Contracts.Entities;
 
 /// <summary>异常记录（AGV/软件异常台账，纯 HTTP 读写）。</summary>
 public class ExceptionRecordDto

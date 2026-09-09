@@ -1,13 +1,13 @@
-@page "/wcs-simulator/automation"
+﻿@page "/wcs-simulator/automation"
 @inject WcsApiClient WcsApi
 @inject AutomationHub Hub
-@inject GRCS.Dashboard.Modules.WcsSimulator.Services.MoveLoopService MoveLoop
-@inject GRCS.Dashboard.Modules.WcsSimulator.Services.TaskStageHub StageHub
-@inherits GRCS.Dashboard.Modules.WcsSimulator.Components.PageStateBase
+@inject Dashboard.Modules.WcsSimulator.Services.MoveLoopService MoveLoop
+@inject Dashboard.Modules.WcsSimulator.Services.TaskStageHub StageHub
+@inherits Dashboard.Modules.WcsSimulator.Components.PageStateBase
 @implements IDisposable
 @using System.Text.Json
 @using System.Text.RegularExpressions
-@using GRCS.Dashboard.Modules.WcsSimulator.Models
+@using Dashboard.Modules.WcsSimulator.Models
 
 @* ════════════════════════════════════════════════
     页面职责：WCS 模拟器的「自动化任务」页，两个独立功能区块
@@ -15,7 +15,7 @@
     ② 自动化模板：用户自定义的线性步骤模板（选托盘/选货物/执行任务模板），
        由后端 AutoTemplateRunner 按模板执行（轮询或单次）；模板存后端跨浏览器共享
     ── 交互服务 ──
-    WcsApiClient：GrcsBackend 管理面 API
+    WcsApiClient：WCSBackend 管理面 API
     AutomationHub：状态/日志共享轮询中枢（1s 刷新）
     LocalStoreService：配置与折叠状态持久化到浏览器 localStorage
     ════════════════════════════════════════════════ *@
@@ -469,76 +469,130 @@
                             <div style="font-size:1.5rem;font-weight:700;color:#f59e0b;">@_invSummary.Locked</div>
                             <div class="hint-text" style="margin-top:2px;">锁定中</div>
                         </div>
+                        <div style="flex:1;min-width:130px;background:#0f172a;border:1px solid #1e293b;border-radius:8px;padding:10px 14px;text-align:center;">
+                            <div style="font-size:1.5rem;font-weight:700;color:#fbbf24;">@_invSummary.Transit</div>
+                            <div class="hint-text" style="margin-top:2px;">在途</div>
+                        </div>
                     </div>
 
-                    <div style="display:flex;flex-direction:column;gap:12px;">
-                        <div style="background:#0f172a;border:1px solid #1e293b;border-radius:8px;padding:10px 14px;">
-                            <div style="font-weight:600;color:#38bdf8;margin-bottom:6px;">🟦 纯空托 @_invSummary.EmptyItems.Count</div>
-                            @if (_invSummary.EmptyItems.Count == 0) { <div class="hint-text">（无）</div> }
-                            else
+                    <div style="display:flex;flex-direction:column;gap:8px;">
+                        <div style="background:#0f172a;border:1px solid #1e293b;border-radius:8px;padding:8px 14px;">
+                            <div style="font-weight:600;color:#38bdf8;cursor:pointer;user-select:none;" @onclick="ToggleEmptyInv">
+                                <span>🟦 纯空托 @_invSummary.EmptyItems.Count</span>
+                                <span style="float:right;">@(IsInvExpanded("empty") ? "▾" : "▸")</span>
+                            </div>
+                            @if (IsInvExpanded("empty"))
                             {
-                                <div style="max-height:180px;overflow-y:auto;display:flex;flex-direction:column;gap:3px;">
-                                    @foreach (var it in _invSummary.EmptyItems)
-                                    {
-                                        <div style="display:flex;gap:8px;align-items:baseline;font-size:0.85rem;">
-                                            <span style="font-weight:600;">@it.Code</span>
-                                            <span class="hint-text">@it.Station</span>
-                                        </div>
-                                    }
-                                </div>
+                                @if (_invSummary.EmptyItems.Count == 0) { <div class="hint-text" style="margin-top:4px;">（无）</div> }
+                                else
+                                {
+                                    <div style="max-height:180px;overflow-y:auto;display:flex;flex-direction:column;gap:3px;margin-top:6px;">
+                                        @foreach (var it in _invSummary.EmptyItems)
+                                        {
+                                            <div style="display:flex;gap:8px;align-items:baseline;font-size:0.85rem;">
+                                                <span style="font-weight:600;">@it.Code</span>
+                                                <span class="hint-text">@it.Station</span>
+                                            </div>
+                                        }
+                                    </div>
+                                }
                             }
                         </div>
 
-                        <div style="background:#0f172a;border:1px solid #1e293b;border-radius:8px;padding:10px 14px;">
-                            <div style="font-weight:600;color:#38bdf8;margin-bottom:6px;">🟨 带货托 @_invSummary.LoadedItems.Count</div>
-                            @if (_invSummary.LoadedItems.Count == 0) { <div class="hint-text">（无）</div> }
-                            else
+                        <div style="background:#0f172a;border:1px solid #1e293b;border-radius:8px;padding:8px 14px;">
+                            <div style="font-weight:600;color:#38bdf8;cursor:pointer;user-select:none;" @onclick="ToggleLoadedInv">
+                                <span>🟨 带货托 @_invSummary.LoadedItems.Count</span>
+                                <span style="float:right;">@(IsInvExpanded("loaded") ? "▾" : "▸")</span>
+                            </div>
+                            @if (IsInvExpanded("loaded"))
                             {
-                                <div style="max-height:180px;overflow-y:auto;display:flex;flex-direction:column;gap:3px;">
-                                    @foreach (var it in _invSummary.LoadedItems)
-                                    {
-                                        <div style="display:flex;gap:8px;align-items:baseline;font-size:0.85rem;">
-                                            <span style="font-weight:600;">@it.Code</span>
-                                            <span class="hint-text">@it.Station</span>
-                                            <span class="hint-text">货物：@it.CargoCode</span>
-                                        </div>
-                                    }
-                                </div>
+                                @if (_invSummary.LoadedItems.Count == 0) { <div class="hint-text" style="margin-top:4px;">（无）</div> }
+                                else
+                                {
+                                    <div style="max-height:180px;overflow-y:auto;display:flex;flex-direction:column;gap:3px;margin-top:6px;">
+                                        @foreach (var it in _invSummary.LoadedItems)
+                                        {
+                                            <div style="display:flex;gap:8px;align-items:baseline;font-size:0.85rem;">
+                                                <span style="font-weight:600;">@it.Code</span>
+                                                <span class="hint-text">@it.Station</span>
+                                                <span class="hint-text">货物：@it.CargoCode</span>
+                                            </div>
+                                        }
+                                    </div>
+                                }
                             }
                         </div>
 
-                        <div style="background:#0f172a;border:1px solid #1e293b;border-radius:8px;padding:10px 14px;">
-                            <div style="font-weight:600;color:#38bdf8;margin-bottom:6px;">🟩 纯货物 @_invSummary.CargoItems.Count</div>
-                            @if (_invSummary.CargoItems.Count == 0) { <div class="hint-text">（无）</div> }
-                            else
+                        <div style="background:#0f172a;border:1px solid #1e293b;border-radius:8px;padding:8px 14px;">
+                            <div style="font-weight:600;color:#38bdf8;cursor:pointer;user-select:none;" @onclick="ToggleCargoInv">
+                                <span>🟩 纯货物 @_invSummary.CargoItems.Count</span>
+                                <span style="float:right;">@(IsInvExpanded("cargo") ? "▾" : "▸")</span>
+                            </div>
+                            @if (IsInvExpanded("cargo"))
                             {
-                                <div style="max-height:180px;overflow-y:auto;display:flex;flex-direction:column;gap:3px;">
-                                    @foreach (var it in _invSummary.CargoItems)
-                                    {
-                                        <div style="display:flex;gap:8px;align-items:baseline;font-size:0.85rem;">
-                                            <span style="font-weight:600;">@it.Code</span>
-                                            <span class="hint-text">@it.Station</span>
-                                        </div>
-                                    }
-                                </div>
+                                @if (_invSummary.CargoItems.Count == 0) { <div class="hint-text" style="margin-top:4px;">（无）</div> }
+                                else
+                                {
+                                    <div style="max-height:180px;overflow-y:auto;display:flex;flex-direction:column;gap:3px;margin-top:6px;">
+                                        @foreach (var it in _invSummary.CargoItems)
+                                        {
+                                            <div style="display:flex;gap:8px;align-items:baseline;font-size:0.85rem;">
+                                                <span style="font-weight:600;">@it.Code</span>
+                                                <span class="hint-text">@it.Station</span>
+                                            </div>
+                                        }
+                                    </div>
+                                }
                             }
                         </div>
 
-                        <div style="background:#0f172a;border:1px solid #1e293b;border-radius:8px;padding:10px 14px;">
-                            <div style="font-weight:600;color:#f59e0b;margin-bottom:6px;">🟠 锁定中 @_invSummary.LockedItems.Count</div>
-                            @if (_invSummary.LockedItems.Count == 0) { <div class="hint-text">（无）</div> }
-                            else
+                        <div style="background:#0f172a;border:1px solid #1e293b;border-radius:8px;padding:8px 14px;">
+                            <div style="font-weight:600;color:#f59e0b;cursor:pointer;user-select:none;" @onclick="ToggleLockedInv">
+                                <span>🟠 锁定中 @_invSummary.LockedItems.Count</span>
+                                <span style="float:right;">@(IsInvExpanded("locked") ? "▾" : "▸")</span>
+                            </div>
+                            @if (IsInvExpanded("locked"))
                             {
-                                <div style="max-height:180px;overflow-y:auto;display:flex;flex-direction:column;gap:3px;">
-                                    @foreach (var it in _invSummary.LockedItems)
-                                    {
-                                        <div style="display:flex;gap:8px;align-items:baseline;font-size:0.85rem;">
-                                            <span style="font-weight:600;">@it.Code</span>
-                                            <span class="hint-text">@(string.IsNullOrEmpty(it.Station) ? "在途" : it.Station)</span>
-                                            @if (!string.IsNullOrEmpty(it.CargoCode)) { <span class="hint-text">货物：@it.CargoCode</span> }
-                                        </div>
-                                    }
-                                </div>
+                                @if (_invSummary.LockedItems.Count == 0) { <div class="hint-text" style="margin-top:4px;">（无）</div> }
+                                else
+                                {
+                                    <div style="max-height:180px;overflow-y:auto;display:flex;flex-direction:column;gap:3px;margin-top:6px;">
+                                        @foreach (var it in _invSummary.LockedItems)
+                                        {
+                                            <div style="display:flex;gap:8px;align-items:baseline;font-size:0.85rem;">
+                                                <span style="font-weight:600;">@it.Code</span>
+                                                <span class="hint-text">@it.Station</span>
+                                                @if (!string.IsNullOrEmpty(it.CargoCode)) { <span class="hint-text">货物：@it.CargoCode</span> }
+                                                @if (!string.IsNullOrEmpty(it.Status)) { <span style="color:@StatusColor(it.Status);font-size:0.75rem;">@StatusBadge(it.Status)</span> }
+                                            </div>
+                                        }
+                                    </div>
+                                }
+                            }
+                        </div>
+
+                        <div style="background:#0f172a;border:1px solid #1e293b;border-radius:8px;padding:8px 14px;">
+                            <div style="font-weight:600;color:#fbbf24;cursor:pointer;user-select:none;" @onclick="ToggleTransitInv">
+                                <span>🟡 在途 @_invSummary.TransitItems.Count</span>
+                                <span style="float:right;">@(IsInvExpanded("transit") ? "▾" : "▸")</span>
+                            </div>
+                            @if (IsInvExpanded("transit"))
+                            {
+                                @if (_invSummary.TransitItems.Count == 0) { <div class="hint-text" style="margin-top:4px;">（无）</div> }
+                                else
+                                {
+                                    <div style="max-height:180px;overflow-y:auto;display:flex;flex-direction:column;gap:3px;margin-top:6px;">
+                                        @foreach (var it in _invSummary.TransitItems)
+                                        {
+                                            <div style="display:flex;gap:8px;align-items:baseline;font-size:0.85rem;">
+                                                <span style="font-weight:600;">@it.Code</span>
+                                                <span class="hint-text">@it.Station</span>
+                                                @if (!string.IsNullOrEmpty(it.CargoCode)) { <span class="hint-text">货物：@it.CargoCode</span> }
+                                                <span style="color:#fbbf24;font-size:0.75rem;">在途</span>
+                                            </div>
+                                        }
+                                    </div>
+                                }
                             }
                         </div>
                     </div>
@@ -990,6 +1044,36 @@
 
     // 库存分类汇总（纯空托 / 带货托 / 纯货物），点「查库存」按钮拉取
     private InventorySummaryDto? _invSummary;
+
+    // 查库存弹窗分类区块折叠状态（默认折叠，点标题展开）
+    private readonly HashSet<string> _invExpanded = new(StringComparer.OrdinalIgnoreCase);
+    private bool IsInvExpanded(string key) => _invExpanded.Contains(key);
+    private void ToggleInv(string key) { if (!_invExpanded.Add(key)) _invExpanded.Remove(key); }
+    private void ToggleEmptyInv() => ToggleInv("empty");
+    private void ToggleLoadedInv() => ToggleInv("loaded");
+    private void ToggleCargoInv() => ToggleInv("cargo");
+    private void ToggleLockedInv() => ToggleInv("locked");
+    private void ToggleTransitInv() => ToggleInv("transit");
+
+    /// <summary>状态徽章文本（null = 无状态，不显示）。</summary>
+    private static string? StatusBadge(string status)
+        => status switch
+        {
+            "picked" => "已选",
+            "transit" => "在途",
+            "fail" => "失败",
+            _ => null,
+        };
+
+    /// <summary>状态徽章颜色。</summary>
+    private static string StatusColor(string status)
+        => status switch
+        {
+            "picked" => "#38bdf8",
+            "transit" => "#f59e0b",
+            "fail" => "#f87171",
+            _ => "#94a3b8",
+        };
     private bool _invLoading;
     private async Task QueryInventorySummary()
     {
@@ -1003,7 +1087,7 @@
         finally { _invLoading = false; StateHasChanged(); }
     }
     private bool _invDialogOpen = false;
-    private void CloseInventory() { _invDialogOpen = false; }
+    private void CloseInventory() { _invDialogOpen = false; _invExpanded.Clear(); }
     private HashSet<string> _expanded = new() { "__sys__" };
 
     private void ToggleRound(string id)
@@ -1115,7 +1199,7 @@
         }
         if (string.IsNullOrEmpty(SceneName)) { ShowResp("❌ 未配置场景名称（地图信息页系统设置）", "error"); return; }
 
-        var (ok, reason) = await MoveLoop.StartAsync(new GRCS.Dashboard.Modules.WcsSimulator.Services.MoveLoopService.Options
+        var (ok, reason) = await MoveLoop.StartAsync(new Dashboard.Modules.WcsSimulator.Services.MoveLoopService.Options
         {
             TabId = _tabId,
             OrderIdPrefix = _batchOrderIdPrefix,
@@ -1140,3 +1224,4 @@
         public int Dropped { get; set; }
     }
 }
+

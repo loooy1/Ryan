@@ -1,4 +1,4 @@
-namespace GrcsBackend.Contracts.Entities;
+namespace Contracts.Entities;
 
 /// <summary>请求信号事件持久化行（mock_request_events 表）。</summary>
 public class MockRequestEventRow

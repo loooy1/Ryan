@@ -1,9 +1,9 @@
 using System.Linq.Expressions;
 
-namespace GrcsBackend.Modules.Shared.Infrastructure.Repository;
+namespace Backend.Shared.Infrastructure.Repository;
 
 /// <summary>
-/// 泛型仓储接口：公共 CRUD 基座（借鉴 GRCS 的 IDbContext/Repository 形态，去掉 IAggregateRoot 约束，保持轻量）。
+/// 泛型仓储接口：通用 CRUD 基座（借鉴 GRCS 的 IDbContext/Repository 形态，去掉 IAggregateRoot 约束，保持轻量）。
 /// 每个聚合/表一套通用操作；Store 特有的筛选逻辑用 Query()/FindAllAsync(predicate) 自行组合。
 /// </summary>
 public interface IRepository<TEntity> where TEntity : class

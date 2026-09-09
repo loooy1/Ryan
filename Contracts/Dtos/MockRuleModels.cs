@@ -1,4 +1,4 @@
-namespace GrcsBackend.Contracts.Dtos;
+namespace Contracts.Dtos;
 
 /// <summary>Mock 规则匹配器：按来源取参后按 Op 比对 Expected。</summary>
 public class MockMatcher

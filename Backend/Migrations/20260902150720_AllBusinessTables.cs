@@ -1,8 +1,8 @@
-﻿using Microsoft.EntityFrameworkCore.Migrations;
+using Microsoft.EntityFrameworkCore.Migrations;
 
 #nullable disable
 
-namespace GrcsBackend.Migrations
+namespace WCSBackend.Migrations
 {
     /// <inheritdoc />
     public partial class AllBusinessTables : Migration

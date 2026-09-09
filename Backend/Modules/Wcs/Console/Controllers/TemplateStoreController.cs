@@ -1,9 +1,9 @@
-using GrcsBackend.Modules.Wcs.Automation.Services;
-using GrcsBackend.Modules.Wcs.Infrastructure;
-using GrcsBackend.Contracts.Dtos;
+using WCSBackend.Modules.Wcs.Automation.Services;
+using WCSBackend.Modules.Wcs.Infrastructure;
+using Contracts.Dtos;
 using Microsoft.AspNetCore.Mvc;
 
-namespace GrcsBackend.Modules.Wcs.Console.Controllers;
+namespace WCSBackend.Modules.Wcs.Console.Controllers;
 
 /// <summary>
 /// 任务类型模板 + 功能模板存储接口（/api/wcs/templates、/api/wcs/modules）。

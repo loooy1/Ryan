@@ -1,9 +1,9 @@
 using System.Text.Json;
 using Microsoft.AspNetCore.Components;
 using Microsoft.JSInterop;
-using GRCS.Dashboard.Modules.WcsSimulator.Services;
+using Dashboard.Modules.WcsSimulator.Services;
 
-namespace GRCS.Dashboard.Modules.WcsSimulator.Components;
+namespace Dashboard.Modules.WcsSimulator.Components;
 
 /// <summary>
 /// 模拟器页面基类：统一反馈提示（PageBase）+ 折叠状态持久化 + localStorage 读取辅助。
