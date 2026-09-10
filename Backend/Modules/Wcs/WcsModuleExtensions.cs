@@ -22,7 +22,6 @@ public static class WcsModuleExtensions
         services.AddSingleton<RangeConfigService>();
         services.AddSingleton<WcsSettingsService>();
         services.AddSingleton<CargoCodeStore>();
-        services.AddSingleton<StationLockStore>();
         services.AddSingleton<LedgerStore>();
         services.AddSingleton<SignalConfirmStore>();
         services.AddSingleton<ExceptionRecordStore>();
@@ -46,11 +45,12 @@ public static class WcsModuleExtensions
         services.AddSingleton<NestRunner>();
 
         // 模块执行记录（内存环形缓冲，供「模块执行记录」面板增量拉取）
-        services.AddSingleton<ModuleExecLogStore>();
         // 统一模块执行引擎：起点/起点之后在下发时、终点在 FINISHED 后，统一在后端执行
+        services.AddSingleton<TaskLifecycleService>();
         services.AddSingleton<ModuleRunService>();
-        // 终点模块后台执行器：订阅 TaskFinished，对非 Auto_ 任务跑终点模块（自动化任务由 AutoTemplateRunner 自行跑）
-        services.AddHostedService<FinishedModuleWatcher>();
+        // 任务完成协调器：统一监管 LOAD_FINISH/FINISHED 后的库存、锁与终点模块副作用
+        services.AddSingleton<TaskCompletionCoordinator>();
+        services.AddHostedService(sp => sp.GetRequiredService<TaskCompletionCoordinator>());
 
         // 自动化模板执行引擎：单例 + IHostedService 双注册（控制器可注入操纵）
         services.AddSingleton<AutoTemplateRunner>();

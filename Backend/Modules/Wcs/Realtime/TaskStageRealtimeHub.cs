@@ -14,8 +14,7 @@ namespace WCSBackend.Modules.Wcs.Realtime;
 /// ② 纯移动任务循环状态（MoveLoopRunner 每轮广播 MoveTaskStats，连接建立时回放当前快照）；
 /// ③ 归巢模式状态（NestRunner 广播 NestStats，连接建立时回放快照）；
 /// ④ 请求信号记录（MockApprovalService 每次变更广播全量 MockRequestEvents，连接建立时回放快照）；
-/// ⑤ 模块执行记录（ModuleExecLogStore 新增广播单条 ModuleExecLogAdded，清空已处理后广播全量
-///    ModuleExecLogsReset，连接建立时回放全量 ModuleExecLogsReset{maxId,entries}）。
+/// ⑤ 模块执行记录包含在 task_records 的模块阶段行中，随 EventsReset / EventAdded 推送。
 /// </summary>
 public class TaskStageRealtimeHub : Hub
 {
@@ -23,16 +22,14 @@ public class TaskStageRealtimeHub : Hub
     private readonly MoveLoopRunner _moveLoop;
     private readonly NestRunner _nest;
     private readonly MockApprovalService _mockApproval;
-    private readonly ModuleExecLogStore _execLog;
 
     public TaskStageRealtimeHub(ITaskStageService stages, MoveLoopRunner moveLoop, NestRunner nest,
-        MockApprovalService mockApproval, ModuleExecLogStore execLog)
+        MockApprovalService mockApproval)
     {
         _stages = stages;
         _moveLoop = moveLoop;
         _nest = nest;
         _mockApproval = mockApproval;
-        _execLog = execLog;
     }
 
     public override async Task OnConnectedAsync()
@@ -45,8 +42,6 @@ public class TaskStageRealtimeHub : Hub
         await Clients.Caller.SendAsync("NestStats", _nest.Snapshot());
         // 回放请求信号记录全量（低频变更，全量快照最简可靠）
         await Clients.Caller.SendAsync("MockRequestEvents", _mockApproval.GetEvents());
-        // 回放模块执行记录全量 + 水位（增量推送的基准）
-        await Clients.Caller.SendAsync("ModuleExecLogsReset", new { maxId = _execLog.MaxId, entries = _execLog.GetSince(0) });
         await base.OnConnectedAsync();
     }
 }

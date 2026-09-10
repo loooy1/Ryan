@@ -1,6 +1,6 @@
 namespace Contracts.Entities;
 
-/// <summary>信号确认状态行（workflow_state 表）。kind = arrival / removal / sent。</summary>
+/// <summary>信号确认接口的兼容返回项；数据由 task_records 派生。</summary>
 public class WorkflowStateRow
 {
     public string Kind { get; set; } = "";

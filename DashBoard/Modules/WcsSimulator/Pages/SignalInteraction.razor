@@ -510,7 +510,7 @@
             </div>
             <div class="tpl-modal-body" style="flex:1;min-height:0;overflow-y:auto;max-height:none;">
                 <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px;flex-wrap:wrap;">
-                    <button class="btn btn-outline btn-xs" @onclick="ClearModuleLog" title="删除 HTTP 200 的成功记录，失败/异常记录保留">清空已处理</button>
+                    <span class="hint-text">模块记录保存在任务历史中，不单独清理</span>
                     <input type="text" @bind="_logSearch" placeholder="🔍 搜索模块名 / 任务号" style="flex:1;min-width:180px;max-width:320px;" />
                     <span class="hint-text" style="margin:0;">共 @_execLog.Count 条</span>
                 </div>
@@ -535,7 +535,7 @@
                                     <span class="badge badge-info">@e.Point</span>
                                     <span style="color:#7dd3fc;font-size:0.85rem;">@e.Module</span>
                                     <span style="color:#64748b;font-size:0.8rem;flex:1;min-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="@e.Detail">@e.Detail</span>
-                                    @if (CanRetryLog(e))
+                                    @if (false && CanRetryLog(e))
                                     {
                                         <button class="btn btn-outline btn-xs" disabled="@_retryingLogId.Contains(e.Id)" @onclick="() => RetryModuleLog(e.Id)" title="重新执行该模块（MsgTime 用当前时间），新记录实时追加">🔄 重试</button>
                                     }

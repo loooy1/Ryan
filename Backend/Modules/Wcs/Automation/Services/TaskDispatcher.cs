@@ -5,10 +5,9 @@ using Contracts.Dtos;
 
 namespace WCSBackend.Modules.Wcs.Automation.Services;
 
-/// <summary>任务下发器：选点/加锁/下发/释放，持有站点锁状态与下发临界区。</summary>
+/// <summary>任务下发器：按数据库储位状态选点、下发任务并登记完成收尾。</summary>
 public class TaskDispatcher
 {
-    private readonly StationLockStore _locks;
     private readonly ITaskStageService _stage;
     private readonly ModuleRunService _modules;
     private readonly WcsInventoryStore _invStore;
@@ -16,27 +15,23 @@ public class TaskDispatcher
     private readonly RangeConfigService _range;
     private readonly MapStoreService _map;
     private readonly TaskTemplateStore _taskTemplates;
+    private readonly TaskCompletionCoordinator _completion;
 
     private readonly object _chainLock = new();
-    private readonly ConcurrentDictionary<string, string> _lockByTask = new(StringComparer.OrdinalIgnoreCase);
-    private readonly ConcurrentDictionary<string, string> _endLockByTask = new(StringComparer.OrdinalIgnoreCase);
 
-    public TaskDispatcher(StationLockStore locks, ITaskStageService stage, ModuleRunService modules,
+    public TaskDispatcher(ITaskStageService stage, ModuleRunService modules,
         WcsInventoryStore invStore, AutomationLogService log, RangeConfigService range,
-        MapStoreService map, TaskTemplateStore taskTemplates)
+        MapStoreService map, TaskTemplateStore taskTemplates, TaskCompletionCoordinator completion)
     {
-        _locks = locks; _stage = stage; _modules = modules; _invStore = invStore;
+        _stage = stage; _modules = modules; _invStore = invStore;
         _log = log; _range = range; _map = map; _taskTemplates = taskTemplates;
-        _stage.TaskLoadFinished += taskId => _invStore.OnTaskLoadFinished(taskId);
+        _completion = completion;
     }
 
-    /// <summary>释放全部站点锁（强制结束时调用）。</summary>
-    public void ReleaseAllLocks()
+    /// <summary>强制结束时撤销本进程内的任务登记。</summary>
+    public void ReleaseAllReservations()
     {
-        foreach (var kv in _lockByTask) { try { _locks.Release(kv.Value); } catch { } }
-        foreach (var kv in _endLockByTask) { try { _locks.Release(kv.Value); } catch { } }
-        _lockByTask.Clear();
-        _endLockByTask.Clear();
+        _completion.ReleaseAllReservations();
     }
 
     /// <summary>执行一步任务模板：选点（与加锁原子化）、组装任务、经模块下发。</summary>
@@ -89,6 +84,7 @@ public class TaskDispatcher
         lock (_chainLock)
         {
             var occ = invCoord.BuildOccupied();
+            occ.UnionWith(GetInFlightDestinationMarks());
 
             if (usePickedStart)
             {
@@ -104,8 +100,10 @@ public class TaskDispatcher
                     _log.AddOrUpdate("[模板步骤失败]", $"模板「{tpl.Label}」：未配置起点站点类型，无法自动选点，跳过", "#f87171");
                     return null;
                 }
-                var lockedStarts = _locks.GetLocked(_stage);
-                var startPool = stations.Where(x => (x.StationType & startBits) != 0 && !lockedStarts.Contains(x.Mark)).ToList();
+                var startAvailableStorage = _invStore.GetStartAvailableStorageMarks();
+                var startPool = stations.Where(x => (x.StationType & startBits) != 0
+                    && ((x.StationType & Contracts.Dtos.MapStationTypeBits.StorageLocation) == 0
+                        || startAvailableStorage.Contains(x.Mark))).ToList();
                 var s = startPool.Count == 0 ? null : startPool[Random.Shared.Next(startPool.Count)];
                 if (s == null) { _log.Add(roundId, $"步骤 {stepNo} 模板[{tpl.Label}] 起点范围内无可匹配站点（需 {StationTypeHelper.BitsName(startBits)}），跳过", "#f87171"); _log.AddOrUpdate("[模板步骤失败]", $"模板「{tpl.Label}」：起点范围内无可匹配站点（需 {StationTypeHelper.BitsName(startBits)}），跳过", "#f87171"); return null; }
                 startMark = s.Mark;
@@ -123,14 +121,12 @@ public class TaskDispatcher
                 }
             }
 
-            var lockedAll = _locks.GetLocked(_stage);
-            dest = ChooseDestination(tpl, stations, occ, lockedAll, startMark);
+            dest = ChooseDestination(tpl, stations, occ, startMark);
             if (dest == null)
             {
                 var endBits = tpl.End?.StationTypeBits ?? 0;
                 if (endBits != 0 && stations.Any(s => (s.StationType & endBits) != 0)
-                    && !stations.Any(s => (s.StationType & endBits) != 0 && !occ.Contains(s.Mark)
-                        && ((s.StationType & Contracts.Dtos.MapStationTypeBits.StorageLocation) == 0 || !lockedAll.Contains(s.Mark))))
+                    && !stations.Any(s => (s.StationType & endBits) != 0 && !occ.Contains(s.Mark)))
                 {
                     _log.Add(roundId, $"步骤 {stepNo} 模板[{tpl.Label}] 终点范围内匹配站点均被占用（需 {StationTypeHelper.BitsName(endBits)}），跳过", "#f87171");
                     _log.AddOrUpdate("[模板步骤失败]", $"模板「{tpl.Label}」：终点范围内匹配站点均被占用（需 {StationTypeHelper.BitsName(endBits)}），跳过", "#f87171");
@@ -143,10 +139,41 @@ public class TaskDispatcher
                 return null;
             }
 
+            var startIsStorage = !string.IsNullOrEmpty(startMark)
+                && (stations.FirstOrDefault(s => string.Equals(s.Mark, startMark, StringComparison.OrdinalIgnoreCase))?.StationType
+                    & Contracts.Dtos.MapStationTypeBits.StorageLocation) != 0;
+
             taskId = "Auto_" + Guid.NewGuid().ToString("N")[..12];
-            if (!string.IsNullOrEmpty(startMark)) { _locks.Acquire(startMark, taskId); _lockByTask[taskId] = startMark; }
-            if (dest != null && !string.IsNullOrEmpty(dest.Mark) && (dest.StationType & Contracts.Dtos.MapStationTypeBits.StorageLocation) != 0)
-            { _locks.Acquire(dest.Mark, taskId); _endLockByTask[taskId] = dest.Mark; }
+            string? startStorageTaskLockMark = null;
+            if (startIsStorage)
+            {
+                if (!_invStore.TryLockStorageForTask(taskId, startMark!, usePickedStart))
+                {
+                    _log.Add(roundId, $"步骤 {stepNo} 模板[{tpl.Label}] 起点储位 {startMark} 当前数据库状态不可作为起点，跳过", "#f87171");
+                    _log.AddOrUpdate("[模板步骤失败]", $"模板「{tpl.Label}」：起点储位 {startMark} 当前数据库状态不可作为起点", "#f87171");
+                    return null;
+                }
+                startStorageTaskLockMark = startMark;
+            }
+
+            var destinationIsStorage = (dest.StationType & Contracts.Dtos.MapStationTypeBits.StorageLocation) != 0;
+            if (destinationIsStorage && !_invStore.TryLockDestinationForTask(taskId, dest.Mark))
+            {
+                if (startStorageTaskLockMark != null) _invStore.ClearTaskLock(taskId, startStorageTaskLockMark);
+                _log.Add(roundId, $"步骤 {stepNo} 模板[{tpl.Label}] 终点储位 {dest.Mark} 已被占用，跳过", "#f87171");
+                _log.AddOrUpdate("[模板步骤失败]", $"模板「{tpl.Label}」：终点储位 {dest.Mark} 已被其他任务或库存占用", "#f87171");
+                return null;
+            }
+            try
+            {
+                _completion.RegisterReservation(taskId, startStorageTaskLockMark, dest.Mark);
+            }
+            catch
+            {
+                if (destinationIsStorage) _invStore.ClearTaskLock(taskId, dest.Mark);
+                if (startStorageTaskLockMark != null) _invStore.ClearTaskLock(taskId, startStorageTaskLockMark);
+                throw;
+            }
         }
 
         var startWcs = WcsOf(startMark, stations) ?? startMark ?? "";
@@ -175,11 +202,22 @@ public class TaskDispatcher
             _log.Add(roundId, $"步骤 {stepNo} 模板[{tpl.Label}] 已强制结束，跳过下发（{startWcs}→{destWcs}）", "#fbbf24");
             var pc = new List<string> { container ?? "" };
             if (!string.IsNullOrEmpty(ctx.PalletCode) && !string.Equals(ctx.PalletCode, container, StringComparison.OrdinalIgnoreCase)) pc.Add(ctx.PalletCode);
+            _completion.CancelReservation(taskId);
             _invStore.RecyclePicked(pc);
             return null;
         }
 
-        var (ok, code, json) = await _modules.SendTaskWithModulesAsync(group, roundId);
+        (bool ok, int code, string json) dispatch;
+        try
+        {
+            dispatch = await _modules.SendTaskWithModulesAsync(group, roundId);
+        }
+        catch
+        {
+            _completion.CancelReservation(taskId);
+            throw;
+        }
+        var (ok, code, json) = dispatch;
         var taskContainers = new List<string> { container ?? "" };
         if (!string.IsNullOrEmpty(ctx.PalletCode) && !string.Equals(ctx.PalletCode, container, StringComparison.OrdinalIgnoreCase))
             taskContainers.Add(ctx.PalletCode);
@@ -191,33 +229,25 @@ public class TaskDispatcher
             var isCargoOutbound = string.Equals(tpl.Value, "CARGO_CARRY_OUTBOUND", StringComparison.OrdinalIgnoreCase);
             _invStore.MarkBusy(taskContainers, taskId, startMark,
                 isCargoInbound ? ctx.PalletCode : null, isCargoOutbound);
+            _completion.Activate(taskId);
             _log.Add(roundId, $"✓ 步骤 {stepNo} 完成！", "#4ade80");
             ctx.LastEndMark = dest.Mark;
-            _ = ReleaseOnFinishAsync(taskId, dest.Mark);
             var endIds = tpl.End?.AfterModules ?? [];
-            var finished = false;
             try
             {
                 if (endIds.Count > 0)
                 {
                     await _stage.WaitFinishedAsync(taskId);
-                    finished = true;
                     await _modules.RunEndModulesAsync(taskId, mctx, roundId);
                 }
                 else if (step.WaitForFinish)
                 {
                     await _stage.WaitFinishedAsync(taskId);
-                    finished = true;
                 }
             }
             catch (Exception ex)
             {
                 _log.Add(roundId, $"步骤 {stepNo} 终点阶段异常 {taskId}：{ex.Message}", "#f87171");
-            }
-            if (finished)
-            {
-                ReleaseTaskLocks(taskId);
-                _invStore.Release(taskId, dest.Mark);
             }
             return taskId;
         }
@@ -225,36 +255,19 @@ public class TaskDispatcher
         {
             _log.Add(roundId, $"步骤 {stepNo} 下发失败 {taskId}：HTTP {code} {json[..Math.Min(json.Length, 200)]}", "#f87171");
             _log.AddOrUpdate("[模板步骤失败]", $"模板「{tpl.Label}」：下发失败 HTTP {code} {json[..Math.Min(json.Length, 200)]}", "#f87171");
-            ReleaseTaskLocks(taskId);
-            _invStore.MarkFail(taskContainers, taskId);
+            _completion.CancelReservation(taskId);
+            if (code == -1)
+                _invStore.RecyclePicked(taskContainers);
+            else
+                _invStore.MarkFail(taskContainers, taskId);
         }
         return null;
     }
 
-    private async Task ReleaseOnFinishAsync(string taskId, string destMark)
-    {
-        try { await _stage.WaitFinishedAsync(taskId); }
-        catch
-        {
-            _log.Add($"⚠ 任务 {taskId} 等待 FINISHED 被中断，账本占用保留（防重复选货）", "#f59e0b");
-            ReleaseTaskLocks(taskId);
-            return;
-        }
-        ReleaseTaskLocks(taskId);
-        _invStore.Release(taskId, destMark);
-    }
-
-    private void ReleaseTaskLocks(string taskId)
-    {
-        if (_lockByTask.TryRemove(taskId, out var mk)) _locks.Release(mk);
-        if (_endLockByTask.TryRemove(taskId, out var emk)) _locks.Release(emk);
-    }
-
-    private static MapStationLite? ChooseDestination(TaskTemplateDto tpl, List<MapStationLite> stations, HashSet<string> occupied, HashSet<string> lockedStations, string? excludeMark)
+    private static MapStationLite? ChooseDestination(TaskTemplateDto tpl, List<MapStationLite> stations, HashSet<string> occupied, string? excludeMark)
     {
         bool Free(MapStationLite s)
             => !occupied.Contains(s.Mark)
-            && ((s.StationType & Contracts.Dtos.MapStationTypeBits.StorageLocation) == 0 || !lockedStations.Contains(s.Mark))
             && (excludeMark == null || !string.Equals(s.Mark, excludeMark, StringComparison.OrdinalIgnoreCase));
 
         MapStationLite? RandomPick(Func<MapStationLite, bool> pred)
@@ -277,6 +290,45 @@ public class TaskDispatcher
         return RandomPick(s => (s.StationType & Contracts.Dtos.MapStationTypeBits.TransferPoint) != 0 && Free(s))
             ?? RandomPick(s => (s.StationType & Contracts.Dtos.MapStationTypeBits.StorageLocation) != 0 && Free(s))
             ?? RandomPick(s => (s.StationType & Contracts.Dtos.MapStationTypeBits.PickingStation) != 0 && Free(s));
+    }
+
+    /// <summary>
+    /// 已被 WCS 接收、但尚未收到 FINISHED 的任务，其目标站点必须继续视为占用。
+    /// 站点锁是进程内状态；本检查以 task_records 的已持久化台账为兜底，
+    /// 仅阻止重复选终点，不尝试在重启后恢复任务、库存或队列。
+    /// </summary>
+    private HashSet<string> GetInFlightDestinationMarks()
+    {
+        var storageMarks = _invStore.StorageMarks();
+        var records = _stage.GetAll();
+        var finishedTaskIds = records
+            .Where(r => string.Equals(r.Stage, "FINISHED", StringComparison.OrdinalIgnoreCase)
+                && !string.IsNullOrWhiteSpace(r.TaskId))
+            .Select(r => r.TaskId)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var destinations = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var created in records.Where(r => r.IsCreated
+            && !string.IsNullOrWhiteSpace(r.TaskId)
+            && !finishedTaskIds.Contains(r.TaskId)
+            && r.RouteCodes.Count >= 2))
+        {
+            var destination = created.RouteCodes[^1];
+            var destinationMark = string.IsNullOrWhiteSpace(destination) ? "" : ToMapMark(destination);
+            if (storageMarks.Contains(destinationMark))
+                destinations.Add(destinationMark);
+        }
+
+        return destinations;
+    }
+
+    private static string ToMapMark(string stationCode)
+    {
+        var value = stationCode.Trim();
+        var separator = value.LastIndexOf('_');
+        return separator > 0 && int.TryParse(value[(separator + 1)..], out _)
+            ? value[..separator]
+            : value;
     }
 
     private static string GenerateContainerCode(string prefix)

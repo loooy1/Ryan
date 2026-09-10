@@ -26,7 +26,6 @@ public class AutoTemplateRunner : IHostedService
     private readonly MapStoreService _map;
     private readonly RangeConfigService _range;
     private readonly WcsSettingsService _settings;
-    private readonly StationLockStore _locks;
     private readonly AutomationLogService _log;
     private readonly ITaskStageService _stage;
     private readonly AutomationGate _gate;
@@ -59,18 +58,18 @@ public class AutoTemplateRunner : IHostedService
 
     public AutoTemplateRunner(
         MapStoreService map, RangeConfigService range, WcsSettingsService settings,
-        StationLockStore locks, AutomationLogService log, ITaskStageService stage, AutomationGate gate,
+        AutomationLogService log, ITaskStageService stage, AutomationGate gate,
         ModuleRunService modules, TaskTemplateStore taskTemplates, AutoTemplateStore templates,
         MockRuleStore mocks, GrcsInventoryCacheService inventoryCache, WcsInventoryStore invStore,
-        ILogger<AutoTemplateRunner> logger)
+        ILogger<AutoTemplateRunner> logger, TaskCompletionCoordinator completion)
     {
-        _map = map; _range = range; _settings = settings; _locks = locks; _log = log;
+        _map = map; _range = range; _settings = settings; _log = log;
         _stage = stage; _gate = gate; _modules = modules; _taskTemplates = taskTemplates;
         _templates = templates; _mocks = mocks; _inventoryCache = inventoryCache; _invStore = invStore;
         _logger = logger;
         _validator = new TemplateValidator(map, range, taskTemplates, templates);
-        _invCoord = new InventoryCoordinator(invStore, range, map, log);
-        _dispatcher = new TaskDispatcher(locks, stage, modules, invStore, log, range, map, taskTemplates);
+        _invCoord = new InventoryCoordinator(invStore, range, log);
+        _dispatcher = new TaskDispatcher(stage, modules, invStore, log, range, map, taskTemplates, completion);
     }
 
     // ── 状态 ──
@@ -185,7 +184,7 @@ public class AutoTemplateRunner : IHostedService
         // 解除所有无限等待的 FINISHED 阻塞，使 WaitRoundCompletion 得以继续并自动清除
         try { _stage.ForceCompleteAll(); } catch { }
         // 释放所有站点锁与容器占用
-        _dispatcher.ReleaseAllLocks();
+        _dispatcher.ReleaseAllReservations();
         _invStore.ClearBusy();   // 账本占用全部释放（持久化）
         // 清空所有自动化轮次日志
         _log.Clear();

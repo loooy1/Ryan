@@ -135,7 +135,7 @@ public class SignalAutoHostedService : IHostedService
             if (ok)
             {
                 lock (_lock) { _arrivalConfirmed.Add(t.TaskId); }
-                _confirm.Set("arrival", t.TaskId, null);   // 统一写入 workflow_state（前端 1s 轮询可见）
+                _confirm.Set("arrival", t.TaskId, null);   // 写入 task_records 的 SIGNAL_ARRIVAL 阶段
                 _logs.Add("✓ container_ready " + t.TaskId + "（货 " + cargoCode + "）", "#4ade80");
             }
             else _logs.Add("❌ container_ready " + t.TaskId + " 发送失败 HTTP " + code, "#f87171");
@@ -168,7 +168,7 @@ public class SignalAutoHostedService : IHostedService
             if (ok)
             {
                 lock (_lock) { _removalConfirmed.Add(t.TaskId); }
-                _confirm.Set("removal", t.TaskId, null);   // 统一写入 workflow_state
+                _confirm.Set("removal", t.TaskId, null);   // 写入 task_records 的 SIGNAL_REMOVAL 阶段
                 _logs.Add("✓ container_remove " + t.TaskId + "（容器 " + containerCode + "）", "#4ade80");
             }
             else _logs.Add("❌ container_remove " + t.TaskId + " 发送失败 HTTP " + code, "#f87171");
@@ -202,7 +202,7 @@ public class SignalAutoHostedService : IHostedService
             });
             if (!ok) { _logs.Add("❌ 分拣 " + sendTaskId + " 发送失败 HTTP " + code, "#f87171"); continue; }
             lock (_lock) { _ssSent.Add(e.TaskId); }
-            // 统一写入 workflow_state（value 存发送参数，前端 Sent 卡片重建用）
+            // 写入 task_records 的 SIGNAL_SENT 阶段，作为重启后的去重依据。
             var paramsJson = System.Text.Json.JsonSerializer.Serialize(new
             {
                 returnTaskId = sendTaskId,
@@ -249,7 +249,7 @@ public class SignalAutoHostedService : IHostedService
             ArrivalAuto = bool.TryParse(KvAccess.Get(_uow, "sig_arrival_auto"), out var a) && a;
             RemovalAuto = bool.TryParse(KvAccess.Get(_uow, "sig_removal_auto"), out var r) && r;
             AutoSend = bool.TryParse(KvAccess.Get(_uow, "sig_ss_auto"), out var s) && s;
-            // 一次性迁移：旧 kv 确认集合 → workflow_state 表（幂等 Set，仅插入缺失项）
+            // 一次性迁移：旧 kv 确认集合 → task_records 阶段（幂等 Set，仅插入缺失项）
             MigrateLegacy("sig_arrival_confirmed", "arrival");
             MigrateLegacy("sig_removal_confirmed", "removal");
             MigrateLegacy("sig_ss_sent", "sent");
@@ -260,7 +260,7 @@ public class SignalAutoHostedService : IHostedService
         catch { }
     }
 
-    /// <summary>旧 kv 集合迁移到 workflow_state（Set 幂等，重复调用无副作用）。</summary>
+    /// <summary>旧 kv 集合迁移到任务阶段记录（Set 幂等，重复调用无副作用）。</summary>
     private void MigrateLegacy(string kvKey, string kind)
     {
         foreach (var id in LoadSet(kvKey))

@@ -100,7 +100,7 @@ public class GrcsProxyController : ControllerBase
     /// 任务组下发（含三类模块后端执行）：POST /api/wcs/task/send。
     /// 入参 WcsTaskGroup（前端只组单任务组），后端经 ModuleRunService 统一跑
     /// 起点模块(下发前) → 下发 GRCS /api/v1/task_receive → 起点之后模块(下发成功后)；
-    /// 终点模块由 FinishedModuleWatcher 在任务 FINISHED 后自动执行（框架统一）。
+    /// 终点模块由 TaskCompletionCoordinator 在任务 FINISHED 后自动执行（框架统一）。
     /// 响应只回显下发结果 { ok, code, json }，模块明细在「模块执行记录」面板看。
     /// </summary>
     [HttpPost("task/send")]

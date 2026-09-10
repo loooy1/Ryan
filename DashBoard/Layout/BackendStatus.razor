@@ -1,4 +1,5 @@
 @inject BackendHealthService Health
+@inject WcsApiClient WcsApi
 @inject NavigationManager NavManager
 @implements IDisposable
 
@@ -15,11 +16,11 @@
    让 WCS 后端状态比 15 秒探测更实时。null=未知（首次探测前）/ true=在线 / false=离线。
    ════════════════════════════════════════════════ *@
 <div class="sidebar-status">
-    <div class="ss-card" title="WCS 后端管理接口 — http://localhost:8230">
+    <div class="ss-card" title="WCS 后端管理接口 — @WcsApi.BaseUrl">
         <span class="ss-dot @DotClass(Health.WcsOnline)"></span>
         <span class="ss-name">WCS 后端</span>
         <span class="ss-state @DotStateClass(Health.WcsOnline)">@DotStateText(Health.WcsOnline)</span>
-        <span class="ss-port">8230</span>
+        <span class="ss-port">@WcsPort</span>
     </div>
     <div class="ss-card" title="GRCS 后端接口 — http://localhost:8224">
         <span class="ss-dot @DotClass(Health.GrcsOnline)"></span>
@@ -37,6 +38,18 @@
     }
 
     private void OnChanged() => InvokeAsync(StateHasChanged);
+
+    private string WcsPort
+    {
+        get
+        {
+            if (!Uri.TryCreate(WcsApi.BaseUrl, UriKind.Absolute, out var uri))
+                return "—";
+            return uri.IsDefaultPort
+                ? (uri.Scheme == Uri.UriSchemeHttps ? "443" : "80")
+                : uri.Port.ToString();
+        }
+    }
 
     private static string DotClass(bool? online) => online switch
     {

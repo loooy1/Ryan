@@ -277,44 +277,42 @@ public class LedgerStore
 }
 
 /// <summary>
-/// 信号确认状态（SQLite workflow_state 表，kind = arrival / removal / sent）。
+/// 信号确认状态（由 task_records 中的 SIGNAL_* 阶段派生）。
 /// Set 是幂等抢占：新插入返回 true（claimed），已存在返回 false——前端据此
 /// 在发信号前抢占，防止多标签页对同一任务重复发送 WCS 信号。
 /// </summary>
 public class SignalConfirmStore
 {
-    private readonly IUnitOfWorkFactory _uow;
+    private readonly ITaskStageService _stages;
 
-    public SignalConfirmStore(IUnitOfWorkFactory uowFactory) => _uow = uowFactory;
+    public SignalConfirmStore(ITaskStageService stages) => _stages = stages;
 
     public bool Set(string kind, string taskId, string? value)
     {
-        using var uow = _uow.Create();
-        var repo = uow.Repository<WorkflowStateRow>();
-        var existing = repo.Query().FirstOrDefault(x => x.Kind == kind && x.TaskId == taskId);
-        if (existing != null) return false;
-        repo.AddAsync(new WorkflowStateRow { Kind = kind, TaskId = taskId, Value = value, Time = DateTime.Now.ToString("O") })
-            .GetAwaiter().GetResult();
-        uow.CommitAsync().GetAwaiter().GetResult();
-        return true;
+        return _stages.TryRecordSystemEvent(taskId, SignalStage(kind), true);
     }
 
     public void Remove(string kind, string taskId)
     {
-        using var uow = _uow.Create();
-        uow.Repository<WorkflowStateRow>().DeleteWhereAsync(x => x.Kind == kind && x.TaskId == taskId)
-            .GetAwaiter().GetResult();
-        uow.CommitAsync().GetAwaiter().GetResult();
+        // 任务记录是审计历史，不删除已发送的信号。该方法仅保留兼容调用。
     }
 
     /// <summary>全部确认状态按 kind 分组返回。</summary>
     public Dictionary<string, List<WorkflowStateRow>> GetAll()
     {
-        using var uow = _uow.Create();
-        return uow.Repository<WorkflowStateRow>().FindAllAsync().GetAwaiter().GetResult()
-            .GroupBy(r => r.Kind)
+        return _stages.GetAll()
+            .Where(x => x.Stage.StartsWith("SIGNAL_", StringComparison.OrdinalIgnoreCase))
+            .Select(x => new WorkflowStateRow
+            {
+                Kind = x.Stage["SIGNAL_".Length..].ToLowerInvariant(),
+                TaskId = x.TaskId,
+                Time = x.Time.ToString("O"),
+            })
+            .GroupBy(x => x.Kind)
             .ToDictionary(g => g.Key, g => g.ToList());
     }
+
+    private static string SignalStage(string kind) => "SIGNAL_" + kind.Trim().ToUpperInvariant();
 }
 
 /// <summary>异常记录台账（SQLite exception_records 表，纯 HTTP 读写）。Singleton。</summary>

@@ -47,14 +47,10 @@ public class TaskTemplateController : ControllerBase
 public class FeatureModuleController : ControllerBase
 {
     private readonly FeatureModuleStore _store;
-    private readonly ModuleExecLogStore _execLog;
-    private readonly ModuleRunService _moduleRun;
 
-    public FeatureModuleController(FeatureModuleStore store, ModuleExecLogStore execLog, ModuleRunService moduleRun)
+    public FeatureModuleController(FeatureModuleStore store)
     {
         _store = store;
-        _execLog = execLog;
-        _moduleRun = moduleRun;
     }
 
     /// <summary>全部功能模板。</summary>
@@ -77,17 +73,4 @@ public class FeatureModuleController : ControllerBase
         return Ok(new { success = ok, id });
     }
 
-    /// <summary>清空已处理：只删除成功（HTTP 2xx）的模块执行记录，失败/异常记录保留（广播剩余快照实时同步前端）。</summary>
-    [HttpDelete("logs")]
-    public ActionResult<object> ClearModuleExecLogs() { _execLog.ClearProcessed(); return Ok(new { success = true }); }
-
-    /// <summary>重试单条模块执行记录：按记录恢复任务上下文后重新 POST 该模块（MsgTime 用当前时间），新记录经 SignalR 实时推送。</summary>
-    [HttpPost("logs/{id:long}/retry")]
-    public async Task<ActionResult<object>> RetryModuleLog(long id)
-    {
-        var entry = _execLog.GetById(id);
-        if (entry == null) return NotFound(new { success = false, message = "记录不存在" });
-        await _moduleRun.RetryEntryAsync(entry);
-        return Ok(new { success = true, id });
-    }
 }

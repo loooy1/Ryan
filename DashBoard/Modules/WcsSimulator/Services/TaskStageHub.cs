@@ -118,7 +118,24 @@ public class TaskStageHub : IDisposable
     /// <summary>模块执行记录缓存（最新在前，上限 200 条）。</summary>
     public IReadOnlyList<ModuleExecLogEntry> ExecLogEntries
     {
-        get { lock (_lock) return _execLog.ToList(); }
+        get
+        {
+            lock (_lock)
+            {
+                return _records.Where(IsModuleStage).OrderByDescending(x => x.Id).Take(MaxExecLog)
+                    .Select(x => new ModuleExecLogEntry
+                    {
+                        Id = x.Id,
+                        Time = x.Time.ToString("HH:mm:ss"),
+                        TaskId = x.TaskId,
+                        Point = ModulePoint(x.Stage),
+                        Module = x.Stage[(x.Stage.IndexOf(':') + 1)..],
+                        Ok = x.Ok,
+                        HttpCode = x.StatusCode,
+                        Detail = x.Ok ? "已记录到任务阶段" : "执行失败或模块配置无效",
+                    }).ToList();
+            }
+        }
     }
 
     /// <summary>模块执行记录变化时触发。</summary>
@@ -167,6 +184,7 @@ public class TaskStageHub : IDisposable
                 _finished.Add(evt.TaskId);
         }
         Changed?.Invoke();
+        if (IsModuleStage(evt)) ExecLogChanged?.Invoke();
     }
 
     /// <summary>后端广播：全表快照（连接建立/清空后对账）→ 整表替换。</summary>
@@ -183,6 +201,7 @@ public class TaskStageHub : IDisposable
                     _finished.Add(r.TaskId);
         }
         Changed?.Invoke();
+        ExecLogChanged?.Invoke();
     }
 
     /// <summary>后端广播：某任务被删除（其它标签页操作）→ 同步本地缓存。</summary>
@@ -256,6 +275,16 @@ public class TaskStageHub : IDisposable
         public long MaxId { get; set; }
         public List<ModuleExecLogEntry> Entries { get; set; } = [];
     }
+
+    private static bool IsModuleStage(TaskRecord record)
+        => record.Stage.StartsWith("BEFORE_MODULE:", StringComparison.OrdinalIgnoreCase)
+           || record.Stage.StartsWith("AFTER_START_MODULE:", StringComparison.OrdinalIgnoreCase)
+           || record.Stage.StartsWith("AFTER_END_MODULE:", StringComparison.OrdinalIgnoreCase);
+
+    private static string ModulePoint(string stage)
+        => stage.StartsWith("BEFORE_MODULE:", StringComparison.OrdinalIgnoreCase) ? "起点之前"
+         : stage.StartsWith("AFTER_START_MODULE:", StringComparison.OrdinalIgnoreCase) ? "起点之后"
+         : "终点之后";
 
     /// <summary>JS 回报连接状态：connected / reconnecting / disconnected。</summary>
     [JSInvokable]

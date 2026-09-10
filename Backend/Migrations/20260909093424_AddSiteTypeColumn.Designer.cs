@@ -2,6 +2,7 @@
 using Backend.Shared.Infrastructure;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 #nullable disable
@@ -9,9 +10,11 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace WCSBackend.Migrations
 {
     [DbContext(typeof(GrcsDbContext))]
-    partial class GrcsDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260909093424_AddSiteTypeColumn")]
+    partial class AddSiteTypeColumn
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder.HasAnnotation("ProductVersion", "10.0.9");
@@ -310,6 +313,51 @@ namespace WCSBackend.Migrations
                     b.ToTable("mock_rules", (string)null);
                 });
 
+            modelBuilder.Entity("Contracts.Entities.ModuleExecLogRow", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER")
+                        .HasColumnName("id");
+
+                    b.Property<string>("CreatedAt")
+                        .IsRequired()
+                        .HasColumnType("TEXT")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("Detail")
+                        .IsRequired()
+                        .HasColumnType("TEXT")
+                        .HasColumnName("detail");
+
+                    b.Property<int>("HttpCode")
+                        .HasColumnType("INTEGER")
+                        .HasColumnName("http_code");
+
+                    b.Property<string>("Module")
+                        .IsRequired()
+                        .HasColumnType("TEXT")
+                        .HasColumnName("module");
+
+                    b.Property<bool>("Ok")
+                        .HasColumnType("INTEGER")
+                        .HasColumnName("ok");
+
+                    b.Property<string>("Point")
+                        .IsRequired()
+                        .HasColumnType("TEXT")
+                        .HasColumnName("point");
+
+                    b.Property<string>("TaskId")
+                        .IsRequired()
+                        .HasColumnType("TEXT")
+                        .HasColumnName("task_id");
+
+                    b.HasKey("Id");
+
+                    b.ToTable("module_exec_logs", (string)null);
+                });
+
             modelBuilder.Entity("Contracts.Entities.ProjectLogDto", b =>
                 {
                     b.Property<long>("Id")
@@ -507,20 +555,10 @@ namespace WCSBackend.Migrations
                         .HasColumnType("TEXT")
                         .HasColumnName("pallet_status");
 
-                    b.Property<string>("SelectionStatus")
-                        .IsRequired()
-                        .HasColumnType("TEXT")
-                        .HasColumnName("selection_status");
-
                     b.Property<string>("SiteType")
                         .IsRequired()
                         .HasColumnType("TEXT")
                         .HasColumnName("site_type");
-
-                    b.Property<string>("TaskLockId")
-                        .IsRequired()
-                        .HasColumnType("TEXT")
-                        .HasColumnName("task_lock_id");
 
                     b.Property<string>("UpdatedAt")
                         .IsRequired()
@@ -538,6 +576,29 @@ namespace WCSBackend.Migrations
                     b.ToTable("wcs_slots", (string)null);
                 });
 
+            modelBuilder.Entity("Contracts.Entities.WorkflowStateRow", b =>
+                {
+                    b.Property<string>("Kind")
+                        .HasColumnType("TEXT")
+                        .HasColumnName("kind");
+
+                    b.Property<string>("TaskId")
+                        .HasColumnType("TEXT")
+                        .HasColumnName("task_id");
+
+                    b.Property<string>("Time")
+                        .IsRequired()
+                        .HasColumnType("TEXT")
+                        .HasColumnName("time");
+
+                    b.Property<string>("Value")
+                        .HasColumnType("TEXT")
+                        .HasColumnName("value");
+
+                    b.HasKey("Kind", "TaskId");
+
+                    b.ToTable("workflow_state", (string)null);
+                });
 #pragma warning restore 612, 618
         }
     }

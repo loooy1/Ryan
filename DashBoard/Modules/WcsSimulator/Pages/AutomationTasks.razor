@@ -572,6 +572,31 @@
                         </div>
 
                         <div style="background:#0f172a;border:1px solid #1e293b;border-radius:8px;padding:8px 14px;">
+                            <div style="font-weight:600;color:#a78bfa;cursor:pointer;user-select:none;" @onclick="ToggleTerminalInv">
+                                <span>🟪 接驳位 @_invSummary.TerminalItems.Count</span>
+                                <span style="float:right;">@(IsInvExpanded("terminal") ? "▾" : "▸")</span>
+                            </div>
+                            @if (IsInvExpanded("terminal"))
+                            {
+                                @if (_invSummary.TerminalItems.Count == 0) { <div class="hint-text" style="margin-top:4px;">（无）</div> }
+                                else
+                                {
+                                    <div style="max-height:180px;overflow-y:auto;display:flex;flex-direction:column;gap:3px;margin-top:6px;">
+                                        @foreach (var it in _invSummary.TerminalItems)
+                                        {
+                                            <div style="display:flex;gap:8px;align-items:baseline;font-size:0.85rem;">
+                                                <span style="font-weight:600;">@it.Code</span>
+                                                <span class="hint-text">@it.Station</span>
+                                                @if (!string.IsNullOrEmpty(it.CargoCode)) { <span class="hint-text">货物：@it.CargoCode</span> }
+                                                @if (!string.IsNullOrEmpty(it.Status)) { <span style="color:@StatusColor(it.Status);font-size:0.75rem;">@StatusBadge(it.Status)</span> }
+                                            </div>
+                                        }
+                                    </div>
+                                }
+                            }
+                        </div>
+
+                        <div style="background:#0f172a;border:1px solid #1e293b;border-radius:8px;padding:8px 14px;">
                             <div style="font-weight:600;color:#fbbf24;cursor:pointer;user-select:none;" @onclick="ToggleTransitInv">
                                 <span>🟡 在途 @_invSummary.TransitItems.Count</span>
                                 <span style="float:right;">@(IsInvExpanded("transit") ? "▾" : "▸")</span>
@@ -588,6 +613,7 @@
                                                 <span style="font-weight:600;">@it.Code</span>
                                                 <span class="hint-text">@it.Station</span>
                                                 @if (!string.IsNullOrEmpty(it.CargoCode)) { <span class="hint-text">货物：@it.CargoCode</span> }
+                                                @if (!string.IsNullOrEmpty(it.TaskId)) { <span class="hint-text">任务：@it.TaskId</span> }
                                                 <span style="color:#fbbf24;font-size:0.75rem;">在途</span>
                                             </div>
                                         }
@@ -1053,6 +1079,7 @@
     private void ToggleLoadedInv() => ToggleInv("loaded");
     private void ToggleCargoInv() => ToggleInv("cargo");
     private void ToggleLockedInv() => ToggleInv("locked");
+    private void ToggleTerminalInv() => ToggleInv("terminal");
     private void ToggleTransitInv() => ToggleInv("transit");
 
     /// <summary>状态徽章文本（null = 无状态，不显示）。</summary>
