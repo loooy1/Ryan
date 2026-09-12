@@ -126,6 +126,10 @@
                     <div class="mod-card-url">@m.ApiUrl</div>
                     <div class="mod-card-meta">
                         <span class="badge-info">@(m.Params.Count) 参数</span>
+                        @if (!string.IsNullOrWhiteSpace(m.InventoryEffect))
+                        {
+                            <span class="badge-warning">@InventoryEffectLabel(m.InventoryEffect)</span>
+                        }
                     </div>
                     <div class="mod-card-actions">
                         <button class="btn btn-outline btn-xs" @onclick="() => EditModule(m)">✏️ 编辑</button>
@@ -305,6 +309,14 @@
                             <label>API 地址 <span class="req-star">*</span> <span class="hint-inline">GRCS 相对路径（经后端通用转发接口代发）</span></label>
                             <input type="text" @bind="m.ApiUrl" placeholder="如 /api/v1/container_remove" />
                         </div>
+                        <div class="form-group">
+                            <label>库存效果 <span class="hint-inline">模块请求成功后执行</span></label>
+                            <select @bind="m.InventoryEffect">
+                                <option value="">无</option>
+                                <option value="cargo_arrival">货物到达：写入当前任务的货物</option>
+                                <option value="cargo_removal">货物移除：移除当前任务的货物</option>
+                            </select>
+                        </div>
                     </div>
 
                     <div class="tpl-section-title" style="margin-top:16px;">参数配置</div>
@@ -320,6 +332,8 @@
                                         <option value="StartPoint">起点值</option>
                                         <option value="EndPoint">终点值</option>
                                         <option value="TaskContainer">任务容器</option>
+                                        <option value="TaskPallet">任务托盘号</option>
+                                        <option value="TaskCargo">任务货物号</option>
                                         <option value="TaskWarehouse">任务仓库</option>
                                         <option value="TaskType">任务类型</option>
                                         <option value="TaskId">任务号</option>
@@ -643,6 +657,13 @@
     private FeatureModuleDto? _moduleDraft;
     private string _moduleError = "";
 
+    private static string InventoryEffectLabel(string effect) => effect switch
+    {
+        "cargo_arrival" => "货物到达",
+        "cargo_removal" => "货物移除",
+        _ => effect,
+    };
+
     /// <summary>创建新模块：生成唯一 Id、默认名称/API/参数，并打开编辑弹窗。</summary>
     private void CreateModule()
     {
@@ -652,10 +673,11 @@
             Id = "MOD_" + DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString("x").ToUpper(),
             Name = "新模块",
             ApiUrl = "/api/v1/container_remove",
+            InventoryEffect = "",
             Params =
             [
                 new WorkParamDto { Name = "StationCode", Source = WorkValueSourceDto.StartPoint },
-                new WorkParamDto { Name = "ContainerCode", Source = WorkValueSourceDto.TaskContainer },
+                new WorkParamDto { Name = "ContainerCode", Source = WorkValueSourceDto.TaskCargo },
                 new WorkParamDto { Name = "MsgTime", Source = WorkValueSourceDto.Now },
                 new WorkParamDto { Name = "Warehouse", Source = WorkValueSourceDto.TaskWarehouse },
             ]
@@ -673,6 +695,7 @@
             Id = m.Id,
             Name = m.Name,
             ApiUrl = m.ApiUrl,
+            InventoryEffect = m.InventoryEffect,
             Params = m.Params.Select(p => new WorkParamDto { Name = p.Name, Source = p.Source, FixedValue = p.FixedValue }).ToList()
         };
         _moduleError = "";
@@ -709,6 +732,7 @@
             // 更新已有模块
             _editingModule.Name = d.Name.Trim();
             _editingModule.ApiUrl = d.ApiUrl.Trim();
+            _editingModule.InventoryEffect = d.InventoryEffect;
             _editingModule.Params = d.Params;
         }
         else

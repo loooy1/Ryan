@@ -16,6 +16,7 @@ public class FeatureModuleRowConfiguration : IEntityTypeConfiguration<FeatureMod
         builder.Property(x => x.Id).HasColumnName("module_id").IsRequired();
         builder.Property(x => x.Name).HasColumnName("name");
         builder.Property(x => x.ApiUrl).HasColumnName("api_url");
+        builder.Property(x => x.InventoryEffect).HasColumnName("inventory_effect");
         builder.Property(x => x.Params).HasColumnName("params_json")
             .HasConversion(
                 v => JsonSerializer.Serialize(v),

@@ -45,12 +45,11 @@ public static class WcsMapping
         // ── 台账条目 ↔ 任务记录（创建行语义：stage=CREATED、RouteCodes=站点对、StationCode 留空）──
         TypeAdapterConfig.GlobalSettings.NewConfig<TaskLedgerEntry, TaskRecord>()
             .Map(d => d.Stage, _ => "CREATED")
+            .Map(d => d.StageStatus, _ => TaskStageStatuses.Success)
             .Map(d => d.Time, s => ParseLedgerTime(s.Time))
-            .Map(d => d.RouteCodes, s => s.StationCode)
-            .Map(d => d.StationCode, _ => "")
             .AfterMapping((_, d) => d.Id = 0);
         TypeAdapterConfig.GlobalSettings.NewConfig<TaskRecord, TaskLedgerEntry>()
-            .Map(d => d.StationCode, s => s.RouteCodes)
+            .Map(d => d.Ok, s => s.IsSuccess)
             .Map(d => d.Time, s => s.Time.ToString("O"));
 
         // ── 任务记录 → 阶段事件（时间线/分拣卡片）──
@@ -58,7 +57,8 @@ public static class WcsMapping
             .Map(d => d.Id, s => s.Id)
             .Map(d => d.TaskId, s => s.TaskId)
             .Map(d => d.Warehouse, s => s.Warehouse)
-            .Map(d => d.StationCode, s => s.StationCode)
+            .Map(d => d.StartStationCode, s => s.StartStationCode)
+            .Map(d => d.EndStationCode, s => s.EndStationCode)
             .Map(d => d.ContainerCode, s => s.ContainerCode)
             .Map(d => d.Stage, s => s.Stage)
             .Map(d => d.Time, s => s.Time);

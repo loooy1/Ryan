@@ -36,6 +36,7 @@ public static class WcsModuleExtensions
         services.AddSingleton<WcsInventoryStore>();
         // GRCS 库存查询缓存（按需查询；自动化选池已用 WcsInventoryStore 账本，不再后台轮询）
         services.AddSingleton<GrcsInventoryCacheService>();
+        services.AddSingleton<ManualInventoryService>();
         // 轮询/批量互斥闸（多标签页也能保证只有一个在执行）
         services.AddSingleton<AutomationGate>();
         // 纯移动任务循环（后端执行：选点/下发/统计/日志，SignalR 广播 MoveTaskStats）
@@ -47,6 +48,7 @@ public static class WcsModuleExtensions
         // 模块执行记录（内存环形缓冲，供「模块执行记录」面板增量拉取）
         // 统一模块执行引擎：起点/起点之后在下发时、终点在 FINISHED 后，统一在后端执行
         services.AddSingleton<TaskLifecycleService>();
+        services.AddSingleton<InventoryModuleEffectService>();
         services.AddSingleton<ModuleRunService>();
         // 任务完成协调器：统一监管 LOAD_FINISH/FINISHED 后的库存、锁与终点模块副作用
         services.AddSingleton<TaskCompletionCoordinator>();

@@ -122,7 +122,7 @@ public class SignalAutoHostedService : IHostedService
             if (isAuto && t.TaskType != "CONTAINER_CARRY_INBOUND") continue;
             if (isManual && t.TaskType != "CARGO_CARRY_INBOUND") continue;
             if (isAuto && (!finished.Contains(t.TaskId) || !dispatched.Contains(Seg2Id(t.TaskId)))) continue;
-            var st = isAuto ? t.StationCode.LastOrDefault() : t.StationCode.FirstOrDefault();
+            var st = isAuto ? t.EndStationCode : t.StartStationCode;
             var cargoCode = isAuto ? _cargoCodes.Ensure(t.TaskId) : t.CargoCode;
             var (ok, code, _) = await _grcs.SendContainerReadyAsync(settings.GrcsBaseUrl, new
             {
@@ -156,7 +156,7 @@ public class SignalAutoHostedService : IHostedService
             if (isAuto && t.TaskType != "CARGO_CARRY_OUTBOUND") continue;
             if (isManual && t.TaskType != "CONTAINER_CARRY_OUTBOUND") continue;
             if (isAuto && (!finished.Contains(t.TaskId) || !dispatched.Contains(Seg2Id(t.TaskId)))) continue;
-            var st = isAuto ? t.StationCode.LastOrDefault() : t.StationCode.FirstOrDefault();
+            var st = isAuto ? t.EndStationCode : t.StartStationCode;
             var containerCode = string.IsNullOrEmpty(t.CargoCode) ? t.ContainerCode : t.CargoCode;
             var (ok, code, _) = await _grcs.SendContainerRemoveAsync(settings.GrcsBaseUrl, new
             {
@@ -185,8 +185,8 @@ public class SignalAutoHostedService : IHostedService
         foreach (var e in finishedList)
         {
             if (string.IsNullOrEmpty(e.TaskId) || _ssSent.Contains(e.TaskId)) continue;
-            var station = mapStations.FirstOrDefault(s => s.Mark == e.StationCode)
-                ?? mapStations.FirstOrDefault(s => { var raw = e.StationCode; if (raw.Length > 2 && (raw[^2..] is "_0" or "_1")) raw = raw[..^2]; return s.Mark == raw; });
+            var station = mapStations.FirstOrDefault(s => s.Mark == e.EndStationCode)
+                ?? mapStations.FirstOrDefault(s => { var raw = e.EndStationCode; if (raw.Length > 2 && (raw[^2..] is "_0" or "_1")) raw = raw[..^2]; return s.Mark == raw; });
             if (station == null) continue;
             if ((station.StationType & (MapStationTypeBits.PickingStation | MapStationTypeBits.PeopleStation)) == 0) continue;
             var sendTaskId = e.TaskId + "_R";
@@ -219,7 +219,8 @@ public class SignalAutoHostedService : IHostedService
                 TaskType = "SORTING_RETURN",
                 ContainerCode = seg1?.ContainerCode ?? e.ContainerCode,
                 CargoCode = seg1?.CargoCode ?? "",
-                StationCode = [],
+                StartStationCode = "",
+                EndStationCode = "",
                 Warehouse = e.Warehouse,
                 Time = DateTime.Now.ToString("O"),
                 Ok = true,

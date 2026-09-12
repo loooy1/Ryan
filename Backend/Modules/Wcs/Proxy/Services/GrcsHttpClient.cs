@@ -87,6 +87,18 @@ public class GrcsHttpClient
         catch (Exception ex) { return (false, 0, JsonSerializer.Serialize(new { error = ex.Message })); }
     }
 
+    /// <summary>读取 RCS 配置的货物尺寸模型（GET /api/CargoSize）。</summary>
+    public async Task<(bool Ok, int StatusCode, string Json)> QueryCargoSizesAsync(string baseUrl)
+    {
+        try
+        {
+            var resp = await NewClient().GetAsync($"{baseUrl.TrimEnd('/')}/api/CargoSize");
+            var body = await resp.Content.ReadAsStringAsync();
+            return (resp.IsSuccessStatusCode, (int)resp.StatusCode, body);
+        }
+        catch (Exception ex) { return (false, 0, JsonSerializer.Serialize(new { error = ex.Message })); }
+    }
+
     /// <summary>模拟生成容器入库（GET /AutoContainerEnter，场景名取设置）。</summary>
     public async Task<(bool Ok, int StatusCode, string Json)> AutoContainerEnterAsync(string baseUrl, string sceneName,
         string prefix = "container", int num = -1, int floor = -1, int type = 1)
@@ -101,6 +113,10 @@ public class GrcsHttpClient
         }
         catch (Exception ex) { return (false, 0, JsonSerializer.Serialize(new { error = ex.Message })); }
     }
+
+    /// <summary>指定站点创建 RCS 库存（POST /api/Cargo/Enter）。</summary>
+    public Task<(bool Ok, int StatusCode, string Json)> EnterCargoAsync<T>(string baseUrl, T payload)
+        => PostAsync($"{baseUrl.TrimEnd('/')}/api/Cargo/Enter", payload);
 
     /// <summary>地图 zip 下载（GET /api/Map/GetMap，场景名取设置）。</summary>
     public async Task<(bool Ok, int StatusCode, byte[] Bytes, string Error)> GetMapBytesAsync(string baseUrl, string sceneName)

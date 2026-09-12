@@ -13,7 +13,7 @@
 @* ════════════════════════════════════════════════
    任务看板（下发历史 + 任务阶段合并页）：
    - 台账为底：全量下发记录（类型筛选 + 关键词 + 分页加载）
-   - 点击行自动展开 → 内嵌该任务阶段时间线（START / LOAD_FINISH / FINISHED）
+   - 点击行自动展开 → 内嵌 task_records 的完整任务阶段时间线
    - 旧路由 /wcs-simulator/history（下发历史）重定向到本页
    ════════════════════════════════════════════════ *@
 <div class="section-card">
@@ -94,7 +94,7 @@
                     <td><span class="badge">@TypeLabel(e.TaskType)</span></td>
                     <td>@e.ContainerCode</td>
                     <td>@e.CargoCode</td>
-                    <td>@string.Join(" → ", e.StationCode)</td>
+                    <td>@e.StartStationCode → @e.EndStationCode</td>
                     <td>@e.Warehouse</td>
                     <td>@e.StatusCode</td>
                     <td><button class="btn btn-danger btn-xs" @onclick="() => DeleteTask(e.TaskId)" @onclick:stopPropagation
@@ -114,13 +114,14 @@
                                             <span class="stage-dot @(StageDotClass(se.Stage))"></span>
                                             <span class="stage-time">@se.Time.ToString("HH:mm:ss")</span>
                                             <span class="badge @(StageBadgeClass(se.Stage))">@StageLabel(se.Stage)</span>
+                                            <span class="badge @(StageStatusBadgeClass(se.StageStatus))">@StageStatusLabel(se.StageStatus)</span>
                                             @if (!string.IsNullOrEmpty(se.ContainerCode))
                                             {
                                                 <span class="stage-meta">容器 <code>@se.ContainerCode</code></span>
                                             }
-                                            @if (!string.IsNullOrEmpty(se.StationCode))
+                                            @if (!string.IsNullOrEmpty(se.StartStationCode) || !string.IsNullOrEmpty(se.EndStationCode))
                                             {
-                                                <span class="stage-meta">站点 <code>@se.StationCode</code></span>
+                                                <span class="stage-meta">路线 <code>@se.StartStationCode → @se.EndStationCode</code></span>
                                             }
                                         </div>
                                     }
@@ -159,13 +160,14 @@
                                                     <span class="stage-dot @(StageDotClass(se.Stage))"></span>
                                                     <span class="stage-time">@se.Time.ToString("HH:mm:ss")</span>
                                                     <span class="badge @(StageBadgeClass(se.Stage))">@StageLabel(se.Stage)</span>
+                                                    <span class="badge @(StageStatusBadgeClass(se.StageStatus))">@StageStatusLabel(se.StageStatus)</span>
                                                     @if (!string.IsNullOrEmpty(se.ContainerCode))
                                                     {
                                                         <span class="stage-meta">容器 <code>@se.ContainerCode</code></span>
                                                     }
-                                                    @if (!string.IsNullOrEmpty(se.StationCode))
+                                                    @if (!string.IsNullOrEmpty(se.StartStationCode) || !string.IsNullOrEmpty(se.EndStationCode))
                                                     {
-                                                        <span class="stage-meta">站点 <code>@se.StationCode</code></span>
+                                                        <span class="stage-meta">路线 <code>@se.StartStationCode → @se.EndStationCode</code></span>
                                                     }
                                                 </div>
                                             }
@@ -218,7 +220,7 @@
     private bool _pollingOk = true;                 // 轮询是否成功
     private string _lastError = "";
     private bool _showMockReminder;                 // task_stage_change 未配置 Mock 时提示
-    private Dictionary<string, List<StageChangeEvent>> _groups = [];   // TaskId → 阶段事件（时间正序）
+    private Dictionary<string, List<TaskRecord>> _groups = [];         // TaskId → task_records 完整阶段记录（时间正序）
     private Dictionary<string, string> _taskTypeMap = [];              // TaskId → TaskType（从下发历史还原）
     private bool _clearConfirming;                                     // 清空全部确认态
     private bool _forceConfirming;                                      // 强制删除输入行显示态
@@ -315,7 +317,7 @@
     }
 
     /// <summary>
-    /// 从共享轮询器缓存读阶段事件并按 TaskId 分组（零 HTTP，TaskStageHub SignalR 常驻推送）。
+    /// 从共享缓存读取 task_records 完整记录并按 TaskId 分组（零 HTTP，TaskStageHub SignalR 常驻推送）。
     /// </summary>
     private async Task LoadEvents()
     {
@@ -323,25 +325,25 @@
         await StageHub.EnsureStartedAsync();
         if (Health.WcsOnline == false) { _pollingOk = false; _lastError = "无法连接 WCS 后端"; return; }
         _pollingOk = true;
-        var events = StageHub.Events.ToList();
+        var records = StageHub.TaskRecords.ToList();
         try
         {
-            foreach (var e in events)
+            foreach (var record in records)
             {
-                if (string.IsNullOrEmpty(e.TaskType) && _taskTypeMap.TryGetValue(e.TaskId, out var tt))
-                    e.TaskType = tt;
+                if (string.IsNullOrEmpty(record.TaskType) && _taskTypeMap.TryGetValue(record.TaskId, out var tt))
+                    record.TaskType = tt;
             }
-            BuildGroups(events);
+            BuildGroups(records);
         }
         catch { }
     }
 
-    /// <summary>将事件列表按 TaskId 分组（保留全量分组，供任意台账行展开时间线）。</summary>
-    private void BuildGroups(List<StageChangeEvent> events)
+    /// <summary>将 task_records 完整记录按 TaskId 分组，供任意台账行展开完整时间线。</summary>
+    private void BuildGroups(List<TaskRecord> records)
     {
-        _groups = events
-            .GroupBy(e => e.TaskId)
-            .ToDictionary(g => g.Key, g => g.ToList())
+        _groups = records
+            .GroupBy(record => record.TaskId)
+            .ToDictionary(group => group.Key, group => group.OrderBy(record => record.Id).ToList())
             .OrderByDescending(g => g.Value[^1].Time)
             .ToDictionary(g => g.Key, g => g.Value);
     }
@@ -363,6 +365,7 @@
     private async Task RefreshNow()
     {
         _busy = true;
+        await StageHub.RefreshSnapshotAsync();
         await RefreshAll();
         _busy = false;
     }
@@ -396,15 +399,23 @@
 
     private static readonly System.Text.Json.JsonSerializerOptions _jsonOpts = new() { PropertyNameCaseInsensitive = true };
 
-    /// <summary>任务状态：由台账 Ok + 阶段事件推导（已下发 / 执行中 / 已完成 / 失败）。</summary>
+    /// <summary>任务状态：由 task_records 的完整阶段和创建行结果推导。</summary>
     private string TaskStatus(TaskLedgerEntry e)
     {
-        if (!e.Ok) return "失败";
         if (_groups.TryGetValue(e.TaskId, out var evts))
         {
+            if (evts.Any(x => x.Stage is "CANCELLED" or "DISPATCH_FAILED")) return "失败";
             if (evts.Any(x => x.Stage == "FINISHED")) return "已完成";
-            if (evts.Count > 0) return "执行中";
+            if (evts.Any(x => x.Stage == "START" || x.Stage == "LOAD_FINISH"
+                || x.Stage.StartsWith("TRANSIT:", StringComparison.OrdinalIgnoreCase)
+                || x.Stage.StartsWith("BEFORE_MODULE:", StringComparison.OrdinalIgnoreCase)
+                || x.Stage.StartsWith("AFTER_START_MODULE:", StringComparison.OrdinalIgnoreCase)
+                || x.Stage.StartsWith("AFTER_END_MODULE:", StringComparison.OrdinalIgnoreCase))) return "执行中";
+            if (evts.Any(x => x.Stage == "DISPATCHED")) return "已下发";
         }
+        if (!e.Ok && e.StatusCode != 0) return "失败";
+        if (!e.Ok) return "已创建";
+        if (_groups.TryGetValue(e.TaskId, out var createdRecords) && createdRecords.Any(x => x.Stage == "CREATED")) return "已创建";
         return "已下发";
     }
 
@@ -412,6 +423,7 @@
     {
         "已完成" => "badge-ok",
         "执行中" => "badge-selected",
+        "已创建" => "badge-info",
         "失败" => "badge-danger",
         _ => "badge-info"
     };
@@ -439,7 +451,8 @@
             q = q.Where(e => e.TaskId.Contains(k, StringComparison.OrdinalIgnoreCase)
                 || e.ContainerCode.Contains(k, StringComparison.OrdinalIgnoreCase)
                 || e.CargoCode.Contains(k, StringComparison.OrdinalIgnoreCase)
-                || e.StationCode.Any(s => s.Contains(k, StringComparison.OrdinalIgnoreCase)));
+                || e.StartStationCode.Contains(k, StringComparison.OrdinalIgnoreCase)
+                || e.EndStationCode.Contains(k, StringComparison.OrdinalIgnoreCase));
         }
         _filtered = q.ToList();
         _visible = _filtered.Take(PageSize).ToList();
@@ -536,27 +549,68 @@
     private static string TaskTypeLabel(string code) => TaskTypeRegistry.All
         .FirstOrDefault(t => t.Value == code)?.Label ?? code;
 
-    private static string StageLabel(string s) => s switch
+    private static string StageLabel(string stage)
     {
-        "START" => "任务开始",
-        "LOAD_FINISH" => "装载完成",
-        "FINISHED" => "任务完成",
-        _ => s
+        const StringComparison comparison = StringComparison.OrdinalIgnoreCase;
+        if (string.Equals(stage, "CREATED", comparison)) return "创建任务";
+        if (string.Equals(stage, "DISPATCHED", comparison)) return "已下发 RCS";
+        if (string.Equals(stage, "START", comparison)) return "任务开始";
+        if (string.Equals(stage, "LOAD_FINISH", comparison)) return "装载完成";
+        if (stage.StartsWith("TRANSIT:", comparison)) return "货物在途：" + stage["TRANSIT:".Length..];
+        if (string.Equals(stage, "FINISHED", comparison)) return "任务完成";
+        if (string.Equals(stage, "CANCELLED", comparison)) return "任务取消";
+        if (string.Equals(stage, "DISPATCH_FAILED", comparison)) return "下发失败";
+        if (stage.StartsWith("BEFORE_MODULE:", comparison)) return "起点前模块：" + stage["BEFORE_MODULE:".Length..];
+        if (stage.StartsWith("AFTER_START_MODULE:", comparison)) return "起点后模块：" + stage["AFTER_START_MODULE:".Length..];
+        if (stage.StartsWith("AFTER_END_MODULE:", comparison)) return "终点后模块：" + stage["AFTER_END_MODULE:".Length..];
+        if (stage.StartsWith("INVENTORY_EFFECT:", comparison)) return InventoryEffectLabel(stage["INVENTORY_EFFECT:".Length..]);
+        if (string.Equals(stage, "INVENTORY_RELEASE_FAILED:NO_TRANSIT", comparison)) return "库存收尾失败：未生成在途记录";
+        return "未知阶段：" + stage;
+    }
+
+    private static string InventoryEffectLabel(string effect) => effect.ToLowerInvariant() switch
+    {
+        "cargo_arrival" => "库存效果：货物到达",
+        "cargo_removal" => "库存效果：货物移除",
+        _ => "库存效果：" + effect
     };
 
-    private static string StageBadgeClass(string s) => s switch
+    private static string StageStatusLabel(string status) => status.ToLowerInvariant() switch
     {
-        "START" => "badge-info",
-        "LOAD_FINISH" => "badge-selected",
-        "FINISHED" => "badge-ok",
+        TaskStageStatuses.Success => "成功",
+        TaskStageStatuses.Fail => "失败",
+        TaskStageStatuses.Callback => "RCS 回调",
+        _ => "状态：" + status
+    };
+
+    private static string StageStatusBadgeClass(string status) => status.ToLowerInvariant() switch
+    {
+        TaskStageStatuses.Success => "badge-ok",
+        TaskStageStatuses.Fail => "badge-danger",
+        TaskStageStatuses.Callback => "badge-info",
         _ => "badge-empty"
     };
 
-    private static string StageDotClass(string s) => s switch
+    private static string StageBadgeClass(string s)
     {
-        "START" => "dot-start",
-        "LOAD_FINISH" => "dot-load",
-        "FINISHED" => "dot-finished",
-        _ => "dot-other"
-    };
+        if (s is "CANCELLED" or "DISPATCH_FAILED" || s.StartsWith("INVENTORY_RELEASE_FAILED:", StringComparison.OrdinalIgnoreCase)) return "badge-danger";
+        if (s == "FINISHED") return "badge-ok";
+        if (s == "LOAD_FINISH" || s.StartsWith("TRANSIT:", StringComparison.OrdinalIgnoreCase)) return "badge-selected";
+        if (s == "START" || s == "DISPATCHED" || s.StartsWith("BEFORE_MODULE:", StringComparison.OrdinalIgnoreCase)) return "badge-info";
+        if (s.StartsWith("AFTER_START_MODULE:", StringComparison.OrdinalIgnoreCase)
+            || s.StartsWith("AFTER_END_MODULE:", StringComparison.OrdinalIgnoreCase)
+            || s.StartsWith("INVENTORY_EFFECT:", StringComparison.OrdinalIgnoreCase)) return "badge-selected";
+        return "badge-empty";
+    }
+
+    private static string StageDotClass(string s)
+    {
+        if (s is "CANCELLED" or "DISPATCH_FAILED" || s.StartsWith("INVENTORY_RELEASE_FAILED:", StringComparison.OrdinalIgnoreCase)) return "dot-other";
+        if (s == "FINISHED") return "dot-finished";
+        if (s == "LOAD_FINISH" || s.StartsWith("TRANSIT:", StringComparison.OrdinalIgnoreCase)
+            || s.StartsWith("AFTER_START_MODULE:", StringComparison.OrdinalIgnoreCase)
+            || s.StartsWith("AFTER_END_MODULE:", StringComparison.OrdinalIgnoreCase)
+            || s.StartsWith("INVENTORY_EFFECT:", StringComparison.OrdinalIgnoreCase)) return "dot-load";
+        return "dot-start";
+    }
 }

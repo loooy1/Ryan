@@ -48,11 +48,27 @@ public class TaskStageHub : IDisposable
                     TaskId = r.TaskId,
                     TaskType = r.TaskType,
                     Warehouse = r.Warehouse,
-                    StationCode = r.StationCode,
+                    StartStationCode = r.StartStationCode,
+                    EndStationCode = r.EndStationCode,
                     ContainerCode = r.ContainerCode,
                     Stage = r.Stage,
                     Time = r.Time,
                 }).ToList();
+            }
+        }
+    }
+
+    /// <summary>
+    /// task_records 完整视图，包含 CREATED 创建行和所有后续阶段。
+    /// 任务看板使用此视图展示完整任务周期；返回副本，避免调用方修改共享缓存。
+    /// </summary>
+    public IReadOnlyList<TaskRecord> TaskRecords
+    {
+        get
+        {
+            lock (_lock)
+            {
+                return _records.OrderBy(record => record.Id).ToList();
             }
         }
     }
@@ -70,10 +86,11 @@ public class TaskStageHub : IDisposable
                     TaskType = r.TaskType,
                     ContainerCode = r.ContainerCode,
                     CargoCode = r.CargoCode,
-                    StationCode = r.RouteCodes,
+                    StartStationCode = r.StartStationCode,
+                    EndStationCode = r.EndStationCode,
                     Warehouse = r.Warehouse,
                     Time = r.Time.ToString("O"),
-                    Ok = r.Ok,
+                    Ok = r.IsSuccess,
                     StatusCode = r.StatusCode,
                 }).ToList();
             }
@@ -130,9 +147,9 @@ public class TaskStageHub : IDisposable
                         TaskId = x.TaskId,
                         Point = ModulePoint(x.Stage),
                         Module = x.Stage[(x.Stage.IndexOf(':') + 1)..],
-                        Ok = x.Ok,
+                        Ok = x.IsSuccess,
                         HttpCode = x.StatusCode,
-                        Detail = x.Ok ? "已记录到任务阶段" : "执行失败或模块配置无效",
+                        Detail = x.IsSuccess ? "已记录到任务阶段" : "执行失败或模块配置无效",
                     }).ToList();
             }
         }
@@ -162,6 +179,13 @@ public class TaskStageHub : IDisposable
         {
             try { await _js.InvokeVoidAsync("console.error", $"[TaskStageHub] 启动失败: {ex.Message}"); } catch { }
         }
+    }
+
+    /// <summary>请求后端从数据库读取全表快照并覆盖当前浏览器显示缓存。</summary>
+    public async Task RefreshSnapshotAsync()
+    {
+        await EnsureStartedAsync();
+        try { await _js.InvokeVoidAsync("grcsTaskStage.refreshSnapshot"); } catch { }
     }
 
     private string ResolveHubUrl()

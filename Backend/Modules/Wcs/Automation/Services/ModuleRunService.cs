@@ -7,7 +7,7 @@ using WCSBackend.Modules.Wcs.Proxy.Services;
 
 namespace WCSBackend.Modules.Wcs.Automation.Services;
 
-/// <summary>统一运行任务模块，并将每次结果写入 task_records。</summary>
+/// <summary>Runs task modules and records each result in task_records.</summary>
 public class ModuleRunService
 {
     private const int TestAfterDispatchDelayMs = 2000;
@@ -20,13 +20,23 @@ public class ModuleRunService
     private readonly AutomationLogService _logs;
     private readonly MockRuleStore _mocks;
     private readonly TaskLifecycleService _lifecycle;
+    private readonly InventoryModuleEffectService _inventoryEffects;
 
     public ModuleRunService(GrcsHttpClient grcs, WcsSettingsService settings, TaskTemplateStore templates,
         FeatureModuleStore modules, ITaskStageService stages, ILogger<ModuleRunService> logger,
-        AutomationLogService logs, MockRuleStore mocks, TaskLifecycleService lifecycle)
+        AutomationLogService logs, MockRuleStore mocks, TaskLifecycleService lifecycle,
+        InventoryModuleEffectService inventoryEffects)
     {
-        _grcs = grcs; _settings = settings; _templates = templates; _modules = modules;
-        _stages = stages; _logger = logger; _logs = logs; _mocks = mocks; _lifecycle = lifecycle;
+        _grcs = grcs;
+        _settings = settings;
+        _templates = templates;
+        _modules = modules;
+        _stages = stages;
+        _logger = logger;
+        _logs = logs;
+        _mocks = mocks;
+        _lifecycle = lifecycle;
+        _inventoryEffects = inventoryEffects;
     }
 
     public class ModuleCtx
@@ -34,6 +44,8 @@ public class ModuleRunService
         public string Start = "";
         public string End = "";
         public string Container = "";
+        public string Pallet = "";
+        public string Cargo = "";
         public string Warehouse = "";
         public string TaskType = "";
         public string TaskId = "";
@@ -43,30 +55,39 @@ public class ModuleRunService
     {
         var settings = _settings.Get();
         if (settings == null || string.IsNullOrWhiteSpace(settings.GrcsBaseUrl))
-            return (false, 0, "未配置 GRCS 地址（连接设置页填写）");
+            return (false, 0, "GRCS address is not configured.");
         if (!_mocks.HasTaskStageRule())
-            return (false, 0, "未配置任务阶段卡，禁止下发任务");
+            return (false, 0, "A task stage mock rule is required before dispatch.");
         var task = group.Tasks.FirstOrDefault();
-        if (task == null) return (false, 0, "任务组为空");
+        if (task == null) return (false, 0, "The task group is empty.");
 
         var template = _templates.GetAll().FirstOrDefault(t =>
             string.Equals(t.Value, task.TaskType, StringComparison.OrdinalIgnoreCase));
         var ctx = BuildCtxFromGroup(group, task);
         _stages.RecordCreated([new TaskLedgerEntry
         {
-            TaskId = task.TaskId, TaskType = task.TaskType, ContainerCode = task.ContainerCode,
-            StationCode = task.StationCode, Warehouse = group.Warehouse, Time = DateTime.Now.ToString("O"),
-            Ok = false, StatusCode = 0,
+            TaskId = task.TaskId,
+            TaskType = task.TaskType,
+            ContainerCode = !string.IsNullOrWhiteSpace(task.PalletCode) ? task.PalletCode
+                : task.ContainerCode.Contains("Cargo", StringComparison.OrdinalIgnoreCase) ? "" : task.ContainerCode,
+            CargoCode = !string.IsNullOrWhiteSpace(task.CargoCode) ? task.CargoCode
+                : task.ContainerCode.Contains("Cargo", StringComparison.OrdinalIgnoreCase) ? task.ContainerCode : "",
+            StartStationCode = task.StationCode.FirstOrDefault() ?? "",
+            EndStationCode = task.StationCode.LastOrDefault() ?? "",
+            Warehouse = group.Warehouse,
+            Time = DateTime.Now.ToString("O"),
+            Ok = false,
+            StatusCode = 0,
         }]);
 
         if (template != null && !await RunModulesAsync("BEFORE_MODULE", template.Start?.BeforeModules ?? [], ctx, roundId, true))
         {
             _stages.TryRecordSystemEvent(task.TaskId, "CANCELLED", false, -1);
-            return (false, -1, "起点之前模块执行失败，任务未下发");
+            return (false, -1, "A before-start module failed; task was not dispatched.");
         }
 
         if (roundId != null)
-            _logs.Add(roundId, "下发数据(GRCS task_receive): " + JsonSerializer.Serialize(group), "#93c5fd");
+            _logs.Add(roundId, "Dispatch payload (GRCS task_receive): " + JsonSerializer.Serialize(group), "#93c5fd");
         _lifecycle.BeginDispatch(task.TaskId);
         var (ok, code, json) = await _grcs.SendTaskGroupAsync(settings.GrcsBaseUrl, group);
         var accepted = ok && IsAccepted(json);
@@ -79,7 +100,7 @@ public class ModuleRunService
         }
 
         _stages.RecordDispatchResult(task.TaskId, true, code);
-        if (roundId != null) _logs.Add(roundId, $"下发 GRCS 完成（{task.TaskId}），等待 2 秒", "#4ade80");
+        if (roundId != null) _logs.Add(roundId, $"GRCS accepted task ({task.TaskId}); waiting 2 seconds.", "#4ade80");
         if (template != null)
         {
             await Task.Delay(TestAfterDispatchDelayMs);
@@ -112,24 +133,47 @@ public class ModuleRunService
                 if (stopOnFailure) return false;
                 continue;
             }
+
             var body = new Dictionary<string, object?>();
             foreach (var parameter in module.Params) body[parameter.Name] = Resolve(parameter, ctx);
             var url = (_settings.Get()?.GrcsBaseUrl ?? "").TrimEnd('/') + module.ApiUrl;
-            if (roundId != null) _logs.Add(roundId, $"▶ 执行模块「{module.Name}」POST {url}", "#93c5fd");
+            if (roundId != null) _logs.Add(roundId, $"Run module '{module.Name}' POST {url}", "#93c5fd");
             var (ok, code, json) = await _grcs.ForwardAsync(url, HttpMethod.Post, JsonSerializer.Serialize(body));
             _stages.TryRecordSystemEvent(ctx.TaskId, $"{prefix}:{id}", ok, code);
+
+            if (ok && !_inventoryEffects.HandleSucceeded(ctx.TaskId, module.InventoryEffect, prefix))
+            {
+                allOk = false;
+                _logger.LogError("Module {Module} succeeded, but inventory effect {Effect} failed for {TaskId}.",
+                    module.Name, module.InventoryEffect, ctx.TaskId);
+                if (roundId != null)
+                    _logs.Add(roundId, $"Module '{module.Name}' succeeded, but inventory effect '{module.InventoryEffect}' failed.", "#f87171");
+            }
+
             if (roundId != null)
-                _logs.Add(roundId, $"{(ok ? "✓" : "✗")} 模块「{module.Name}」HTTP {code}：{json[..Math.Min(json.Length, 200)]}", ok ? "#4ade80" : "#f87171");
+                _logs.Add(roundId, $"{(ok ? "OK" : "FAILED")} module '{module.Name}' HTTP {code}: {json[..Math.Min(json.Length, 200)]}", ok ? "#4ade80" : "#f87171");
             _logger.LogInformation("[Module] {TaskId} {Prefix} {Module}: {Ok} {Code}", ctx.TaskId, prefix, module.Name, ok, code);
-            if (!ok) { allOk = false; if (stopOnFailure) return false; }
+            if (!ok)
+            {
+                allOk = false;
+                if (stopOnFailure) return false;
+            }
         }
         return allOk;
     }
 
     private static ModuleCtx BuildCtxFromGroup(WcsTaskGroup group, WcsTaskItem task) => new()
     {
-        Start = task.StationCode.FirstOrDefault() ?? "", End = task.StationCode.LastOrDefault() ?? "",
-        Container = task.ContainerCode, Warehouse = group.Warehouse, TaskType = task.TaskType, TaskId = task.TaskId,
+        Start = task.StationCode.FirstOrDefault() ?? "",
+        End = task.StationCode.LastOrDefault() ?? "",
+        Container = task.ContainerCode,
+        Pallet = !string.IsNullOrWhiteSpace(task.PalletCode) ? task.PalletCode
+            : task.ContainerCode.Contains("Cargo", StringComparison.OrdinalIgnoreCase) ? "" : task.ContainerCode,
+        Cargo = !string.IsNullOrWhiteSpace(task.CargoCode) ? task.CargoCode
+            : task.ContainerCode.Contains("Cargo", StringComparison.OrdinalIgnoreCase) ? task.ContainerCode : "",
+        Warehouse = group.Warehouse,
+        TaskType = task.TaskType,
+        TaskId = task.TaskId,
     };
 
     private ModuleCtx? BuildCtxFromRecord(string taskId)
@@ -137,22 +181,38 @@ public class ModuleRunService
         var record = _stages.GetAll().FirstOrDefault(r => r.IsCreated && string.Equals(r.TaskId, taskId, StringComparison.OrdinalIgnoreCase));
         return record == null ? null : new ModuleCtx
         {
-            Start = record.RouteCodes.FirstOrDefault() ?? "", End = record.RouteCodes.LastOrDefault() ?? "",
-            Container = record.ContainerCode, Warehouse = record.Warehouse, TaskType = record.TaskType, TaskId = record.TaskId,
+            Start = record.StartStationCode,
+            End = record.EndStationCode,
+            Container = record.ContainerCode,
+            Pallet = record.ContainerCode,
+            Cargo = record.CargoCode,
+            Warehouse = record.Warehouse,
+            TaskType = record.TaskType,
+            TaskId = record.TaskId,
         };
     }
 
     private static object? Resolve(WorkParamDto parameter, ModuleCtx ctx) => parameter.Source switch
     {
-        WorkValueSourceDto.StartPoint => ctx.Start, WorkValueSourceDto.EndPoint => ctx.End,
-        WorkValueSourceDto.TaskContainer => ctx.Container, WorkValueSourceDto.TaskWarehouse => ctx.Warehouse,
-        WorkValueSourceDto.TaskType => ctx.TaskType, WorkValueSourceDto.TaskId => ctx.TaskId,
-        WorkValueSourceDto.Now => DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"), _ => parameter.FixedValue,
+        WorkValueSourceDto.StartPoint => ctx.Start,
+        WorkValueSourceDto.EndPoint => ctx.End,
+        WorkValueSourceDto.TaskContainer => ctx.Container,
+        WorkValueSourceDto.TaskPallet => ctx.Pallet,
+        WorkValueSourceDto.TaskCargo => ctx.Cargo,
+        WorkValueSourceDto.TaskWarehouse => ctx.Warehouse,
+        WorkValueSourceDto.TaskType => ctx.TaskType,
+        WorkValueSourceDto.TaskId => ctx.TaskId,
+        WorkValueSourceDto.Now => DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"),
+        _ => parameter.FixedValue,
     };
 
     private static bool IsAccepted(string json)
     {
-        try { using var doc = JsonDocument.Parse(json); return doc.RootElement.TryGetProperty("success", out var value) && value.ValueKind == JsonValueKind.True; }
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            return doc.RootElement.TryGetProperty("success", out var value) && value.ValueKind == JsonValueKind.True;
+        }
         catch { return false; }
     }
 }

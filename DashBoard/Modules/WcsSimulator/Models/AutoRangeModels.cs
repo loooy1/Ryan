@@ -36,6 +36,15 @@ public class StationMapPickerConfig
 
     /// <summary>打开时预选中的既有 Mark 白名单。</summary>
     public List<string> Preselected { get; set; } = [];
+
+    /// <summary>是否让站点与库存图标随地图缩放。库存地图启用，自动化选点保持固定像素大小。</summary>
+    public bool ScaleSymbolsWithZoom { get; set; }
+
+    /// <summary>选中时不放大点位本体，仅显示紧贴的缩放亮环。库存地图启用。</summary>
+    public bool CompactSelection { get; set; }
+
+    /// <summary>是否在选中或框选命中时显示站点文字。库存地图关闭，详情改由悬停提示提供。</summary>
+    public bool ShowSelectedLabels { get; set; } = true;
 }
 
 /// <summary>框选器画布里的单个站点（精简字段，仅供 JS 绘制/命中）。</summary>
@@ -47,4 +56,8 @@ public class StationMapPickerStation
     public double Y { get; set; }
     public int Floor { get; set; }
     public bool StaEnable { get; set; }
+    /// <summary>可选的库存视觉状态：pallet、cargo、loaded、transit、locked、empty。</summary>
+    public string? VisualKind { get; set; }
+    /// <summary>库存页传入的状态提示；为空时使用通用站点类型提示。</summary>
+    public string? Tooltip { get; set; }
 }

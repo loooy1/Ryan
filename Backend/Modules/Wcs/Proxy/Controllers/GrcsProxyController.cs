@@ -70,6 +70,14 @@ public class GrcsProxyController : ControllerBase
         return Ok(new { ok, code = code2, json });
     }
 
+    /// <summary>读取 RCS 已配置的货物尺寸模型，供 WCS 手工货物入库选择。</summary>
+    [HttpGet("cargo-sizes")]
+    public async Task<ActionResult<object>> CargoSizes()
+    {
+        var (ok, code, json) = await _grcs.QueryCargoSizesAsync(BaseUrl);
+        return Ok(new { ok, code, json });
+    }
+
     /// <summary>模拟生成容器入库代理（GRCS /AutoContainerEnter，场景按设置）。</summary>
     [HttpGet("auto-container-enter")]
     public async Task<ActionResult<object>> AutoContainerEnter([FromQuery] string prefix = "container",

@@ -164,20 +164,25 @@ public sealed class TaskCompletionCoordinator : BackgroundService
             return;
         }
 
-        if (_endModulesQueued.TryAdd(taskId, 0))
-            _endModuleChannel.Writer.TryWrite(taskId);
+        QueueEndModules(taskId);
     }
 
     private void QueueCompletion(string taskId)
     {
-        if (!_reservations.TryGetValue(taskId, out var reservation) || !reservation.Active) return;
+        if (GetCompletionReservation(taskId) == null) return;
         if (_completionQueued.TryAdd(taskId, 0))
             _lifecycleChannel.Writer.TryWrite(new WorkItem(WorkKind.CompleteReservation, taskId));
     }
 
     private void CompleteReservation(string taskId)
     {
-        if (!_reservations.TryRemove(taskId, out var reservation))
+        Reservation? reservation = null;
+        if (_reservations.TryRemove(taskId, out var activeReservation))
+            reservation = activeReservation.Active ? activeReservation : null;
+        else
+            reservation = GetCompletionReservation(taskId);
+
+        if (reservation == null)
         {
             _completionQueued.TryRemove(taskId, out _);
             return;
@@ -185,8 +190,42 @@ public sealed class TaskCompletionCoordinator : BackgroundService
 
         _inventory.Release(taskId, reservation.DestinationMark);
         _inventory.ClearTaskLock(taskId, reservation.StartStorageTaskLockMark);
+        QueueEndModules(taskId);
         _completionQueued.TryRemove(taskId, out _);
         _logger.LogInformation("任务完成资源已释放：{TaskId} -> {Destination}", taskId, reservation.DestinationMark);
+    }
+
+    /// <summary>
+    /// 活跃任务优先使用进程内预留；服务重启后从已下发的 CREATED 记录恢复路线。
+    /// CREATED 的 StageStatus 由下发结果写入，避免未下发任务的异常回调释放储位。
+    /// </summary>
+    private Reservation? GetCompletionReservation(string taskId)
+    {
+        if (_reservations.TryGetValue(taskId, out var reservation))
+            return reservation.Active ? reservation : null;
+
+        var created = _stage.GetAll().LastOrDefault(record => record.IsCreated
+            && record.IsSuccess
+            && string.Equals(record.TaskId, taskId, StringComparison.OrdinalIgnoreCase)
+            && !string.IsNullOrWhiteSpace(record.EndStationCode));
+        return created == null
+            ? null
+            : new Reservation(ToMapMark(created.StartStationCode), ToMapMark(created.EndStationCode), true);
+    }
+
+    private static string ToMapMark(string stationCode)
+    {
+        var value = stationCode.Trim();
+        var separator = value.LastIndexOf('_');
+        return separator > 0 && int.TryParse(value[(separator + 1)..], out _)
+            ? value[..separator]
+            : value;
+    }
+
+    private void QueueEndModules(string taskId)
+    {
+        if (_endModulesQueued.TryAdd(taskId, 0))
+            _endModuleChannel.Writer.TryWrite(taskId);
     }
 
     private sealed record Reservation(string? StartStorageTaskLockMark, string DestinationMark, bool Active);

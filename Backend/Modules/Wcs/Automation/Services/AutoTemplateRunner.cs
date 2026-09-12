@@ -455,6 +455,8 @@ public class AutoTemplateRunner : IHostedService
 
         string? chainEndMark = null;
         string? chainContainer = null;
+        string? chainPallet = null;
+        string? chainCargo = null;
         for (int k = 0; k < tpls.Count; k++)
         {
             var idx = k;
@@ -465,9 +467,13 @@ public class AutoTemplateRunner : IHostedService
                 var ctx = new TaskDispatcher.ExecCtx();
                 if (chainEndMark != null) ctx.LastEndMark = chainEndMark;
                 if (chainContainer != null) ctx.ContainerCode = chainContainer;
+                if (chainPallet != null) ctx.PalletCode = chainPallet;
+                if (chainCargo != null) ctx.CargoCode = chainCargo;
                 await RunOne(tpls[idx], idx, cid, ctx);
                 chainEndMark = ctx.LastEndMark;
                 chainContainer = ctx.ContainerCode;
+                chainPallet = ctx.PalletCode;
+                chainCargo = ctx.CargoCode;
             }
             else
             {

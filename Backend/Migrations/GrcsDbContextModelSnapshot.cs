@@ -121,6 +121,11 @@ namespace WCSBackend.Migrations
                         .HasColumnType("TEXT")
                         .HasColumnName("api_url");
 
+                    b.Property<string>("InventoryEffect")
+                        .IsRequired()
+                        .HasColumnType("TEXT")
+                        .HasColumnName("inventory_effect");
+
                     b.Property<string>("Name")
                         .IsRequired()
                         .HasColumnType("TEXT")
@@ -373,24 +378,25 @@ namespace WCSBackend.Migrations
                         .HasColumnType("TEXT")
                         .HasColumnName("container_code");
 
-                    b.Property<bool>("Ok")
-                        .HasColumnType("INTEGER")
-                        .HasColumnName("ok");
-
-                    b.Property<string>("RouteCodes")
+                    b.Property<string>("StageStatus")
                         .IsRequired()
                         .HasColumnType("TEXT")
-                        .HasColumnName("route_codes");
+                        .HasColumnName("stage_status");
+
+                    b.Property<string>("EndStationCode")
+                        .IsRequired()
+                        .HasColumnType("TEXT")
+                        .HasColumnName("end_station_code");
 
                     b.Property<string>("Stage")
                         .IsRequired()
                         .HasColumnType("TEXT")
                         .HasColumnName("stage");
 
-                    b.Property<string>("StationCode")
+                    b.Property<string>("StartStationCode")
                         .IsRequired()
                         .HasColumnType("TEXT")
-                        .HasColumnName("station_code");
+                        .HasColumnName("start_station_code");
 
                     b.Property<int>("StatusCode")
                         .HasColumnType("INTEGER")

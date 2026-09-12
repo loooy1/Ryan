@@ -3,6 +3,8 @@
 @inherits Dashboard.Modules.WcsSimulator.Components.PageStateBase
 @using System.Text.Json
 @using Dashboard.Modules.WcsSimulator.Models
+@using Microsoft.JSInterop
+@implements IDisposable
 
 <PageTitle>库存管理</PageTitle>
 
@@ -96,48 +98,239 @@
 </div>
 
 @* ════════════════════════════════════════════════
-   模拟增加库存：调用 /AutoContainerEnter 批量生成容器
+   WCS 手工入库：纯货物按框选储位写入；托盘由 RCS 批量生成后同步回 WCS。
+   带货托仅展示，不可由此功能创建或覆盖。
    ════════════════════════════════════════════════ *@
-<div class="section-card">
-    <div class="section-header collapsible" @onclick="ToggleAuto" title="点击折叠/展开">
-        🏭 模拟增加库存
-        <span class="collapse-arrow">@(IsCollapsed("inv_auto") ? "▸ 展开" : "▾ 收起")</span>
+<section class="inventory-workspace">
+    <div class="inventory-workspace-header">
+        🗺️ 库存地图与入库
+        <span class="badge-info">已选 @_manualSelectedMarks.Count 个储位</span>
     </div>
-    @if (!IsCollapsed("inv_auto"))
+    @if (_manualStations.Count == 0)
     {
-    <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;">
-        <div class="form-group" style="flex:1;min-width:100px;max-width:150px;">
-            <label>容器前缀</label>
-            <input type="text" @bind="_autoPrefix" placeholder="SimContainer_">
-        </div>
-        <div class="form-group" style="flex:1;min-width:80px;max-width:120px;">
-            <label>数量(-1=全部)</label>
-            <input type="number" @bind="_autoNum">
-        </div>
-        <div class="form-group" style="width:90px;flex-shrink:0;">
-            <label>楼层</label>
-            <input type="number" @bind="_autoFloor">
-        </div>
-        <div class="form-group" style="width:110px;flex-shrink:0;">
-            <label>类型</label>
-            <select @bind="_autoType" @bind:after="() => OnAutoTypeChanged(_autoType)">
-                <option value="1">货物</option>
-                <option value="2">托盘</option>
-            </select>
-        </div>
-    </div>
-    <div style="display:flex;gap:10px;align-items:center;margin-top:10px;flex-wrap:wrap;">
-        <button class="btn btn-primary" @onclick="AutoEnter" disabled="@_autoLoading">
-            @(_autoLoading ? "⏳ 生成中..." : "🏭 生成容器")
-        </button>
-        <button class="btn btn-outline" @onclick="ResetAuto">🔄 重置条件</button>
-        <button class="btn btn-outline" @onclick="SyncLedger" disabled="@_syncLoading" style="border-color:#4ade80;color:#4ade80;">
-            @(_syncLoading ? "⏳ 同步中..." : "🔄 同步至WCS")
-        </button>
-    </div>
-    <div class="hint-text" style="margin-top:4px;">调用 GRCS /AutoContainerEnter 接口（场景名按「地图信息」页系统设置），在空闲 RACK 储位上批量生成容器。同步库存账本 = 以 GRCS 为准清空重建（有在途自动化任务时会被拒绝）</div>
+        <div class="hint-text" style="margin-top:10px;">请先到“地图信息”页读取地图。手工入库只允许框选已同步到 WCS 的空储位。</div>
     }
-</div>
+    else
+    {
+            <div class="manual-inventory-layout">
+                <div>
+                    <div class="manual-map-toolbar">
+                        <span class="hint-text">灰=空闲，绿=纯托盘，青=纯货物，紫=带货托/在途，红=任务锁定</span>
+                        <button class="btn btn-outline btn-sm" @onclick="RefreshManualSnapshot" disabled="@_manualLoading" style="margin-left:auto;">
+                            @(_manualLoading ? "⏳ 刷新中..." : "🔄 刷新库存和位置")
+                        </button>
+                    </div>
+                    <div id="manual-inventory-map" class="manual-map-canvas" @key="_manualMapRenderKey"></div>
+                    @* 已由下方 Canvas 框选器替代。保留旧 SVG 仅为源代码迁移过渡，运行时不渲染。 *@
+                    @if (ShowLegacyManualMap)
+                    {
+                    <div class="manual-map-viewport">
+                        <svg class="manual-inventory-map" width="1000" height="600" viewBox="0 0 1000 600"
+                             @onmousedown="StartManualBox" @onmousemove="MoveManualBox" @onmouseup="FinishManualBox"
+                             @onmouseleave="CancelManualBox" @oncontextmenu:preventDefault="true">
+                            <rect x="0" y="0" width="1000" height="600" fill="#0f172a" />
+                            @foreach (var station in ManualFloorStations)
+                            {
+                                var point = ManualMapPointOf(station);
+                                var selected = _manualSelectedMarks.Contains(station.Mark);
+                                <g>
+                                    @if (selected)
+                                    {
+                                        <circle cx="@point.X" cy="@point.Y" r="10" fill="none" stroke="#ffffff" stroke-width="3" />
+                                    }
+                                    @if (HasLoadedInventory(station.Mark))
+                                    {
+                                        @* 带货托：上层货箱 + 下层托盘。 *@
+                                        <rect x="@(point.X - 7)" y="@(point.Y + 2)" width="14" height="4" rx="1" fill="#a78bfa" stroke="#312e81" stroke-width="1" />
+                                        <line x1="@(point.X - 4)" y1="@(point.Y + 2)" x2="@(point.X - 4)" y2="@(point.Y + 6)" stroke="#312e81" stroke-width="1" />
+                                        <line x1="@(point.X + 4)" y1="@(point.Y + 2)" x2="@(point.X + 4)" y2="@(point.Y + 6)" stroke="#312e81" stroke-width="1" />
+                                        <rect x="@(point.X - 5)" y="@(point.Y - 7)" width="10" height="9" rx="1" fill="#c4b5fd" stroke="#312e81" stroke-width="1" />
+                                        <path d="M@(point.X - 5) @(point.Y - 3) L@point.X @(point.Y) L@(point.X + 5) @(point.Y - 3)" fill="none" stroke="#312e81" stroke-width="1" />
+                                    }
+                                    else if (HasPalletInventory(station.Mark))
+                                    {
+                                        @* 纯托盘：三根承载条和底座。 *@
+                                        <rect x="@(point.X - 7)" y="@(point.Y - 2)" width="14" height="4" rx="1" fill="#4ade80" stroke="#166534" stroke-width="1" />
+                                        <line x1="@(point.X - 4)" y1="@(point.Y - 2)" x2="@(point.X - 4)" y2="@(point.Y + 2)" stroke="#166534" stroke-width="1" />
+                                        <line x1="@point.X" y1="@(point.Y - 2)" x2="@point.X" y2="@(point.Y + 2)" stroke="#166534" stroke-width="1" />
+                                        <line x1="@(point.X + 4)" y1="@(point.Y - 2)" x2="@(point.X + 4)" y2="@(point.Y + 2)" stroke="#166534" stroke-width="1" />
+                                        <line x1="@(point.X - 7)" y1="@(point.Y + 4)" x2="@(point.X + 7)" y2="@(point.Y + 4)" stroke="#166534" stroke-width="2" />
+                                    }
+                                    else if (HasCargoInventory(station.Mark))
+                                    {
+                                        @* 纯货物：独立货箱。 *@
+                                        <rect x="@(point.X - 5)" y="@(point.Y - 5)" width="10" height="10" rx="1" fill="#22d3ee" stroke="#155e75" stroke-width="1" />
+                                        <path d="M@(point.X - 5) @point.Y L@point.X @(point.Y + 3) L@(point.X + 5) @point.Y M@point.X @(point.Y - 5) V@(point.Y + 3)" fill="none" stroke="#155e75" stroke-width="1" />
+                                    }
+                                    else
+                                    {
+                                        <circle cx="@point.X" cy="@point.Y" r="5" fill="@ManualStationColor(station)" stroke="#334155" stroke-width="1.5" />
+                                    }
+                                    @if (selected)
+                                    {
+                                        <svg:text x="@(point.X + 10)" y="@(point.Y + 4)" class="manual-map-label">@station.Mark</svg:text>
+                                    }
+                                    <title>@ManualStationTooltip(station)</title>
+                                </g>
+                            }
+                            @foreach (var transit in TransitOnCurrentFloor)
+                            {
+                                var point = ManualTransitPointOf(transit);
+                                <g>
+                                    <circle cx="@point.X" cy="@point.Y" r="8" fill="#fbbf24" stroke="#fff" stroke-width="2" />
+                                    <svg:text x="@(point.X + 11)" y="@(point.Y + 4)" class="manual-map-label">@transit.PalletCode</svg:text>
+                                    <title>@TransitTooltip(transit)</title>
+                                </g>
+                            }
+                            @if (_manualBoxActive)
+                            {
+                                <rect x="@ManualBoxX" y="@ManualBoxY" width="@ManualBoxWidth" height="@ManualBoxHeight"
+                                      fill="rgba(56,189,248,0.12)" stroke="#38bdf8" stroke-width="1.5" stroke-dasharray="6 4" />
+                            }
+                        </svg>
+                    </div>
+                    <div class="hint-text" style="margin-top:6px;">左键单击切换储位；左键拖拽框选。拖拽会替换当前选择，按住 Ctrl 或 Shift 可增选。</div>
+                    }
+                </div>
+
+                <aside class="manual-inventory-panel">
+                    <div class="form-group">
+                        <label>库存类型</label>
+                        <select @bind="_manualInventoryType" @bind:after="OnManualTypeChanged">
+                            <option value="@ManualInventoryTypes.Pallet">托盘</option>
+                            <option value="@ManualInventoryTypes.Cargo">纯货物</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>类型前缀</label>
+                        <input type="text" @bind="_manualPrefix" @bind:event="oninput" placeholder="SimContainer_ / SimCargo_">
+                    </div>
+                    @if (_manualInventoryType == ManualInventoryTypes.Cargo)
+                    {
+                        <div class="form-group">
+                            <label>RCS 货物模型</label>
+                            <select @bind="_manualCargoSizeId" disabled="@_manualCargoSizesLoading">
+                                @if (_manualCargoSizes.Count == 0)
+                                {
+                                    <option value="0">未读取到可用模型</option>
+                                }
+                                else
+                                {
+                                    @foreach (var size in _manualCargoSizes)
+                                    {
+                                        <option value="@size.Id">@size.Name（ID @size.Id，@size.Length × @size.Width × @size.Height）</option>
+                                    }
+                                }
+                            </select>
+                            <span class="hint-text">@(_manualCargoSizesLoading ? "正在读取 RCS 模型..." : "模型来自 RCS")</span>
+                        </div>
+                    }
+                    <div class="manual-preview">
+                        @if (_manualInventoryType == ManualInventoryTypes.Pallet)
+                        {
+                            <b>托盘生成方式</b>
+                            <span>RCS 按前缀 <code>@_manualPrefix</code> 生成当前楼层全部空闲 RACK 储位的托盘。</span>
+                            <span class="hint-text">请求数量固定为 -1；RCS 不支持指定托盘落位。</span>
+                        }
+                        else
+                        {
+                            <b>编码预览</b>
+                            @foreach (var previewCode in ManualCodePreview)
+                            {
+                                <code>@previewCode</code>
+                            }
+                            @if (_manualSelectedMarks.Count > ManualCodePreview.Count())
+                            {
+                                <span>… 共 @_manualSelectedMarks.Count 条</span>
+                            }
+                            <span class="hint-text">确认时按服务器当前时间重新生成十六进制编号。</span>
+                        }
+                    </div>
+                    <div class="manual-selected-stations">
+                        <b>已选储位（@_manualSelectedMarks.Count）</b>
+                        @if (_manualSelectedMarks.Count == 0)
+                        {
+                            <span class="hint-text">在左侧地图单击或框选空闲储位。</span>
+                        }
+                        else
+                        {
+                            <div class="manual-selected-chips">
+                                @foreach (var mark in _manualSelectedMarks.Order(StringComparer.OrdinalIgnoreCase))
+                                {
+                                    <code>@mark</code>
+                                }
+                            </div>
+                        }
+                    </div>
+                    <div class="manual-inventory-actions">
+                        <div class="manual-actions-title">库存操作 <span>暂未接入</span></div>
+                        <div class="manual-action-grid">
+                            <button class="btn btn-outline btn-sm" @onclick="NoopInventoryAction" disabled="@(!CanStageAddPallet)">＋ 增加托盘</button>
+                            <button class="btn btn-outline btn-sm" @onclick="NoopInventoryAction" disabled="@(!CanStageAddCargo)">＋ 增加货物</button>
+                            <button class="btn btn-outline btn-sm manual-danger-btn" @onclick="NoopInventoryAction" disabled="@(!CanStageDeletePallet)">− 删除托盘</button>
+                            <button class="btn btn-outline btn-sm manual-danger-btn" @onclick="NoopInventoryAction" disabled="@(!CanStageDeleteCargo)">− 删除货物</button>
+                        </div>
+                        <span class="hint-text">按钮仅展示可操作规则，当前点击不会修改 WCS 或 RCS。</span>
+                    </div>
+                    <button class="btn btn-primary manual-entry-btn" @onclick="ManualEnter" disabled="@(_manualSubmitting || (_manualInventoryType == ManualInventoryTypes.Cargo && (_manualSelectedMarks.Count == 0 || _manualCargoSizeId <= 0)))">
+                        @(_manualSubmitting
+                            ? "⏳ 处理中..."
+                            : _manualInventoryType == ManualInventoryTypes.Pallet
+                                ? "由 RCS 生成当前楼层全部托盘并同步 WCS"
+                                : $"确认增加 {_manualSelectedMarks.Count} 条货物")
+                    </button>
+                    <div class="hint-text manual-entry-hint">
+                        @(_manualInventoryType == ManualInventoryTypes.Pallet
+                            ? "托盘由 RCS /AutoContainerEnter 创建；成功后立即以 RCS 库存重建 WCS 账本和地图。"
+                            : "货物先整体写入 WCS 指定储位，再按储位顺序逐条同步 RCS。")
+                        不创建带货托。
+                    </div>
+
+                    @if (_transitPositions.Count > 0)
+                    {
+                        <div class="manual-transit-list">
+                            <b>在途托盘位置快照</b>
+                            <span class="hint-text">@_transitLoadedAt</span>
+                            @foreach (var transit in _transitPositions)
+                            {
+                                <div><code>@transit.PalletCode</code> · @TransitLocationText(transit)</div>
+                            }
+                        </div>
+                    }
+                    <div class="manual-ledger-sync">
+                        <div class="manual-actions-title">库存账本同步</div>
+                        <button class="btn btn-outline manual-sync-btn" @onclick="SyncLedger" disabled="@_syncLoading">
+                            @(_syncLoading ? "⏳ 同步中..." : "🔄 RCS 同步至 WCS")
+                        </button>
+                        <span class="hint-text">以 RCS 当前库存重建 WCS 库存账本；存在在途自动化任务时会被拒绝。</span>
+                    </div>
+                </aside>
+            </div>
+    }
+
+    @if (_manualResult != null)
+        {
+            <div style="overflow-x:auto;margin-top:12px;">
+                <div class="hint-text" style="margin-bottom:6px;">@_manualResult.Message</div>
+                <table class="data-table">
+                    <thead><tr><th>储位</th><th>库存编码</th><th>类型</th><th>WCS</th><th>RCS</th><th>结果</th></tr></thead>
+                    <tbody>
+                    @foreach (var item in _manualResult.Items)
+                    {
+                        <tr>
+                            <td><code>@item.StationMark</code></td>
+                            <td><code>@item.Code</code></td>
+                            <td>@(item.InventoryType == ManualInventoryTypes.Pallet ? "托盘" : "货物")</td>
+                            <td>@(item.WcsWritten ? "✅ 已写入" : "—")</td>
+                            <td>@(item.RcsSynced ? "✅ 已同步" : $"❌ HTTP {item.RcsStatusCode}")</td>
+                            <td>@item.Message</td>
+                        </tr>
+                    }
+                    </tbody>
+                </table>
+            </div>
+    }
+</section>
 
 @* ════════════════════════════════════════════════
    操作反馈
@@ -165,15 +358,39 @@
     private const int CargoPageSize = 200;   // 分页拉取：每页 200 条，避免一次渲染数千行
     private int _cargoPageNo = 1;
 
-    // ── 模拟增加库存（场景名按「地图信息」页系统设置）──
-    private string _autoPrefix = "SimCargo_";
-    private int _autoNum = 1;
-    private int _autoFloor = 1;
-    private int _autoType = 1;
-    private bool _autoLoading;
     private bool _syncLoading;
 
-    /// <summary>同步库存账本（清空重建，以 GRCS 为准；有在途自动化任务时后端拒绝）。</summary>
+    // ── WCS 手工入库地图 ──
+    private List<MapStationLite> _manualStations = [];
+    private readonly Dictionary<string, WcsSlotRow> _manualSlots = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _manualSelectedMarks = new(StringComparer.OrdinalIgnoreCase);
+    private List<int> _manualFloors = [];
+    private int _manualFloor;
+    private string _manualInventoryType = ManualInventoryTypes.Pallet;
+    private string _manualPrefix = "SimContainer_";
+    private int _manualCargoSizeId;
+    private List<RcsCargoSizeDto> _manualCargoSizes = [];
+    private bool _manualCargoSizesLoading;
+    private DotNetObjectReference<Inventory>? _manualMapDotNetRef;
+    private bool _manualMapPendingMount;
+    private int _manualMapRenderKey;
+    private bool _manualLoading;
+    private bool _manualSubmitting;
+    private bool _manualBoxActive;
+    private double _manualBoxStartX;
+    private double _manualBoxStartY;
+    private double _manualBoxEndX;
+    private double _manualBoxEndY;
+    private List<TransitPalletPositionDto> _transitPositions = [];
+    private string _transitLoadedAt = "";
+    private ManualInventoryEnterResult? _manualResult;
+    private bool ShowLegacyManualMap => false;
+    private const double ManualMapWidth = 1000;
+    private const double ManualMapHeight = 600;
+
+    private sealed record ManualMapPoint(double X, double Y);
+
+    /// <summary>从 RCS 同步库存账本到 WCS（清空重建；有在途自动化任务时后端拒绝）。</summary>
     private async Task SyncLedger()
     {
         _syncLoading = true;
@@ -199,24 +416,15 @@
         _syncLoading = false;
     }
 
-    private void OnAutoTypeChanged(int type)
-    {
-        _autoType = type;
-        _autoPrefix = type == 2 ? "SimContainer_" : "SimCargo_";
-    }
-
-    private void ResetAuto()
-    {
-        _autoPrefix = "SimCargo_";
-        _autoNum = 1;
-        _autoFloor = 1;
-        _autoType = 1;
-    }
-
     // ── 折叠状态（基类 PageStateBase 提供，键 grcs_inv_collapsed）──
     protected override string CollapsedStoreKey => "grcs_inv_collapsed";
     private Task ToggleList() => Toggle("inv_list");
-    private Task ToggleAuto() => Toggle("inv_auto");
+    private async Task ToggleManualInventory()
+    {
+        var wasCollapsed = IsCollapsed("inv_manual");
+        await Toggle("inv_manual");
+        if (wasCollapsed && !IsCollapsed("inv_manual")) await RefreshManualSnapshot();
+    }
 
     protected override async Task OnInitializedAsync()
     {
@@ -237,6 +445,411 @@
             }
         }
         catch { }
+
+        try
+        {
+            if (V("grcs_map_stations") is string mapJson)
+            {
+                var cache = JsonSerializer.Deserialize<MapStationCache>(mapJson, JsonOpts);
+                _manualStations = cache?.Stations ?? [];
+                _manualFloors = _manualStations
+                    .Where(IsStorageStation).Select(station => station.Floor).Distinct().Order().ToList();
+                _manualFloor = _manualFloors.FirstOrDefault();
+            }
+        }
+        catch { }
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            _manualMapDotNetRef = DotNetObjectReference.Create(this);
+            await RefreshManualSnapshot();
+            await LoadManualCargoSizes();
+            await InvokeAsync(StateHasChanged);
+        }
+
+        if (_manualMapPendingMount && _manualStations.Count > 0)
+        {
+            _manualMapPendingMount = false;
+            await MountManualMapAsync();
+        }
+    }
+
+    public void Dispose() => _manualMapDotNetRef?.Dispose();
+
+    private IEnumerable<MapStationLite> ManualFloorStations => _manualStations
+        .Where(station => IsStorageStation(station) && station.Floor == _manualFloor)
+        .OrderBy(station => station.Mark);
+
+    private IEnumerable<TransitPalletPositionDto> TransitOnCurrentFloor => _transitPositions.Where(position =>
+        position.CurrentLocation != null && Math.Abs(position.CurrentLocation.Z - _manualFloor) < 0.5);
+
+    private IEnumerable<string> ManualCodePreview
+    {
+        get
+        {
+            var timeHex = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString("X");
+            return Enumerable.Range(0, Math.Min(_manualSelectedMarks.Count, 4))
+                .Select(index => $"{_manualPrefix}{timeHex}{index:X4}");
+        }
+    }
+
+    private static bool IsStorageStation(MapStationLite station)
+        => (station.StationType & MapStationTypeBits.StorageLocation) != 0;
+
+    private void SelectManualFloor(int floor) => _manualFloor = floor;
+
+    private async Task RefreshManualSnapshot()
+    {
+        _manualLoading = true;
+        try
+        {
+            var slots = await WcsService.GetWcsSlotsAsync();
+            var transitPositions = await WcsService.GetTransitPalletPositionsAsync();
+            _manualSlots.Clear();
+            foreach (var slot in slots ?? []) _manualSlots[slot.Mark] = slot;
+            _transitPositions = transitPositions ?? [];
+            _transitLoadedAt = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
+            _manualSelectedMarks.RemoveWhere(mark => !IsManualMapSelectable(mark));
+            _manualMapRenderKey++;
+            _manualMapPendingMount = true;
+        }
+        finally { _manualLoading = false; }
+    }
+
+    /// <summary>复用自动化任务的 Canvas 地图，在库存页面内常驻显示；库存状态仅从 WCS 快照读取。</summary>
+    private StationMapPickerConfig BuildManualMapConfig()
+    {
+        var stations = _manualStations.Where(IsStorageStation).Select(station => new StationMapPickerStation
+        {
+            Mark = station.Mark,
+            StationType = station.StationType,
+            X = station.X,
+            Y = station.Y,
+            Floor = station.Floor,
+            StaEnable = IsManualMapSelectable(station.Mark),
+            VisualKind = ManualVisualKind(station.Mark),
+            Tooltip = ManualStationTooltip(station),
+        }).ToList();
+
+        foreach (var transit in _transitPositions.Where(position => position.CurrentLocation != null))
+        {
+            if (transit.CurrentLocation == null) continue;
+            stations.Add(new StationMapPickerStation
+            {
+                Mark = $"在途：{transit.PalletCode}",
+                StationType = 0,
+                X = transit.CurrentLocation.X,
+                Y = transit.CurrentLocation.Y,
+                Floor = (int)Math.Round(transit.CurrentLocation.Z),
+                StaEnable = false,
+                VisualKind = "transit",
+                Tooltip = TransitTooltip(transit),
+            });
+        }
+
+        return new StationMapPickerConfig
+        {
+            Floors = _manualFloors,
+            InitialFloor = _manualFloor,
+            Stations = stations,
+            Preselected = _manualSelectedMarks.ToList(),
+            ScaleSymbolsWithZoom = true,
+            CompactSelection = true,
+            ShowSelectedLabels = false,
+        };
+    }
+
+    private async Task MountManualMapAsync()
+    {
+        if (_manualMapDotNetRef == null || _manualStations.Count == 0) return;
+        try
+        {
+            await Js.InvokeVoidAsync("grcsStationMapPickerMount", "manual-inventory-map",
+                JsonSerializer.Serialize(BuildManualMapConfig()), _manualMapDotNetRef);
+        }
+        catch (Exception ex) { ShowFeedback("❌", $"库存地图加载失败：{ex.Message}"); }
+    }
+
+    [JSInvokable]
+    public Task OnManualMapSelectionChanged(List<string>? marks)
+    {
+        var next = new HashSet<string>(marks ?? [], StringComparer.OrdinalIgnoreCase);
+        if (_manualSelectedMarks.SetEquals(next)) return Task.CompletedTask;
+        _manualSelectedMarks.Clear();
+        foreach (var mark in next) _manualSelectedMarks.Add(mark);
+        return InvokeAsync(StateHasChanged);
+    }
+
+    [JSInvokable]
+    public Task OnManualMapFloorChanged(int floor)
+    {
+        if (_manualFloor == floor) return Task.CompletedTask;
+        _manualFloor = floor;
+        return InvokeAsync(StateHasChanged);
+    }
+
+    private async Task OnManualTypeChanged()
+    {
+        _manualPrefix = _manualInventoryType == ManualInventoryTypes.Pallet ? "SimContainer_" : "SimCargo_";
+        if (_manualInventoryType == ManualInventoryTypes.Cargo) await LoadManualCargoSizes();
+    }
+
+    private async Task LoadManualCargoSizes()
+    {
+        _manualCargoSizesLoading = true;
+        try
+        {
+            _manualCargoSizes = await WcsService.GetCargoSizesAsync();
+            if (_manualCargoSizes.Any(size => size.Id == _manualCargoSizeId) == false)
+                _manualCargoSizeId = _manualCargoSizes.FirstOrDefault()?.Id ?? 0;
+        }
+        finally { _manualCargoSizesLoading = false; }
+    }
+
+    private bool IsManualSelectable(string mark)
+    {
+        if (!_manualSlots.TryGetValue(mark, out var slot)) return false;
+        return string.Equals(slot.SiteType, "Storage", StringComparison.OrdinalIgnoreCase)
+            && string.IsNullOrEmpty(slot.PalletCode) && string.IsNullOrEmpty(slot.CargoCode)
+            && string.IsNullOrEmpty(slot.TaskLockId);
+    }
+
+    /// <summary>库存地图允许选择空位或已有库存；任务锁定、在途库存不可编辑。</summary>
+    private bool IsManualMapSelectable(string mark)
+    {
+        if (!_manualSlots.TryGetValue(mark, out var slot)) return false;
+        return string.Equals(slot.SiteType, "Storage", StringComparison.OrdinalIgnoreCase)
+            && string.IsNullOrEmpty(slot.TaskLockId)
+            && !string.Equals(slot.PalletStatus, "transit", StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(slot.CargoStatus, "transit", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private IEnumerable<WcsSlotRow> SelectedManualSlots => _manualSelectedMarks
+        .Select(mark => _manualSlots.TryGetValue(mark, out var slot) ? slot : null)
+        .Where(slot => slot != null)
+        .Select(slot => slot!);
+
+    private static bool IsEmptySlot(WcsSlotRow slot)
+        => string.IsNullOrEmpty(slot.PalletCode) && string.IsNullOrEmpty(slot.CargoCode);
+
+    private static bool IsPalletOnlySlot(WcsSlotRow slot)
+        => !string.IsNullOrEmpty(slot.PalletCode) && string.IsNullOrEmpty(slot.CargoCode);
+
+    private bool AllSelectedSlots(Func<WcsSlotRow, bool> rule)
+    {
+        var slots = SelectedManualSlots.ToList();
+        return slots.Count > 0 && slots.All(rule);
+    }
+
+    private bool CanStageAddPallet => AllSelectedSlots(IsEmptySlot);
+    private bool CanStageAddCargo => AllSelectedSlots(slot => IsEmptySlot(slot) || IsPalletOnlySlot(slot));
+    private bool CanStageDeletePallet => AllSelectedSlots(slot => !string.IsNullOrEmpty(slot.PalletCode));
+    private bool CanStageDeleteCargo => AllSelectedSlots(slot => !string.IsNullOrEmpty(slot.CargoCode));
+
+    /// <summary>库存增删动作暂为 UI 占位，不执行任何本地或 RCS 写入。</summary>
+    private void NoopInventoryAction() { }
+
+    private bool HasPalletInventory(string mark)
+        => _manualSlots.TryGetValue(mark, out var slot) && !string.IsNullOrEmpty(slot.PalletCode);
+
+    private bool HasCargoInventory(string mark)
+        => _manualSlots.TryGetValue(mark, out var slot) && !string.IsNullOrEmpty(slot.CargoCode);
+
+    private bool HasLoadedInventory(string mark) => HasPalletInventory(mark) && HasCargoInventory(mark);
+
+    private string ManualVisualKind(string mark)
+    {
+        if (!_manualSlots.TryGetValue(mark, out var slot)) return "empty";
+        if (!string.IsNullOrEmpty(slot.TaskLockId)) return "locked";
+        if (string.Equals(slot.PalletStatus, "transit", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(slot.CargoStatus, "transit", StringComparison.OrdinalIgnoreCase)) return "transit";
+        if (!string.IsNullOrEmpty(slot.PalletCode) && !string.IsNullOrEmpty(slot.CargoCode)) return "loaded";
+        if (!string.IsNullOrEmpty(slot.PalletCode)) return "pallet";
+        if (!string.IsNullOrEmpty(slot.CargoCode)) return "cargo";
+        return "empty";
+    }
+
+    private string ManualStationColor(MapStationLite station)
+    {
+        if (_manualSelectedMarks.Contains(station.Mark)) return "#38bdf8";
+        if (!_manualSlots.TryGetValue(station.Mark, out var slot)) return "#475569";
+        if (!string.IsNullOrEmpty(slot.TaskLockId)) return "#ef4444";
+        if (!string.IsNullOrEmpty(slot.PalletCode) && !string.IsNullOrEmpty(slot.CargoCode)) return "#a78bfa";
+        if (string.Equals(slot.PalletStatus, "transit", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(slot.CargoStatus, "transit", StringComparison.OrdinalIgnoreCase)) return "#a78bfa";
+        if (!string.IsNullOrEmpty(slot.PalletCode)) return "#4ade80";
+        if (!string.IsNullOrEmpty(slot.CargoCode)) return "#22d3ee";
+        return IsManualSelectable(station.Mark) ? "#64748b" : "#475569";
+    }
+
+    private string ManualStationTooltip(MapStationLite station)
+    {
+        if (!_manualSlots.TryGetValue(station.Mark, out var slot)) return $"{station.Mark}：未同步到 WCS 储位表";
+        var pallet = string.IsNullOrWhiteSpace(slot.PalletCode) ? "无托盘" : $"托盘 {slot.PalletCode}（{slot.PalletStatus}）";
+        var cargo = string.IsNullOrWhiteSpace(slot.CargoCode) ? "无货物" : $"货物 {slot.CargoCode}（{slot.CargoStatus}）";
+        var locked = string.IsNullOrWhiteSpace(slot.TaskLockId) ? "" : $"；任务锁 {slot.TaskLockId}";
+        return $"{station.Mark}：{pallet}；{cargo}{locked}";
+    }
+
+    private ManualMapPoint ManualMapPointOf(MapStationLite station) => ManualMapPointOf(station.X, station.Y);
+    private ManualMapPoint ManualTransitPointOf(TransitPalletPositionDto position)
+        => ManualMapPointOf(position.CurrentLocation?.X ?? 0, position.CurrentLocation?.Y ?? 0);
+
+    private ManualMapPoint ManualMapPointOf(double x, double y)
+    {
+        var stations = ManualFloorStations.ToList();
+        if (stations.Count == 0) return new(ManualMapWidth / 2, ManualMapHeight / 2);
+        var minX = stations.Min(station => station.X);
+        var maxX = stations.Max(station => station.X);
+        var minY = stations.Min(station => station.Y);
+        var maxY = stations.Max(station => station.Y);
+        var spanX = Math.Max(1, maxX - minX);
+        var spanY = Math.Max(1, maxY - minY);
+        const double padding = 48;
+        return new(
+            padding + (x - minX) / spanX * (ManualMapWidth - padding * 2),
+            ManualMapHeight - padding - (y - minY) / spanY * (ManualMapHeight - padding * 2));
+    }
+
+    private void StartManualBox(MouseEventArgs e)
+    {
+        if (e.Button != 0) return;
+        _manualBoxActive = true;
+        _manualBoxStartX = _manualBoxEndX = e.OffsetX;
+        _manualBoxStartY = _manualBoxEndY = e.OffsetY;
+    }
+
+    private void MoveManualBox(MouseEventArgs e)
+    {
+        if (!_manualBoxActive) return;
+        _manualBoxEndX = e.OffsetX;
+        _manualBoxEndY = e.OffsetY;
+    }
+
+    private void FinishManualBox(MouseEventArgs e)
+    {
+        if (!_manualBoxActive) return;
+        _manualBoxEndX = e.OffsetX;
+        _manualBoxEndY = e.OffsetY;
+        var width = Math.Abs(_manualBoxEndX - _manualBoxStartX);
+        var height = Math.Abs(_manualBoxEndY - _manualBoxStartY);
+        if (width < 6 && height < 6)
+        {
+            var hit = ManualFloorStations.Where(station => IsManualSelectable(station.Mark))
+                .Select(station => new { Station = station, Point = ManualMapPointOf(station) })
+                .OrderBy(item => Distance(item.Point.X, item.Point.Y, e.OffsetX, e.OffsetY)).FirstOrDefault();
+            if (hit != null && Distance(hit.Point.X, hit.Point.Y, e.OffsetX, e.OffsetY) <= 12)
+            {
+                if (!_manualSelectedMarks.Add(hit.Station.Mark)) _manualSelectedMarks.Remove(hit.Station.Mark);
+            }
+        }
+        else
+        {
+            if (!e.CtrlKey && !e.ShiftKey) _manualSelectedMarks.Clear();
+            var minX = Math.Min(_manualBoxStartX, _manualBoxEndX);
+            var maxX = Math.Max(_manualBoxStartX, _manualBoxEndX);
+            var minY = Math.Min(_manualBoxStartY, _manualBoxEndY);
+            var maxY = Math.Max(_manualBoxStartY, _manualBoxEndY);
+            foreach (var station in ManualFloorStations.Where(station => IsManualSelectable(station.Mark)))
+            {
+                var point = ManualMapPointOf(station);
+                if (point.X >= minX && point.X <= maxX && point.Y >= minY && point.Y <= maxY)
+                    _manualSelectedMarks.Add(station.Mark);
+            }
+        }
+        _manualBoxActive = false;
+    }
+
+    private void CancelManualBox() => _manualBoxActive = false;
+    private void ClearManualSelection() => _manualSelectedMarks.Clear();
+    private static double Distance(double x1, double y1, double x2, double y2)
+        => Math.Sqrt((x1 - x2) * (x1 - x2) + (y1 - y2) * (y1 - y2));
+    private double ManualBoxX => Math.Min(_manualBoxStartX, _manualBoxEndX);
+    private double ManualBoxY => Math.Min(_manualBoxStartY, _manualBoxEndY);
+    private double ManualBoxWidth => Math.Abs(_manualBoxEndX - _manualBoxStartX);
+    private double ManualBoxHeight => Math.Abs(_manualBoxEndY - _manualBoxStartY);
+
+    private string TransitLocationText(TransitPalletPositionDto transit)
+    {
+        if (transit.CurrentLocation != null)
+            return $"坐标 {transit.CurrentLocation.X:0.#}, {transit.CurrentLocation.Y:0.#} · 车辆 {transit.RobotId}";
+        if (!string.IsNullOrWhiteSpace(transit.CurrentStationCode)) return $"站点 {transit.CurrentStationCode} · 车辆 {transit.RobotId}";
+        return string.IsNullOrWhiteSpace(transit.RobotId) ? "未获取位置" : $"车辆 {transit.RobotId}";
+    }
+
+    private string TransitTooltip(TransitPalletPositionDto transit)
+        => $"在途托盘 {transit.PalletCode}；{TransitLocationText(transit)}";
+
+    private async Task ManualEnter()
+    {
+        _manualSubmitting = true;
+        try
+        {
+            if (_manualInventoryType == ManualInventoryTypes.Pallet)
+            {
+                var (created, statusCode, createJson) = await WcsService.AutoContainerEnterAsync(
+                    "", "", _manualPrefix, -1, _manualFloor, type: 2);
+                if (!created)
+                {
+                    _manualResult = new ManualInventoryEnterResult
+                    {
+                        Message = $"RCS 托盘生成失败：{createJson}",
+                        Items = [new ManualInventoryEnterItemResult
+                        {
+                            StationMark = $"{_manualFloor} 层（RCS 自动分配）",
+                            Code = _manualPrefix,
+                            InventoryType = ManualInventoryTypes.Pallet,
+                            RcsStatusCode = statusCode,
+                            Message = createJson,
+                        }]
+                    };
+                    ShowFeedback("❌", _manualResult.Message);
+                    return;
+                }
+
+                var (synced, syncJson) = await WcsService.SyncInventoryAsync();
+                _manualResult = new ManualInventoryEnterResult
+                {
+                    WcsWritten = synced,
+                    Message = synced
+                        ? "RCS 已生成当前楼层全部可用托盘，WCS 已按 RCS 实际落位同步完成"
+                        : $"RCS 已生成托盘，但 WCS 库存同步失败：{syncJson}",
+                    Items = [new ManualInventoryEnterItemResult
+                    {
+                        StationMark = $"{_manualFloor} 层（RCS 自动分配）",
+                        Code = _manualPrefix,
+                        InventoryType = ManualInventoryTypes.Pallet,
+                        WcsWritten = synced,
+                        RcsSynced = true,
+                        RcsStatusCode = statusCode,
+                        Message = synced ? "RCS 已生成，WCS 已同步实际储位" : syncJson,
+                    }]
+                };
+                if (synced) _manualSelectedMarks.Clear();
+                ShowFeedback(synced ? "✅" : "❌", _manualResult.Message);
+                await RefreshManualSnapshot();
+                return;
+            }
+
+            var request = new ManualInventoryEnterRequest
+            {
+                StationMarks = _manualSelectedMarks.Order(StringComparer.OrdinalIgnoreCase).ToList(),
+                InventoryType = _manualInventoryType,
+                Prefix = _manualPrefix,
+                CargoSizeId = _manualCargoSizeId,
+            };
+            var (ok, _, json) = await WcsService.ManualInventoryEnterAsync(request);
+            _manualResult = JsonSerializer.Deserialize<ManualInventoryEnterResult>(json, JsonOpts)
+                ?? new ManualInventoryEnterResult { Message = json };
+            if (ok) _manualSelectedMarks.Clear();
+            ShowFeedback(ok ? "✅" : "❌", _manualResult.Message);
+            await RefreshManualSnapshot();
+        }
+        catch (Exception ex) { ShowFeedback("❌", ex.Message); }
+        finally { _manualSubmitting = false; }
     }
 
     /// <summary>
@@ -346,18 +959,4 @@
         return json.Length > 120 ? json[..120] + "…" : (json.Length > 0 ? json : "请求失败");
     }
 
-    /// <summary>调用 /AutoContainerEnter 批量生成容器库存（场景名按系统设置）。</summary>
-    private async Task AutoEnter()
-    {
-        _autoLoading = true;
-        var (ok, code, json) = await WcsService.AutoContainerEnterAsync(
-            "", "", _autoPrefix, _autoNum, _autoFloor, _autoType);
-        ShowFeedback(ok ? "✅" : "❌",
-            ok
-                ? $"容器已生成 HTTP {code}\n\n{json}"
-                : $"生成失败 HTTP {code}\n\n{json}");
-        if (ok)
-            await QueryInventory();   // 生成后自动刷新库存列表
-        _autoLoading = false;
-    }
 }

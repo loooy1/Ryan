@@ -44,4 +44,8 @@ public class TaskStageRealtimeHub : Hub
         await Clients.Caller.SendAsync("MockRequestEvents", _mockApproval.GetEvents());
         await base.OnConnectedAsync();
     }
+
+    /// <summary>前端手动刷新时从 task_records 重取快照，覆盖浏览器显示缓存。</summary>
+    public Task RefreshSnapshot()
+        => Clients.Caller.SendAsync("EventsReset", _stages.GetAll());
 }

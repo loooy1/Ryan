@@ -11,6 +11,7 @@ public class TaskStageChangeModel
     public DateTime MsgTime { get; set; }
     public string Warehouse { get; set; } = "";
     public string TaskId { get; set; } = "";
+    /// <summary>GRCS 回传的当前站点；仅用于兼容回调协议，不写入任务路线字段。</summary>
     public string StationCode { get; set; } = "";
     public string ContainerCode { get; set; } = "";
     public string Stage { get; set; } = "";
@@ -24,7 +25,8 @@ public class StageChangeEvent
     /// <summary>任务类型（后端不填；前端阶段事件页从台账按 TaskId 回填，仅展示用）。</summary>
     public string TaskType { get; set; } = "";
     public string Warehouse { get; set; } = "";
-    public string StationCode { get; set; } = "";
+    public string StartStationCode { get; set; } = "";
+    public string EndStationCode { get; set; } = "";
     public string ContainerCode { get; set; } = "";
     public string Stage { get; set; } = "";
     public DateTime Time { get; set; }

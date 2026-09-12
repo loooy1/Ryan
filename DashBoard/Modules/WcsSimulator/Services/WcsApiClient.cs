@@ -1,6 +1,7 @@
 using System.Net.Http.Json;
 using System.Text.Json;
 using Contracts.Dtos;
+using Contracts.Entities;
 
 namespace Dashboard.Modules.WcsSimulator.Services;
 
@@ -139,6 +140,25 @@ public class WcsApiClient
         }
         catch (Exception ex) { NotifyIfUnreachable(); return (false, ex.Message); }
     }
+
+    /// <summary>读取 WCS 本地储位快照，供手工入库地图渲染库存、锁和选点状态。</summary>
+    public Task<List<WcsSlotRow>?> GetWcsSlotsAsync() => GetAsync<List<WcsSlotRow>>("/api/wcs/inventory/slots");
+
+    /// <summary>手工入库：后端先写 WCS，再逐条调用 RCS 入库接口。</summary>
+    public async Task<(bool Ok, int StatusCode, string Json)> ManualInventoryEnterAsync(ManualInventoryEnterRequest request)
+    {
+        if (!ConnectionReady()) return (false, 0, "backend offline");
+        try
+        {
+            var response = await _http.PostAsJsonAsync(U("/api/wcs/inventory/manual-enter"), request);
+            return (response.IsSuccessStatusCode, (int)response.StatusCode, await response.Content.ReadAsStringAsync());
+        }
+        catch (Exception ex) { NotifyIfUnreachable(); return (false, 0, ex.Message); }
+    }
+
+    /// <summary>读取一次 RCS 在途托盘位置快照；页面不启动实时轮询。</summary>
+    public Task<List<TransitPalletPositionDto>?> GetTransitPalletPositionsAsync()
+        => GetAsync<List<TransitPalletPositionDto>>("/api/wcs/inventory/transit-pallet-positions");
 
     public async Task<string> PostAsync<TReq>(string path, TReq body)
     {
@@ -383,6 +403,29 @@ public class WcsApiClient
         var r = await GetProxyAsync(url);
         if (!r.Ok) NotifyGrcsIfUnreachable(r.Json);
         return r;
+    }
+
+    /// <summary>读取 RCS 已配置的货物尺寸模型，供手工货物入库动态选择。</summary>
+    public async Task<List<RcsCargoSizeDto>> GetCargoSizesAsync()
+    {
+        if (!GrcsReady()) return [];
+        var response = await GetProxyAsync("/api/wcs/grcs/cargo-sizes");
+        if (!response.Ok)
+        {
+            NotifyGrcsIfUnreachable(response.Json);
+            return [];
+        }
+
+        try
+        {
+            using var doc = JsonDocument.Parse(response.Json);
+            var root = doc.RootElement;
+            if (!root.TryGetProperty("data", out var data)
+                || !data.TryGetProperty("records", out var records)
+                || records.ValueKind != JsonValueKind.Array) return [];
+            return JsonSerializer.Deserialize<List<RcsCargoSizeDto>>(records.GetRawText(), JsonOpts) ?? [];
+        }
+        catch { return []; }
     }
 
     /// <summary>模拟生成容器入库（代理 → GRCS /AutoContainerEnter，场景按后端设置）。</summary>

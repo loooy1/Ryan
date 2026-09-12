@@ -11,6 +11,8 @@ public enum WorkValueSourceDto
     TaskType = 5,
     TaskId = 6,
     Now = 7,
+    TaskPallet = 8,
+    TaskCargo = 9,
 }
 
 /// <summary>功能模块参数（参数名 + 取值来源 + 固定值）。</summary>
@@ -69,5 +71,16 @@ public class FeatureModuleDto
 
     public string ApiUrl { get; set; } = "";
 
+    /// <summary>模块成功后要执行的库存动作；空值表示不影响库存。</summary>
+    public string InventoryEffect { get; set; } = "";
+
     public List<WorkParamDto> Params { get; set; } = [];
+}
+
+/// <summary>功能模块可配置的库存动作。</summary>
+public static class ModuleInventoryEffects
+{
+    public const string None = "";
+    public const string CargoArrival = "cargo_arrival";
+    public const string CargoRemoval = "cargo_removal";
 }

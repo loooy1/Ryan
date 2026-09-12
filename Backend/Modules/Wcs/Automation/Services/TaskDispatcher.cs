@@ -84,12 +84,23 @@ public class TaskDispatcher
         lock (_chainLock)
         {
             var occ = invCoord.BuildOccupied();
-            occ.UnionWith(GetInFlightDestinationMarks());
 
             if (usePickedStart)
             {
                 if (string.IsNullOrEmpty(ctx.LastEndMark)) { _log.Add(roundId, $"步骤 {stepNo} 模板[{tpl.Label}] 起点使用前置终点，但无前置终点可用，跳过", "#f87171"); _log.AddOrUpdate("[模板步骤失败]", $"模板「{tpl.Label}」：起点使用前置终点但无前置终点可用，跳过", "#f87171"); return null; }
                 startMark = ctx.LastEndMark;
+
+                // 链式任务从前置终点取货时，托盘与货物必须作为同一个搬运单元。
+                // 上下文保证接驳尚未落库时能连续下发；一旦接驳位已有数据，则以数据库
+                // 中实际落在该站点的成对库存为准，避免后一任务只带走托盘或只带走货物。
+                var sourceSlot = _invStore.FindSlot(startMark);
+                if (sourceSlot != null && (!string.IsNullOrWhiteSpace(sourceSlot.PalletCode)
+                    || !string.IsNullOrWhiteSpace(sourceSlot.CargoCode)))
+                {
+                    ctx.PalletCode = string.IsNullOrWhiteSpace(sourceSlot.PalletCode) ? null : sourceSlot.PalletCode;
+                    ctx.CargoCode = string.IsNullOrWhiteSpace(sourceSlot.CargoCode) ? null : sourceSlot.CargoCode;
+                    ctx.ContainerCode = ctx.CargoCode ?? ctx.PalletCode;
+                }
             }
             else
             {
@@ -178,12 +189,6 @@ public class TaskDispatcher
 
         var startWcs = WcsOf(startMark, stations) ?? startMark ?? "";
         var destWcs = dest!.ToWcsCode();
-        var mctx = new ModuleRunService.ModuleCtx
-        {
-            Start = startWcs, End = destWcs, Container = container,
-            Warehouse = settings.SceneName, TaskType = tpl.Value, TaskId = taskId,
-        };
-
         var group = new WcsTaskGroup
         {
             GroupId = "G_" + Guid.NewGuid().ToString("N")[..10],
@@ -193,6 +198,10 @@ public class TaskDispatcher
             Tasks = [new WcsTaskItem
             {
                 TaskId = taskId, TaskType = tpl.Value, ContainerCode = container,
+                PalletCode = ctx.PalletCode
+                    ?? (IsCargoCode(container) ? "" : container ?? ""),
+                CargoCode = ctx.CargoCode
+                    ?? (IsCargoCode(container) ? container ?? "" : ""),
                 StationCode = [startWcs, destWcs], AreaCode = [],
             }],
         };
@@ -227,20 +236,14 @@ public class TaskDispatcher
             taskDetails[taskId] = $"{tpl.Label} [{container}] {startWcs}->{destWcs}";
             var isCargoInbound = string.Equals(tpl.Value, "CARGO_CARRY_INBOUND", StringComparison.OrdinalIgnoreCase);
             var isCargoOutbound = string.Equals(tpl.Value, "CARGO_CARRY_OUTBOUND", StringComparison.OrdinalIgnoreCase);
-            _invStore.MarkBusy(taskContainers, taskId, startMark,
-                isCargoInbound ? ctx.PalletCode : null, isCargoOutbound);
+            _invStore.MarkBusy(taskContainers);
             _completion.Activate(taskId);
             _log.Add(roundId, $"✓ 步骤 {stepNo} 完成！", "#4ade80");
             ctx.LastEndMark = dest.Mark;
             var endIds = tpl.End?.AfterModules ?? [];
             try
             {
-                if (endIds.Count > 0)
-                {
-                    await _stage.WaitFinishedAsync(taskId);
-                    await _modules.RunEndModulesAsync(taskId, mctx, roundId);
-                }
-                else if (step.WaitForFinish)
+                if (endIds.Count > 0 || step.WaitForFinish)
                 {
                     await _stage.WaitFinishedAsync(taskId);
                 }
@@ -292,50 +295,15 @@ public class TaskDispatcher
             ?? RandomPick(s => (s.StationType & Contracts.Dtos.MapStationTypeBits.PickingStation) != 0 && Free(s));
     }
 
-    /// <summary>
-    /// 已被 WCS 接收、但尚未收到 FINISHED 的任务，其目标站点必须继续视为占用。
-    /// 站点锁是进程内状态；本检查以 task_records 的已持久化台账为兜底，
-    /// 仅阻止重复选终点，不尝试在重启后恢复任务、库存或队列。
-    /// </summary>
-    private HashSet<string> GetInFlightDestinationMarks()
-    {
-        var storageMarks = _invStore.StorageMarks();
-        var records = _stage.GetAll();
-        var finishedTaskIds = records
-            .Where(r => string.Equals(r.Stage, "FINISHED", StringComparison.OrdinalIgnoreCase)
-                && !string.IsNullOrWhiteSpace(r.TaskId))
-            .Select(r => r.TaskId)
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var destinations = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
-        foreach (var created in records.Where(r => r.IsCreated
-            && !string.IsNullOrWhiteSpace(r.TaskId)
-            && !finishedTaskIds.Contains(r.TaskId)
-            && r.RouteCodes.Count >= 2))
-        {
-            var destination = created.RouteCodes[^1];
-            var destinationMark = string.IsNullOrWhiteSpace(destination) ? "" : ToMapMark(destination);
-            if (storageMarks.Contains(destinationMark))
-                destinations.Add(destinationMark);
-        }
-
-        return destinations;
-    }
-
-    private static string ToMapMark(string stationCode)
-    {
-        var value = stationCode.Trim();
-        var separator = value.LastIndexOf('_');
-        return separator > 0 && int.TryParse(value[(separator + 1)..], out _)
-            ? value[..separator]
-            : value;
-    }
-
     private static string GenerateContainerCode(string prefix)
     {
         var p = string.IsNullOrWhiteSpace(prefix) ? "Container" : prefix.Trim();
         return p + DateTime.Now.ToString("HHmmssfff") + Random.Shared.Next(10, 99);
     }
+
+    private static bool IsCargoCode(string? code)
+        => !string.IsNullOrWhiteSpace(code)
+            && code.Contains("Cargo", StringComparison.OrdinalIgnoreCase);
 
     private static string? WcsOf(string? mark, List<MapStationLite> stations)
     {

@@ -32,7 +32,10 @@ window.grcsTaskStage = (() => {
         connection.on('ModuleExecLogAdded', (entry) => { if (ref) ref.invokeMethodAsync('OnModuleExecLogAdded', entry); });
 
         connection.onreconnecting(() => { if (ref) ref.invokeMethodAsync('OnStateChanged', 'reconnecting'); });
-        connection.onreconnected(() => { if (ref) ref.invokeMethodAsync('OnStateChanged', 'connected'); });
+        connection.onreconnected(() => {
+            connection.invoke('RefreshSnapshot').catch(() => {});
+            if (ref) ref.invokeMethodAsync('OnStateChanged', 'connected');
+        });
         connection.onclose(() => { if (ref) ref.invokeMethodAsync('OnStateChanged', 'disconnected'); });
 
         connection.start()
@@ -49,9 +52,14 @@ window.grcsTaskStage = (() => {
         }
     }
 
+    function refreshSnapshot() {
+        return connection ? connection.invoke('RefreshSnapshot').catch(() => {}) : Promise.resolve();
+    }
+
     return {
         setRef: (r) => { ref = r; },
         connect: connect,
-        disconnect: disconnect
+        disconnect: disconnect,
+        refreshSnapshot: refreshSnapshot
     };
 })();
