@@ -11,7 +11,7 @@ namespace Backend.Shared.Infrastructure;
 /// 连接串：由 AddSharedModule(dbFileName) 指定（grcs.db / rcs.db，唯一数据文件，全库 EF 访问）。
 /// 生命周期：AddDbContextFactory 短生命周期模式（Singleton Store 注入 factory，每次操作 CreateDbContext）。
 /// 访问方式：不声明 DbSet 属性，调用方用 context.Set&lt;T&gt;()（保持本类不依赖任何模块类型）。
-/// 迁移约定：各应用工程各自 Add-Migration（迁移快照按各自程序集配置生成）。
+/// 迁移约定：各应用工程各自 Add-Migration（迁移快照按各自程序集配置生成） 。
 /// </summary>
 public class GrcsDbContext : DbContext
 {
