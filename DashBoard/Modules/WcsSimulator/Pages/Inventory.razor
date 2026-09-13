@@ -9,95 +9,6 @@
 <PageTitle>库存管理</PageTitle>
 
 @* ════════════════════════════════════════════════
-   库存查询：调用 GRCS /api/Cargo 读取容器库存
-   ════════════════════════════════════════════════ *@
-<div class="section-card">
-    <div class="section-header collapsible" @onclick="ToggleList" title="点击折叠/展开">
-        📦 库存查询
-        <span class="badge-info">@_cargoTotal 个容器</span>
-        <span class="collapse-arrow">@(IsCollapsed("inv_list") ? "▸ 展开" : "▾ 收起")</span>
-    </div>
-    @if (!IsCollapsed("inv_list"))
-    {
-
-    <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;">
-        <div class="form-group" style="flex:1;min-width:120px;max-width:180px;">
-            <label>容器编码</label>
-            <input type="text" @bind="_cargoCodeFilter" placeholder="留空=全部">
-        </div>
-        <div class="form-group" style="width:110px;flex-shrink:0;">
-            <label>锁定状态</label>
-            <select @bind="_cargoLockedFilter">
-                <option value="">全部</option>
-                <option value="true">已锁</option>
-                <option value="false">未锁</option>
-            </select>
-        </div>
-        <div class="hint-text" style="padding-bottom:6px;">GRCS 地址/场景名按「地图信息」页系统设置</div>
-    </div>
-    <div style="display:flex;gap:10px;align-items:center;margin-top:10px;flex-wrap:wrap;">
-        <button class="btn btn-primary" @onclick="QueryInventory" disabled="@_cargoLoading">🔍 查询</button>
-        <button class="btn btn-outline" @onclick="ResetCargoFilter">🔄 重置</button>
-        @if (_cargoLoadedAt != "")
-        {
-            <span class="badge-info">💾 @_cargoLoadedAt</span>
-        }
-        @if (_cargoError != "")
-        {
-            <span style="color:#f87171;font-size:0.8rem;">❌ @_cargoError</span>
-        }
-    </div>
-
-    @if (_cargoItems.Count > 0)
-    {
-        <div style="overflow-x:auto;margin-top:8px;">
-            <table class="data-table">
-                <thead>
-                    <tr>
-                        <th>ID</th>
-                        <th>容器编码</th>
-                        <th>场景</th>
-                        <th>老家库位</th>
-                        <th>当前位置</th>
-                        <th>在车</th>
-                        <th>锁定</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    @foreach (var c in _cargoItems)
-                    {
-                        <tr style="color:@(c.IsLocked ? "#f87171" : "");">
-                            <td>@c.Id</td>
-                            <td style="font-family:Consolas,monospace;font-weight:600;">@c.Code</td>
-                            <td>@c.HomeStationScene</td>
-                            <td style="font-family:Consolas,monospace;">
-                                @c.HomeStationMark @(string.IsNullOrEmpty(c.HomeCargoAreaName) ? "" : "· " + c.HomeCargoAreaName)
-                            </td>
-                            <td style="font-family:Consolas,monospace;">
-                                @c.CurrentStationCode @(string.IsNullOrEmpty(c.CurrentCargoAreaName) ? "" : "· " + c.CurrentCargoAreaName)
-                            </td>
-                            <td>@(c.IsLoaded ? $"🚗 {c.RobotId}" : "—")</td>
-                            <td>@(c.IsLocked ? "🔒" : "")</td>
-                        </tr>
-                    }
-                </tbody>
-            </table>
-        </div>
-        @if (_cargoItems.Count < _cargoTotal)
-        {
-            <button class="btn btn-outline btn-sm" @onclick="LoadMoreCargo" disabled="@_cargoLoadingMore" style="margin-top:8px;">
-                @(_cargoLoadingMore ? "⏳ 加载中..." : $"加载更多（已显示 {_cargoItems.Count} / 共 {_cargoTotal}）")
-            </button>
-        }
-    }
-    else if (_cargoQueried)
-    {
-        <div class="hint-text" style="margin-top:10px;">没有匹配的容器库存</div>
-    }
-    }
-</div>
-
-@* ════════════════════════════════════════════════
    WCS 手工入库：纯货物按框选储位写入；托盘由 RCS 批量生成后同步回 WCS。
    带货托仅展示，不可由此功能创建或覆盖。
    ════════════════════════════════════════════════ *@
@@ -345,19 +256,6 @@
 @code {
     private static readonly JsonSerializerOptions JsonOpts = new() { PropertyNameCaseInsensitive = true };
 
-    // ── 库存查询 ──
-    private string _cargoCodeFilter = "";
-    private string _cargoLockedFilter = "";
-    private List<CargoInventoryItem> _cargoItems = [];
-    private int _cargoTotal;
-    private bool _cargoLoading;
-    private bool _cargoLoadingMore;
-    private bool _cargoQueried;
-    private string _cargoLoadedAt = "";
-    private string _cargoError = "";
-    private const int CargoPageSize = 200;   // 分页拉取：每页 200 条，避免一次渲染数千行
-    private int _cargoPageNo = 1;
-
     private bool _syncLoading;
 
     // ── WCS 手工入库地图 ──
@@ -418,7 +316,6 @@
 
     // ── 折叠状态（基类 PageStateBase 提供，键 grcs_inv_collapsed）──
     protected override string CollapsedStoreKey => "grcs_inv_collapsed";
-    private Task ToggleList() => Toggle("inv_list");
     private async Task ToggleManualInventory()
     {
         var wasCollapsed = IsCollapsed("inv_manual");
@@ -428,24 +325,6 @@
 
     protected override async Task OnInitializedAsync()
     {
-        // 读取 localStorage 状态（内存缓存，同步读取，无 JS 边界）
-        try
-        {
-            // 切到模块时始终折叠，不恢复之前展开状态
-            if (V("grcs_cargo_inventory") is string cargoJson)
-            {
-                var cached = JsonSerializer.Deserialize<List<CargoInventoryItem>>(cargoJson, JsonOpts);
-                if (cached is { Count: > 0 })
-                {
-                    _cargoItems = cached;
-                    _cargoTotal = V("grcs_cargo_inventory_total") is string t && int.TryParse(t, out var n) ? n : cached.Count;
-                    _cargoPageNo = 1;
-                    if (V("grcs_cargo_inventory_at") is string at) _cargoLoadedAt = at;
-                }
-            }
-        }
-        catch { }
-
         try
         {
             if (V("grcs_map_stations") is string mapJson)
@@ -453,7 +332,7 @@
                 var cache = JsonSerializer.Deserialize<MapStationCache>(mapJson, JsonOpts);
                 _manualStations = cache?.Stations ?? [];
                 _manualFloors = _manualStations
-                    .Where(IsStorageStation).Select(station => station.Floor).Distinct().Order().ToList();
+                    .Where(IsInventoryMapStation).Select(station => station.Floor).Distinct().Order().ToList();
                 _manualFloor = _manualFloors.FirstOrDefault();
             }
         }
@@ -480,11 +359,11 @@
     public void Dispose() => _manualMapDotNetRef?.Dispose();
 
     private IEnumerable<MapStationLite> ManualFloorStations => _manualStations
-        .Where(station => IsStorageStation(station) && station.Floor == _manualFloor)
+        .Where(station => IsInventoryMapStation(station) && station.Floor == _manualFloor)
         .OrderBy(station => station.Mark);
 
     private IEnumerable<TransitPalletPositionDto> TransitOnCurrentFloor => _transitPositions.Where(position =>
-        position.CurrentLocation != null && Math.Abs(position.CurrentLocation.Z - _manualFloor) < 0.5);
+        position.CurrentLocation != null && ResolveTransitFloor(position) == _manualFloor);
 
     private IEnumerable<string> ManualCodePreview
     {
@@ -498,6 +377,10 @@
 
     private static bool IsStorageStation(MapStationLite station)
         => (station.StationType & MapStationTypeBits.StorageLocation) != 0;
+
+    /// <summary>库存地图同时显示储位与接驳位；手工入库选点仍只接受储位。</summary>
+    private static bool IsInventoryMapStation(MapStationLite station)
+        => (station.StationType & (MapStationTypeBits.StorageLocation | MapStationTypeBits.TransferPoint)) != 0;
 
     private void SelectManualFloor(int floor) => _manualFloor = floor;
 
@@ -522,7 +405,7 @@
     /// <summary>复用自动化任务的 Canvas 地图，在库存页面内常驻显示；库存状态仅从 WCS 快照读取。</summary>
     private StationMapPickerConfig BuildManualMapConfig()
     {
-        var stations = _manualStations.Where(IsStorageStation).Select(station => new StationMapPickerStation
+        var stations = _manualStations.Where(IsInventoryMapStation).Select(station => new StationMapPickerStation
         {
             Mark = station.Mark,
             StationType = station.StationType,
@@ -543,7 +426,7 @@
                 StationType = 0,
                 X = transit.CurrentLocation.X,
                 Y = transit.CurrentLocation.Y,
-                Floor = (int)Math.Round(transit.CurrentLocation.Z),
+                Floor = ResolveTransitFloor(transit),
                 StaEnable = false,
                 VisualKind = "transit",
                 Tooltip = TransitTooltip(transit),
@@ -783,6 +666,40 @@
     private string TransitTooltip(TransitPalletPositionDto transit)
         => $"在途托盘 {transit.PalletCode}；{TransitLocationText(transit)}";
 
+    /// <summary>
+    /// RCS 坐标 Z 可能从 0 起算，地图楼层通常从 1 起算。优先采用 RCS 当前站点的地图楼层；
+    /// 没有站点时依次匹配 Z、Z+1，再回退到来源储位或当前地图楼层。
+    /// </summary>
+    private int ResolveTransitFloor(TransitPalletPositionDto transit)
+    {
+        var currentStationFloor = FindMapFloor(transit.CurrentStationCode);
+        if (currentStationFloor.HasValue) return currentStationFloor.Value;
+
+        if (transit.CurrentLocation != null)
+        {
+            var rcsFloor = (int)Math.Round(transit.CurrentLocation.Z);
+            if (_manualFloors.Contains(rcsFloor)) return rcsFloor;
+            if (_manualFloors.Contains(rcsFloor + 1)) return rcsFloor + 1;
+        }
+
+        var sourceFloor = FindMapFloor(transit.SourceMark);
+        if (sourceFloor.HasValue) return sourceFloor.Value;
+        return _manualFloors.Count == 1 ? _manualFloors[0] : _manualFloor;
+    }
+
+    private int? FindMapFloor(string stationCode)
+    {
+        if (string.IsNullOrWhiteSpace(stationCode)) return null;
+        var mark = stationCode.Trim();
+        if (mark.EndsWith("_0", StringComparison.OrdinalIgnoreCase)
+            || mark.EndsWith("_1", StringComparison.OrdinalIgnoreCase))
+        {
+            mark = mark[..^2];
+        }
+        return _manualStations.FirstOrDefault(station =>
+            string.Equals(station.Mark, mark, StringComparison.OrdinalIgnoreCase))?.Floor;
+    }
+
     private async Task ManualEnter()
     {
         _manualSubmitting = true;
@@ -850,113 +767,6 @@
         }
         catch (Exception ex) { ShowFeedback("❌", ex.Message); }
         finally { _manualSubmitting = false; }
-    }
-
-    /// <summary>
-    /// 查询库存：分页拉取第 1 页（CargoPageSize=200 条/页）。
-    /// 优化前一次拉 pageSize=2000 并在页面上全量渲染，容器多时 Blazor diff 明显卡顿；
-    /// 现在首屏只渲染 200 行，需要时通过"加载更多"按钮按页追加。
-    /// 总数取接口返回的 data.totalCount（GRCS /api/Cargo 原生支持 pageNo/pageSize 分页），
-    /// 按钮只在"已显示 &lt; 总数"时出现。注意：自动化服务（AutoRunService/ContainerTaskService）
-    /// 的配对逻辑需要全量库存，它们仍按 2000 条全量拉取，与本页互不影响。
-    /// </summary>
-    private async Task QueryInventory()
-    {
-        _cargoLoading = true;
-        _cargoError = "";
-        _cargoQueried = true;
-        try
-        {
-            var (ok, code, json) = await WcsService.QueryCargoInventoryAsync(
-                "", _cargoCodeFilter, null, _cargoLockedFilter,
-                pageNo: 1, pageSize: CargoPageSize);
-            if (!ok)
-            {
-                _cargoItems = [];
-                _cargoTotal = 0;
-                _cargoError = FriendlyError(json);
-                return;
-            }
-            var result = JsonSerializer.Deserialize<CargoQueryResult>(json, JsonOpts);
-            if (result == null || result.Code != 0 || result.Data == null)
-            {
-                _cargoItems = [];
-                _cargoTotal = 0;
-                _cargoError = result?.Message ?? "返回数据为空";
-                return;
-            }
-            _cargoPageNo = 1;
-            _cargoItems = result.Data.Records ?? [];
-            _cargoTotal = result.Data.TotalCount;
-            _cargoLoadedAt = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
-
-            await LocalStore.SetAsync(Js, "grcs_cargo_inventory", JsonSerializer.Serialize(_cargoItems));
-            await LocalStore.SetAsync(Js, "grcs_cargo_inventory_total", _cargoTotal.ToString());
-            await LocalStore.SetAsync(Js, "grcs_cargo_inventory_at", _cargoLoadedAt);
-        }
-        catch (Exception ex)
-        {
-            _cargoItems = [];
-            _cargoTotal = 0;
-            _cargoError = ex.Message;
-        }
-        finally { _cargoLoading = false; }
-    }
-
-    /// <summary>分页追加下一页（渲染保持在小规模，页面滚动/操作更流畅）。</summary>
-    private async Task LoadMoreCargo()
-    {
-        if (_cargoLoadingMore || _cargoItems.Count >= _cargoTotal) return;
-        _cargoLoadingMore = true;
-        _cargoError = "";
-        try
-        {
-            var next = _cargoPageNo + 1;
-            var (ok, code, json) = await WcsService.QueryCargoInventoryAsync(
-                "", _cargoCodeFilter, null, _cargoLockedFilter,
-                pageNo: next, pageSize: CargoPageSize);
-            if (!ok) { _cargoError = FriendlyError(json); return; }
-            var result = JsonSerializer.Deserialize<CargoQueryResult>(json, JsonOpts);
-            if (result is not { Code: 0, Data: not null })
-            {
-                _cargoError = result?.Message ?? "返回数据为空";
-                return;
-            }
-            _cargoPageNo = next;
-            _cargoItems.AddRange(result.Data.Records ?? []);
-            _cargoTotal = result.Data.TotalCount;
-            await LocalStore.SetAsync(Js, "grcs_cargo_inventory", JsonSerializer.Serialize(_cargoItems));
-            await LocalStore.SetAsync(Js, "grcs_cargo_inventory_total", _cargoTotal.ToString());
-        }
-        catch (Exception ex) { _cargoError = ex.Message; }
-        finally { _cargoLoadingMore = false; }
-    }
-
-    private void ResetCargoFilter()
-    {
-        _cargoCodeFilter = "";
-        _cargoLockedFilter = "";
-        _cargoItems = [];
-        _cargoTotal = 0;
-        _cargoQueried = false;
-        _cargoError = "";
-    }
-
-    /// <summary>代理失败时的友好错误文本（json 是 GRCS/后端错误信息，截断展示）。</summary>
-    private static string FriendlyError(string json)
-    {
-        try
-        {
-            using var doc = JsonDocument.Parse(json);
-            if (doc.RootElement.ValueKind == JsonValueKind.Object
-                && doc.RootElement.TryGetProperty("error", out var err) && err.ValueKind == JsonValueKind.String)
-            {
-                var msg = err.GetString();
-                return msg is { Length: > 0 } ? (msg.Length > 120 ? msg[..120] + "…" : msg) : "请求失败";
-            }
-        }
-        catch { }
-        return json.Length > 120 ? json[..120] + "…" : (json.Length > 0 ? json : "请求失败");
     }
 
 }
