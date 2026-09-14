@@ -379,7 +379,6 @@ public class AutoTemplateRunner : IHostedService
                             }
                             ctx.PalletCode = pick.Code; ctx.PalletMark = pick.Mark; ctx.ContainerCode = pick.Code;
                             ctx.PickedByStep[i + 1] = pick.Code;
-                            ctx.LastEndMark = pick.Mark;
                             _log.Add(childId, $"✓ 步骤 {stepNo} 完成！", "#4ade80");
                             MarkFirst(childId, name);
                         }
@@ -397,7 +396,6 @@ public class AutoTemplateRunner : IHostedService
                             }
                             ctx.CargoCode = pick.Code; ctx.CargoMark = pick.Mark; ctx.ContainerCode = pick.Code;
                             ctx.PickedByStep[i + 1] = pick.Code;
-                            ctx.LastEndMark = pick.Mark;
                             _log.Add(childId, $"✓ 步骤 {stepNo} 完成！", "#4ade80");
                             MarkFirst(childId, name);
                         }
@@ -420,18 +418,15 @@ public class AutoTemplateRunner : IHostedService
                             ctx.CargoCode = cargoCode; ctx.CargoMark = pick.Mark;
                             ctx.ContainerCode = cargoCode; // 带货托取货物号而非托盘号
                             ctx.PickedByStep[i + 1] = cargoCode;
-                            ctx.LastEndMark = pick.Mark;
                             _log.Add(childId, $"✓ 步骤 {stepNo} 完成！", "#4ade80");
                             MarkFirst(childId, name);
                         }
                         else if (step.Kind == AutoStepKinds.RunTemplate)
                         {
                             var tid = await _dispatcher.RunTemplateStep(step, ctx, settings, childId, stepNo, taskIds, taskDetails, _running, _halted, _invCoord);
-                            if (tid != null)
-                            {
-                                ctx.PickedByStep[i + 1] = ctx.ContainerCode ?? "";
-                                MarkFirst(childId, name);
-                            }
+                            if (tid == null) return;
+                            ctx.PickedByStep[i + 1] = ctx.ContainerCode ?? "";
+                            MarkFirst(childId, name);
                         }
                     }
                     catch (Exception ex)
@@ -453,10 +448,10 @@ public class AutoTemplateRunner : IHostedService
             }
         }
 
-        string? chainEndMark = null;
         string? chainContainer = null;
         string? chainPallet = null;
         string? chainCargo = null;
+        string? chainLastTaskId = null;
         for (int k = 0; k < tpls.Count; k++)
         {
             var idx = k;
@@ -465,15 +460,15 @@ public class AutoTemplateRunner : IHostedService
             {
                 // 链路模式：顺序执行，将上一模板的终点/容器注入下一模板的 ctx
                 var ctx = new TaskDispatcher.ExecCtx();
-                if (chainEndMark != null) ctx.LastEndMark = chainEndMark;
+                if (chainLastTaskId != null) ctx.LastTaskId = chainLastTaskId;
                 if (chainContainer != null) ctx.ContainerCode = chainContainer;
                 if (chainPallet != null) ctx.PalletCode = chainPallet;
                 if (chainCargo != null) ctx.CargoCode = chainCargo;
                 await RunOne(tpls[idx], idx, cid, ctx);
-                chainEndMark = ctx.LastEndMark;
                 chainContainer = ctx.ContainerCode;
                 chainPallet = ctx.PalletCode;
                 chainCargo = ctx.CargoCode;
+                chainLastTaskId = ctx.LastTaskId;
             }
             else
             {

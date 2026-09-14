@@ -15,6 +15,7 @@ public interface ITaskStageService
     bool TryRecordSystemEvent(string taskId, string stage, bool ok, int statusCode = 0,
         string? stationCode = null, string? containerCode = null, string? cargoCode = null);
     void RecordDispatchResult(string taskId, bool ok, int statusCode);
+    void UpdateEndStationCode(string taskId, string endStationCode);
     List<StageChangeEvent> GetEventsSince(long sinceId, int limit = 1000);
     void RecordCreated(List<TaskLedgerEntry> entries);
     List<TaskLedgerEntry> GetCreated(int limit = 500);
@@ -26,6 +27,8 @@ public interface ITaskStageService
     event Action<string>? TaskFinished;
     event Action<string>? TaskLoadFinished;
     Task WaitFinishedAsync(string taskId, TimeSpan? timeout = null);
+    /// <summary>等待 WCS 收尾完成。数据库中的 WCS_COMPLETED / WCS_FINALIZATION_FAILED 是唯一判断依据。</summary>
+    Task<bool> WaitWcsCompletedAsync(string taskId, TimeSpan? timeout = null);
     void ForceCompleteAll();
 }
 
@@ -55,7 +58,8 @@ public class TaskStageService : ITaskStageService
         {
             using var uow = _uow.Create();
             return uow.Repository<TaskRecord>().Query()
-                .Where(record => record.Stage == "FINISHED" && record.TaskId != "")
+                .Where(record => record.Stage == "WCS_COMPLETED"
+                    && record.StageStatus == TaskStageStatuses.Success && record.TaskId != "")
                 .Select(record => record.TaskId)
                 .ToHashSet(StringComparer.OrdinalIgnoreCase);
         }
@@ -126,6 +130,22 @@ public class TaskStageService : ITaskStageService
             }
         }
         TryRecordSystemEvent(taskId, ok ? "DISPATCHED" : "DISPATCH_FAILED", ok, statusCode);
+        _ = _hub.Clients.All.SendAsync("EventsReset", GetAll());
+    }
+
+    /// <summary>分拣任务在 FINISHED 时才获得实际分拣台，统一回写该任务的完整阶段记录。</summary>
+    public void UpdateEndStationCode(string taskId, string endStationCode)
+    {
+        if (string.IsNullOrWhiteSpace(taskId) || string.IsNullOrWhiteSpace(endStationCode)) return;
+        lock (_writeLock)
+        {
+            using var uow = _uow.Create();
+            var records = uow.Repository<TaskRecord>().Query()
+                .Where(record => record.TaskId == taskId).ToList();
+            if (records.Count == 0) return;
+            foreach (var record in records) record.EndStationCode = endStationCode;
+            uow.CommitAsync().GetAwaiter().GetResult();
+        }
         _ = _hub.Clients.All.SendAsync("EventsReset", GetAll());
     }
 
@@ -255,6 +275,31 @@ public class TaskStageService : ITaskStageService
             }
         }
         return timeout is { } value && value > TimeSpan.Zero ? waiter.Task.WaitAsync(value) : waiter.Task;
+    }
+
+    public async Task<bool> WaitWcsCompletedAsync(string taskId, TimeSpan? timeout = null)
+    {
+        var startedAt = DateTime.UtcNow;
+        while (true)
+        {
+            using (var uow = _uow.Create())
+            {
+                var stages = uow.Repository<TaskRecord>().Query()
+                    .Where(record => record.TaskId == taskId
+                        && (record.Stage == "WCS_COMPLETED" || record.Stage == "WCS_FINALIZATION_FAILED"))
+                    .Select(record => new { record.Stage, record.StageStatus })
+                    .ToList();
+                if (stages.Any(record => record.Stage == "WCS_COMPLETED"
+                    && string.Equals(record.StageStatus, TaskStageStatuses.Success, StringComparison.OrdinalIgnoreCase)))
+                    return true;
+                if (stages.Any(record => record.Stage == "WCS_FINALIZATION_FAILED"))
+                    return false;
+            }
+
+            if (timeout is { } value && value > TimeSpan.Zero && DateTime.UtcNow - startedAt >= value)
+                throw new TimeoutException($"等待 WCS 任务完成超时：{taskId}");
+            await Task.Delay(100);
+        }
     }
 
     private bool HasCreatedRecord(string taskId)

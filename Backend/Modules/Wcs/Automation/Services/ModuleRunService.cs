@@ -109,14 +109,14 @@ public class ModuleRunService
         return (true, code, json);
     }
 
-    public async Task RunEndModulesAsync(string taskId, ModuleCtx? preset = null, string? roundId = null)
+    public async Task<bool> RunEndModulesAsync(string taskId, ModuleCtx? preset = null, string? roundId = null)
     {
         var ctx = preset ?? BuildCtxFromRecord(taskId);
-        if (ctx == null) return;
+        if (ctx == null) return false;
         var template = _templates.GetAll().FirstOrDefault(t =>
             string.Equals(t.Value, ctx.TaskType, StringComparison.OrdinalIgnoreCase));
-        if (template != null)
-            await RunModulesAsync("AFTER_END_MODULE", template.End?.AfterModules ?? [], ctx, roundId);
+        return template == null
+            || await RunModulesAsync("AFTER_END_MODULE", template.End?.AfterModules ?? [], ctx, roundId, true);
     }
 
     private async Task<bool> RunModulesAsync(string prefix, List<string> ids, ModuleCtx ctx,

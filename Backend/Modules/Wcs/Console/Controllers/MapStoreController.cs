@@ -27,7 +27,8 @@ public class MapStoreController : ControllerBase
         if (_invStore.HasInTransit())
             return BadRequest(new { success = false, message = "存在在途自动化任务，禁止更新地图（任务依赖储位坐标）；请先停止或等待任务完成" });
         _mapStore.Save(dto);
-        return Ok(new { success = true, count = dto.Stations?.Count ?? 0 });
+        var slotCount = _invStore.SyncMapSlots();
+        return Ok(new { success = true, count = dto.Stations?.Count ?? 0, slotCount });
     }
 
     [HttpGet]

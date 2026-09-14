@@ -144,6 +144,17 @@ public class WcsApiClient
     /// <summary>读取 WCS 本地储位快照，供手工入库地图渲染库存、锁和选点状态。</summary>
     public Task<List<WcsSlotRow>?> GetWcsSlotsAsync() => GetAsync<List<WcsSlotRow>>("/api/wcs/inventory/slots");
 
+    public async Task<(bool Ok, string Json)> SaveSortingAssociationAsync(SortingStationAssociationRequest request)
+    {
+        if (!ConnectionReady()) return (false, "backend offline");
+        try
+        {
+            var response = await _http.PostAsJsonAsync(U("/api/wcs/inventory/sorting-association"), request);
+            return (response.IsSuccessStatusCode, await response.Content.ReadAsStringAsync());
+        }
+        catch (Exception ex) { NotifyIfUnreachable(); return (false, ex.Message); }
+    }
+
     /// <summary>手工入库：后端先写 WCS，再逐条调用 RCS 入库接口。</summary>
     public async Task<(bool Ok, int StatusCode, string Json)> ManualInventoryEnterAsync(ManualInventoryEnterRequest request)
     {

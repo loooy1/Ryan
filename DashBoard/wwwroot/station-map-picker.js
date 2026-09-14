@@ -119,6 +119,10 @@
         const tooltip = makeEl('div', 'smp-tooltip');
         tooltip.style.display = 'none';
         wrap.appendChild(tooltip);
+        const sortingMenu = makeEl('button', 'smp-sorting-menu', '配置实际分拣台');
+        sortingMenu.type = 'button';
+        sortingMenu.style.display = 'none';
+        wrap.appendChild(sortingMenu);
         modal.appendChild(wrap);
 
         const legend = makeEl('div', 'smp-legend');
@@ -152,7 +156,31 @@
         let drag = null;
         let hover = null;
 
+        function hideSortingMenu() { sortingMenu.style.display = 'none'; }
+
+        function showSortingMenu(point, px, py) {
+            sortingMenu.dataset.stationMark = point.Mark;
+            sortingMenu.style.display = 'block';
+            const margin = 10;
+            const menuWidth = sortingMenu.offsetWidth;
+            const menuHeight = sortingMenu.offsetHeight;
+            let left = px + margin, top = py + margin;
+            if (left + menuWidth > wrap.clientWidth - margin) left = px - menuWidth - margin;
+            if (top + menuHeight > wrap.clientHeight - margin) top = py - menuHeight - margin;
+            sortingMenu.style.left = Math.max(margin, left) + 'px';
+            sortingMenu.style.top = Math.max(margin, top) + 'px';
+        }
+
+        sortingMenu.addEventListener('click', function (e) {
+            e.preventDefault();
+            e.stopPropagation();
+            const mark = sortingMenu.dataset.stationMark;
+            hideSortingMenu();
+            if (mark && dotNetRef) dotNetRef.invokeMethodAsync('OnManualMapSortingAssociationRequested', mark);
+        });
+
         function setCurrentFloor(f) {
+            hideSortingMenu();
             currentFloor = f;
             chips.forEach(function (c) { c.el.classList.toggle('on', c.floor === f); });
             fit();
@@ -224,6 +252,24 @@
 
             const inBox = drag && drag.mode === 'box' && drag.moved;
 
+            if (config.ShowSortingLinks) {
+                const byMark = new Map(visible.map(function (v) { return [v.p.Mark, v]; }));
+                ctx.save();
+                ctx.strokeStyle = 'rgba(251,146,60,.72)';
+                ctx.lineWidth = Math.max(1, 1.1 * symbolScale);
+                ctx.setLineDash([4 * symbolScale, 3 * symbolScale]);
+                for (const child of visible) {
+                    if (!child.p.ParentMark) continue;
+                    const parent = byMark.get(child.p.ParentMark);
+                    if (!parent) continue;
+                    ctx.beginPath();
+                    ctx.moveTo(parent.sx, parent.sy);
+                    ctx.lineTo(child.sx, child.sy);
+                    ctx.stroke();
+                }
+                ctx.restore();
+            }
+
             // 禁用站点：置灰、不可选（先画垫底）
             for (const v of visible) {
                 if (v.p.StaEnable) continue;
@@ -273,8 +319,16 @@
                 ctx.fillStyle = config.CompactSelection ? 'rgba(103,232,249,0.16)' : 'rgba(103,232,249,0.25)';
                 ctx.fill();
             }
-            // 库存图标与普通站点点位使用相同半径，并随地图同比例缩放。
             drawInventorySymbol(p, sx, sy, color, radius);
+            const sortingAccent = (p.StationType & 128) !== 0 ? '#e879f9'
+                : (p.StationType & 64) !== 0 ? '#fb923c' : null;
+            if (sortingAccent) {
+                ctx.beginPath();
+                ctx.arc(sx, sy, radius + Math.max(1, symbolScale * .7), 0, Math.PI * 2);
+                ctx.strokeStyle = sortingAccent;
+                ctx.lineWidth = Math.max(1, symbolScale * .9);
+                ctx.stroke();
+            }
             if (ringWidth > 0) {
                 const ringGap = config.CompactSelection ? Math.max(1.2, 1.45 * symbolScale) : (p.VisualKind ? 3 : 0);
                 ctx.beginPath();
@@ -289,9 +343,26 @@
                 ctx.textAlign = 'left';
                 ctx.fillText(p.Mark, sx + radius + 5, sy + 3);
             }
+            if (p.BadgeText) {
+                const badge = String(p.BadgeText);
+                ctx.font = 'bold ' + Math.max(8, radius * 1.1) + 'px sans-serif';
+                ctx.textAlign = 'center';
+                const width = ctx.measureText(badge).width + Math.max(7, radius);
+                const height = Math.max(12, radius * 1.5);
+                const x = sx + radius * .72, y = sy - radius * .92;
+                ctx.fillStyle = 'rgba(15,23,42,.92)';
+                ctx.fillRect(x - width / 2, y - height / 2, width, height);
+                ctx.strokeStyle = 'rgba(226,232,240,.72)';
+                ctx.lineWidth = Math.max(.8, radius * .12);
+                ctx.strokeRect(x - width / 2, y - height / 2, width, height);
+                ctx.fillStyle = '#f8fafc';
+                ctx.fillText(badge, x, y + Math.max(3, radius * .36));
+            }
         }
 
         function visualColor(p, fallback) {
+            if ((p.StationType & 128) !== 0) return '#e879f9';
+            if ((p.StationType & 64) !== 0 && (!p.VisualKind || p.VisualKind === 'empty' || p.VisualKind === 'locked')) return '#fb923c';
             switch (p.VisualKind) {
                 case 'pallet': return '#4ade80';
                 case 'cargo': return '#22d3ee';
@@ -500,6 +571,16 @@
         function onDown(e) {
             e.preventDefault();
             e.stopPropagation();
+            const mapRect = canvas.getBoundingClientRect();
+            const pointerX = e.clientX - mapRect.left, pointerY = e.clientY - mapRect.top;
+            if (e.button === 2 && config.RightClickPeopleStationSelection && dotNetRef) {
+                const hit = hitTest(pointerX, pointerY);
+                if (hit && (hit.StationType & 128) !== 0 && selection.has(hit.Mark)) {
+                    showSortingMenu(hit, pointerX, pointerY);
+                    return;
+                }
+            }
+            hideSortingMenu();
             if (e.button === 1 || e.button === 2) {
                 const rect = canvas.getBoundingClientRect();
                 drag = { mode: 'pan', x0: e.clientX - rect.left, y0: e.clientY - rect.top };

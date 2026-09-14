@@ -45,6 +45,12 @@ public class StationMapPickerConfig
 
     /// <summary>是否在选中或框选命中时显示站点文字。库存地图关闭，详情改由悬停提示提供。</summary>
     public bool ShowSelectedLabels { get; set; } = true;
+
+    /// <summary>是否显示人工分拣台与实际分拣台之间的关联线。</summary>
+    public bool ShowSortingLinks { get; set; }
+
+    /// <summary>库存地图对已选中的人工分拣台右击时，显示实际分拣台关联菜单。</summary>
+    public bool RightClickPeopleStationSelection { get; set; }
 }
 
 /// <summary>框选器画布里的单个站点（精简字段，仅供 JS 绘制/命中）。</summary>
@@ -60,4 +66,8 @@ public class StationMapPickerStation
     public string? VisualKind { get; set; }
     /// <summary>库存页传入的状态提示；为空时使用通用站点类型提示。</summary>
     public string? Tooltip { get; set; }
+    /// <summary>库存地图上的小型汇总标识，例如人工分拣台的“1/2”。</summary>
+    public string? BadgeText { get; set; }
+    /// <summary>实际分拣台所属人工分拣台，仅用于地图绘制关联线。</summary>
+    public string? ParentMark { get; set; }
 }

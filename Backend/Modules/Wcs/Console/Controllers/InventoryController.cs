@@ -31,6 +31,16 @@ public class InventoryController : ControllerBase
     [HttpGet("slots")]
     public ActionResult<List<Contracts.Entities.WcsSlotRow>> Slots() => Ok(_invStore.Slots());
 
+    /// <summary>保存人工分拣台与实际分拣台的 WCS 账本关联；空的子站点列表表示解除当前关联。</summary>
+    [HttpPost("sorting-association")]
+    public ActionResult<SortingStationAssociationResult> SaveSortingAssociation(
+        [FromBody] SortingStationAssociationRequest request)
+    {
+        if (request == null) return BadRequest(new SortingStationAssociationResult { Message = "请求不能为空" });
+        var result = _invStore.SaveSortingAssociation(request);
+        return result.Success ? Ok(result) : BadRequest(result);
+    }
+
     /// <summary>
     /// WCS 指定储位手工入库：仅纯货物，先写入 WCS 储位表，再按站点顺序逐条调用 RCS /api/Cargo/Enter。
     /// 托盘由 RCS /AutoContainerEnter 批量创建后，再通过同步接口回写 WCS。

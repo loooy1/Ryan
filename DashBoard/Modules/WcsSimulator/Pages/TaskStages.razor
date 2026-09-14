@@ -405,7 +405,9 @@
         if (_groups.TryGetValue(e.TaskId, out var evts))
         {
             if (evts.Any(x => x.Stage is "CANCELLED" or "DISPATCH_FAILED")) return "失败";
-            if (evts.Any(x => x.Stage == "FINISHED")) return "已完成";
+            if (evts.Any(x => x.Stage == "WCS_FINALIZATION_FAILED")) return "收尾失败";
+            if (evts.Any(x => x.Stage == "WCS_COMPLETED" && x.StageStatus == TaskStageStatuses.Success)) return "WCS任务完成";
+            if (evts.Any(x => x.Stage == "FINISHED")) return "WCS收尾中";
             if (evts.Any(x => x.Stage == "START" || x.Stage == "LOAD_FINISH"
                 || x.Stage.StartsWith("TRANSIT:", StringComparison.OrdinalIgnoreCase)
                 || x.Stage.StartsWith("BEFORE_MODULE:", StringComparison.OrdinalIgnoreCase)
@@ -421,10 +423,11 @@
 
     private static string StatusBadgeClass(string status) => status switch
     {
-        "已完成" => "badge-ok",
+        "WCS任务完成" => "badge-ok",
         "执行中" => "badge-selected",
+        "WCS收尾中" => "badge-selected",
         "已创建" => "badge-info",
-        "失败" => "badge-danger",
+        "失败" or "收尾失败" => "badge-danger",
         _ => "badge-info"
     };
 
@@ -557,7 +560,11 @@
         if (string.Equals(stage, "START", comparison)) return "任务开始";
         if (string.Equals(stage, "LOAD_FINISH", comparison)) return "装载完成";
         if (stage.StartsWith("TRANSIT:", comparison)) return "货物在途：" + stage["TRANSIT:".Length..];
-        if (string.Equals(stage, "FINISHED", comparison)) return "任务完成";
+        if (string.Equals(stage, "FINISHED", comparison)) return "RCS任务完成";
+        if (string.Equals(stage, "WCS_FINALIZING", comparison)) return "WCS任务收尾中";
+        if (string.Equals(stage, "WCS_INVENTORY_FINALIZED", comparison)) return "WCS终点库存收尾完成";
+        if (string.Equals(stage, "WCS_COMPLETED", comparison)) return "WCS任务完成";
+        if (string.Equals(stage, "WCS_FINALIZATION_FAILED", comparison)) return "WCS任务收尾失败";
         if (string.Equals(stage, "CANCELLED", comparison)) return "任务取消";
         if (string.Equals(stage, "DISPATCH_FAILED", comparison)) return "下发失败";
         if (stage.StartsWith("BEFORE_MODULE:", comparison)) return "起点前模块：" + stage["BEFORE_MODULE:".Length..];
@@ -593,8 +600,9 @@
 
     private static string StageBadgeClass(string s)
     {
-        if (s is "CANCELLED" or "DISPATCH_FAILED" || s.StartsWith("INVENTORY_RELEASE_FAILED:", StringComparison.OrdinalIgnoreCase)) return "badge-danger";
-        if (s == "FINISHED") return "badge-ok";
+        if (s is "CANCELLED" or "DISPATCH_FAILED" or "WCS_FINALIZATION_FAILED" || s.StartsWith("INVENTORY_RELEASE_FAILED:", StringComparison.OrdinalIgnoreCase)) return "badge-danger";
+        if (s == "WCS_COMPLETED") return "badge-ok";
+        if (s == "FINISHED" || s == "WCS_FINALIZING" || s == "WCS_INVENTORY_FINALIZED") return "badge-selected";
         if (s == "LOAD_FINISH" || s.StartsWith("TRANSIT:", StringComparison.OrdinalIgnoreCase)) return "badge-selected";
         if (s == "START" || s == "DISPATCHED" || s.StartsWith("BEFORE_MODULE:", StringComparison.OrdinalIgnoreCase)) return "badge-info";
         if (s.StartsWith("AFTER_START_MODULE:", StringComparison.OrdinalIgnoreCase)
@@ -605,8 +613,9 @@
 
     private static string StageDotClass(string s)
     {
-        if (s is "CANCELLED" or "DISPATCH_FAILED" || s.StartsWith("INVENTORY_RELEASE_FAILED:", StringComparison.OrdinalIgnoreCase)) return "dot-other";
-        if (s == "FINISHED") return "dot-finished";
+        if (s is "CANCELLED" or "DISPATCH_FAILED" or "WCS_FINALIZATION_FAILED" || s.StartsWith("INVENTORY_RELEASE_FAILED:", StringComparison.OrdinalIgnoreCase)) return "dot-other";
+        if (s == "WCS_COMPLETED") return "dot-finished";
+        if (s == "FINISHED" || s == "WCS_FINALIZING" || s == "WCS_INVENTORY_FINALIZED") return "dot-load";
         if (s == "LOAD_FINISH" || s.StartsWith("TRANSIT:", StringComparison.OrdinalIgnoreCase)
             || s.StartsWith("AFTER_START_MODULE:", StringComparison.OrdinalIgnoreCase)
             || s.StartsWith("AFTER_END_MODULE:", StringComparison.OrdinalIgnoreCase)

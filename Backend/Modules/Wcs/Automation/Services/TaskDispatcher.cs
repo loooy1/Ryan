@@ -50,6 +50,8 @@ public class TaskDispatcher
 
         var usePickedStart = step.UsePickedStart;
         var hasPick = !string.IsNullOrEmpty(ctx.ContainerCode);
+        // 输入容器来自模板生成或前置步骤；起点库存只决定最终发送给 RCS 的编号，
+        // 不得覆盖这个输入值。
         string? container;
 
         if (step.PickedStepIndex > 0)
@@ -81,25 +83,36 @@ public class TaskDispatcher
         string? startMark = null;
         MapStationLite? dest = null;
         string? taskId = null;
+        string? preparedInsertedCode = null;
         lock (_chainLock)
         {
             var occ = invCoord.BuildOccupied();
 
             if (usePickedStart)
             {
-                if (string.IsNullOrEmpty(ctx.LastEndMark)) { _log.Add(roundId, $"步骤 {stepNo} 模板[{tpl.Label}] 起点使用前置终点，但无前置终点可用，跳过", "#f87171"); _log.AddOrUpdate("[模板步骤失败]", $"模板「{tpl.Label}」：起点使用前置终点但无前置终点可用，跳过", "#f87171"); return null; }
-                startMark = ctx.LastEndMark;
-
-                // 链式任务从前置终点取货时，托盘与货物必须作为同一个搬运单元。
-                // 上下文保证接驳尚未落库时能连续下发；一旦接驳位已有数据，则以数据库
-                // 中实际落在该站点的成对库存为准，避免后一任务只带走托盘或只带走货物。
-                var sourceSlot = _invStore.FindSlot(startMark);
-                if (sourceSlot != null && (!string.IsNullOrWhiteSpace(sourceSlot.PalletCode)
-                    || !string.IsNullOrWhiteSpace(sourceSlot.CargoCode)))
+                if (!string.IsNullOrWhiteSpace(ctx.LastTaskId))
                 {
-                    ctx.PalletCode = string.IsNullOrWhiteSpace(sourceSlot.PalletCode) ? null : sourceSlot.PalletCode;
-                    ctx.CargoCode = string.IsNullOrWhiteSpace(sourceSlot.CargoCode) ? null : sourceSlot.CargoCode;
-                    ctx.ContainerCode = ctx.CargoCode ?? ctx.PalletCode;
+                    var completed = _stage.GetAll().LastOrDefault(record =>
+                        string.Equals(record.TaskId, ctx.LastTaskId, StringComparison.OrdinalIgnoreCase)
+                        && record.Stage == "WCS_COMPLETED" && record.IsSuccess);
+                    if (completed == null)
+                    {
+                        _log.Add(roundId, $"步骤 {stepNo} 模板[{tpl.Label}] 起点使用前置终点，但上一任务尚未 WCS 任务完成，跳过", "#f87171");
+                        _log.AddOrUpdate("[模板步骤失败]", $"模板「{tpl.Label}」：上一任务未完成 WCS 收尾，不能使用前置终点", "#f87171");
+                        return null;
+                    }
+                    startMark = ToMapMark(completed.EndStationCode);
+                }
+                else
+                {
+                    // 本轮刚挑选的库存尚未形成前置任务，只借用挑选站点定位，库存内容仍从数据库读取。
+                    startMark = ctx.CargoMark ?? ctx.PalletMark;
+                }
+                if (string.IsNullOrWhiteSpace(startMark))
+                {
+                    _log.Add(roundId, $"步骤 {stepNo} 模板[{tpl.Label}] 未取得前置起点站点，跳过", "#f87171");
+                    _log.AddOrUpdate("[模板步骤失败]", $"模板「{tpl.Label}」：未取得前置起点站点", "#f87171");
+                    return null;
                 }
             }
             else
@@ -175,6 +188,35 @@ public class TaskDispatcher
                 _log.AddOrUpdate("[模板步骤失败]", $"模板「{tpl.Label}」：终点储位 {dest.Mark} 已被其他任务或库存占用", "#f87171");
                 return null;
             }
+            var preparedInserted = false;
+            if (!_invStore.TryPrepareTaskStartContainer(startMark!, container, out preparedInserted, out var prepareError))
+            {
+                if (destinationIsStorage) _invStore.ClearTaskLock(taskId, dest.Mark);
+                if (startStorageTaskLockMark != null) _invStore.ClearTaskLock(taskId, startStorageTaskLockMark);
+                _log.Add(roundId, $"步骤 {stepNo} 模板[{tpl.Label}] 起点容器准备失败：{prepareError}", "#f87171");
+                _log.AddOrUpdate("[模板步骤失败]", $"模板「{tpl.Label}」：起点容器准备失败：{prepareError}", "#f87171");
+                return null;
+            }
+            if (preparedInserted) preparedInsertedCode = container;
+
+            // 预写后重新从数据库读取起点：只有托盘时下发托盘；存在货物时下发货物。
+            var sourceSlot = _invStore.FindSlot(startMark!);
+            var dispatchContainer = sourceSlot?.CargoCode ?? sourceSlot?.PalletCode;
+            if (string.IsNullOrWhiteSpace(dispatchContainer))
+            {
+                if (preparedInserted) _invStore.RollbackPreparedTaskStartContainer(startMark!, container);
+                if (destinationIsStorage) _invStore.ClearTaskLock(taskId, dest.Mark);
+                if (startStorageTaskLockMark != null) _invStore.ClearTaskLock(taskId, startStorageTaskLockMark);
+                _log.Add(roundId, $"步骤 {stepNo} 模板[{tpl.Label}] 起点 {startMark} 无可搬运库存，跳过", "#f87171");
+                _log.AddOrUpdate("[模板步骤失败]", $"模板「{tpl.Label}」：起点 {startMark} 无可搬运库存", "#f87171");
+                return null;
+            }
+
+            ctx.PalletCode = string.IsNullOrWhiteSpace(sourceSlot!.PalletCode) ? null : sourceSlot.PalletCode;
+            ctx.CargoCode = string.IsNullOrWhiteSpace(sourceSlot.CargoCode) ? null : sourceSlot.CargoCode;
+            ctx.ContainerCode = dispatchContainer;
+            container = dispatchContainer;
+
             try
             {
                 _completion.RegisterReservation(taskId, startStorageTaskLockMark, dest.Mark);
@@ -205,14 +247,17 @@ public class TaskDispatcher
                 StationCode = [startWcs, destWcs], AreaCode = [],
             }],
         };
+        var taskUnits = new[] { group.Tasks[0].PalletCode, group.Tasks[0].CargoCode }
+            .Where(code => !string.IsNullOrWhiteSpace(code))
+            .Distinct(StringComparer.OrdinalIgnoreCase).ToList();
 
         if (!running && halted)
         {
             _log.Add(roundId, $"步骤 {stepNo} 模板[{tpl.Label}] 已强制结束，跳过下发（{startWcs}→{destWcs}）", "#fbbf24");
-            var pc = new List<string> { container ?? "" };
-            if (!string.IsNullOrEmpty(ctx.PalletCode) && !string.Equals(ctx.PalletCode, container, StringComparison.OrdinalIgnoreCase)) pc.Add(ctx.PalletCode);
             _completion.CancelReservation(taskId);
-            _invStore.RecyclePicked(pc);
+            if (preparedInsertedCode != null)
+                _invStore.RollbackPreparedTaskStartContainer(startMark!, preparedInsertedCode);
+            _invStore.RecyclePicked(taskUnits.Where(code => !string.Equals(code, preparedInsertedCode, StringComparison.OrdinalIgnoreCase)));
             return null;
         }
 
@@ -227,25 +272,25 @@ public class TaskDispatcher
             throw;
         }
         var (ok, code, json) = dispatch;
-        var taskContainers = new List<string> { container ?? "" };
-        if (!string.IsNullOrEmpty(ctx.PalletCode) && !string.Equals(ctx.PalletCode, container, StringComparison.OrdinalIgnoreCase))
-            taskContainers.Add(ctx.PalletCode);
         if (ok)
         {
             taskIds.Add(taskId);
             taskDetails[taskId] = $"{tpl.Label} [{container}] {startWcs}->{destWcs}";
-            var isCargoInbound = string.Equals(tpl.Value, "CARGO_CARRY_INBOUND", StringComparison.OrdinalIgnoreCase);
-            var isCargoOutbound = string.Equals(tpl.Value, "CARGO_CARRY_OUTBOUND", StringComparison.OrdinalIgnoreCase);
-            _invStore.MarkBusy(taskContainers);
+            _invStore.MarkBusy(taskUnits);
             _completion.Activate(taskId);
             _log.Add(roundId, $"✓ 步骤 {stepNo} 完成！", "#4ade80");
-            ctx.LastEndMark = dest.Mark;
+            ctx.LastTaskId = taskId;
             var endIds = tpl.End?.AfterModules ?? [];
             try
             {
                 if (endIds.Count > 0 || step.WaitForFinish)
                 {
-                    await _stage.WaitFinishedAsync(taskId);
+                    if (!await _stage.WaitWcsCompletedAsync(taskId))
+                    {
+                        _log.Add(roundId, $"步骤 {stepNo} WCS 收尾失败：{taskId}，停止后续步骤", "#f87171");
+                        _log.AddOrUpdate("[模板步骤失败]", $"模板「{tpl.Label}」：任务 {taskId} WCS 收尾失败", "#f87171");
+                        return null;
+                    }
                 }
             }
             catch (Exception ex)
@@ -260,9 +305,13 @@ public class TaskDispatcher
             _log.AddOrUpdate("[模板步骤失败]", $"模板「{tpl.Label}」：下发失败 HTTP {code} {json[..Math.Min(json.Length, 200)]}", "#f87171");
             _completion.CancelReservation(taskId);
             if (code == -1)
-                _invStore.RecyclePicked(taskContainers);
+                _invStore.MarkFail(taskUnits, taskId);
             else
-                _invStore.MarkFail(taskContainers, taskId);
+            {
+                if (preparedInsertedCode != null)
+                    _invStore.RollbackPreparedTaskStartContainer(startMark!, preparedInsertedCode);
+                _invStore.RecyclePicked(taskUnits.Where(unit => !string.Equals(unit, preparedInsertedCode, StringComparison.OrdinalIgnoreCase)));
+            }
         }
         return null;
     }
@@ -270,8 +319,10 @@ public class TaskDispatcher
     private static MapStationLite? ChooseDestination(TaskTemplateDto tpl, List<MapStationLite> stations, HashSet<string> occupied, string? excludeMark)
     {
         bool Free(MapStationLite s)
-            => !occupied.Contains(s.Mark)
-            && (excludeMark == null || !string.Equals(s.Mark, excludeMark, StringComparison.OrdinalIgnoreCase));
+            // 人工分拣台由 RCS 队列调度，WCS 不因其下属实际分拣台已满而阻止下发。
+            => (s.StationType & Contracts.Dtos.MapStationTypeBits.PeopleStation) != 0
+            || (!occupied.Contains(s.Mark)
+            && (excludeMark == null || !string.Equals(s.Mark, excludeMark, StringComparison.OrdinalIgnoreCase)));
 
         MapStationLite? RandomPick(Func<MapStationLite, bool> pred)
         {
@@ -312,6 +363,15 @@ public class TaskDispatcher
         return st?.ToWcsCode() ?? mark;
     }
 
+    private static string ToMapMark(string stationCode)
+    {
+        var value = stationCode?.Trim() ?? "";
+        var separator = value.LastIndexOf('_');
+        return separator > 0 && int.TryParse(value[(separator + 1)..], out _)
+            ? value[..separator]
+            : value;
+    }
+
     /// <summary>单模板执行上下文（步骤链状态容器）。</summary>
     public class ExecCtx
     {
@@ -321,6 +381,6 @@ public class TaskDispatcher
         public string? CargoMark;
         public string? ContainerCode;
         public Dictionary<int, string> PickedByStep = new();
-        public string? LastEndMark;
+        public string? LastTaskId;
     }
 }

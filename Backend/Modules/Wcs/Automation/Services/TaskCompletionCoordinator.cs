@@ -20,14 +20,7 @@ public sealed class TaskCompletionCoordinator : BackgroundService
     private readonly ILogger<TaskCompletionCoordinator> _logger;
     private readonly ConcurrentDictionary<string, Reservation> _reservations = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, byte> _completionQueued = new(StringComparer.OrdinalIgnoreCase);
-    private readonly ConcurrentDictionary<string, byte> _endModulesQueued = new(StringComparer.OrdinalIgnoreCase);
     private readonly Channel<WorkItem> _lifecycleChannel = Channel.CreateUnbounded<WorkItem>(new UnboundedChannelOptions
-    {
-        SingleReader = true,
-        SingleWriter = false,
-        AllowSynchronousContinuations = false,
-    });
-    private readonly Channel<string> _endModuleChannel = Channel.CreateUnbounded<string>(new UnboundedChannelOptions
     {
         SingleReader = true,
         SingleWriter = false,
@@ -106,9 +99,8 @@ public sealed class TaskCompletionCoordinator : BackgroundService
         _stage.TaskFinished += OnFinished;
         try
         {
-            await Task.WhenAll(
-                ProcessLifecycleQueue(stoppingToken),
-                ProcessEndModuleQueue(stoppingToken));
+            ResumeUnfinishedFinalizations();
+            await ProcessLifecycleQueue(stoppingToken);
         }
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
         {
@@ -132,7 +124,7 @@ public sealed class TaskCompletionCoordinator : BackgroundService
                         _inventory.OnTaskLoadFinished(work.TaskId);
                         break;
                     case WorkKind.CompleteReservation:
-                        CompleteReservation(work.TaskId);
+                        await CompleteReservationAsync(work.TaskId);
                         break;
                 }
             }
@@ -143,29 +135,11 @@ public sealed class TaskCompletionCoordinator : BackgroundService
         }
     }
 
-    private async Task ProcessEndModuleQueue(CancellationToken stoppingToken)
-    {
-        await foreach (var taskId in _endModuleChannel.Reader.ReadAllAsync(stoppingToken))
-        {
-            try { await _modules.RunEndModulesAsync(taskId); }
-            catch (Exception ex) { _logger.LogError(ex, "终点模块执行失败：{TaskId}", taskId); }
-            finally { _endModulesQueued.TryRemove(taskId, out _); }
-        }
-    }
-
     private void OnLoadFinished(string taskId)
         => _lifecycleChannel.Writer.TryWrite(new WorkItem(WorkKind.LoadFinished, taskId));
 
     private void OnFinished(string taskId)
-    {
-        if (taskId.StartsWith("Auto_", StringComparison.OrdinalIgnoreCase))
-        {
-            QueueCompletion(taskId);
-            return;
-        }
-
-        QueueEndModules(taskId);
-    }
+        => QueueCompletion(taskId);
 
     private void QueueCompletion(string taskId)
     {
@@ -174,7 +148,7 @@ public sealed class TaskCompletionCoordinator : BackgroundService
             _lifecycleChannel.Writer.TryWrite(new WorkItem(WorkKind.CompleteReservation, taskId));
     }
 
-    private void CompleteReservation(string taskId)
+    private async Task CompleteReservationAsync(string taskId)
     {
         Reservation? reservation = null;
         if (_reservations.TryRemove(taskId, out var activeReservation))
@@ -188,11 +162,63 @@ public sealed class TaskCompletionCoordinator : BackgroundService
             return;
         }
 
-        _inventory.Release(taskId, reservation.DestinationMark);
-        _inventory.ClearTaskLock(taskId, reservation.StartStorageTaskLockMark);
-        QueueEndModules(taskId);
-        _completionQueued.TryRemove(taskId, out _);
-        _logger.LogInformation("任务完成资源已释放：{TaskId} -> {Destination}", taskId, reservation.DestinationMark);
+        try
+        {
+            _stage.TryRecordSystemEvent(taskId, "WCS_FINALIZING", true, 0);
+            var inventoryFinalized = _stage.GetAll().Any(record => record.TaskId == taskId
+                && record.Stage == "WCS_INVENTORY_FINALIZED" && record.IsSuccess);
+            var sorting = new WcsInventoryStore.SortingCompletionResult(false, false, reservation.DestinationMark, "");
+            if (!inventoryFinalized)
+            {
+                sorting = _inventory.TryReleaseToSortingChild(taskId, reservation.DestinationMark);
+                if (sorting.IsSortingParent)
+                {
+                    if (!sorting.Success)
+                    {
+                        _inventory.ClearTaskLock(taskId, reservation.StartStorageTaskLockMark);
+                        _stage.TryRecordSystemEvent(taskId, "SORTING_SLOT_ASSIGN_FAILED", false, 0);
+                        FinalizationFailed(taskId, sorting.Message);
+                        return;
+                    }
+
+                    _stage.UpdateEndStationCode(taskId, sorting.DestinationMark);
+                    _stage.TryRecordSystemEvent(taskId, $"SORTING_SLOT_ASSIGNED:{sorting.DestinationMark}", true, 0);
+                }
+                else
+                {
+                    _inventory.Release(taskId, reservation.DestinationMark);
+                    var releaseFailed = _stage.GetAll().Any(record => record.TaskId == taskId
+                        && record.Stage.StartsWith("INVENTORY_RELEASE_FAILED:", StringComparison.OrdinalIgnoreCase));
+                    if (releaseFailed)
+                    {
+                        _inventory.ClearTaskLock(taskId, reservation.StartStorageTaskLockMark);
+                        FinalizationFailed(taskId, "终点库存收尾失败");
+                        return;
+                    }
+                }
+                _stage.TryRecordSystemEvent(taskId, "WCS_INVENTORY_FINALIZED", true, 0);
+            }
+
+            _inventory.ClearTaskLock(taskId, reservation.StartStorageTaskLockMark);
+            if (!await _modules.RunEndModulesAsync(taskId))
+            {
+                FinalizationFailed(taskId, "终点后模块或库存效果失败");
+                return;
+            }
+
+            _stage.TryRecordSystemEvent(taskId, "WCS_COMPLETED", true, 0);
+            _logger.LogInformation("WCS 任务完成：{TaskId} -> {Destination}", taskId,
+                sorting.IsSortingParent && sorting.Success ? sorting.DestinationMark : reservation.DestinationMark);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "WCS 任务收尾失败：{TaskId}", taskId);
+            FinalizationFailed(taskId, ex.Message);
+        }
+        finally
+        {
+            _completionQueued.TryRemove(taskId, out _);
+        }
     }
 
     /// <summary>
@@ -222,10 +248,23 @@ public sealed class TaskCompletionCoordinator : BackgroundService
             : value;
     }
 
-    private void QueueEndModules(string taskId)
+    private void FinalizationFailed(string taskId, string reason)
     {
-        if (_endModulesQueued.TryAdd(taskId, 0))
-            _endModuleChannel.Writer.TryWrite(taskId);
+        _stage.TryRecordSystemEvent(taskId, "WCS_FINALIZATION_FAILED", false, 0);
+        _logger.LogWarning("WCS 任务收尾失败：{TaskId} {Reason}", taskId, reason);
+    }
+
+    private void ResumeUnfinishedFinalizations()
+    {
+        var records = _stage.GetAll();
+        foreach (var taskId in records.Where(record => record.Stage == "FINISHED")
+                     .Select(record => record.TaskId).Where(taskId => !string.IsNullOrWhiteSpace(taskId))
+                     .Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            var isFinal = records.Any(record => record.TaskId == taskId
+                && (record.Stage == "WCS_COMPLETED" || record.Stage == "WCS_FINALIZATION_FAILED"));
+            if (!isFinal) QueueCompletion(taskId);
+        }
     }
 
     private sealed record Reservation(string? StartStorageTaskLockMark, string DestinationMark, bool Active);

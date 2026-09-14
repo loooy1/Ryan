@@ -17,7 +17,7 @@
         🗺️ 库存地图与入库
         <span class="badge-info">已选 @_manualSelectedMarks.Count 个储位</span>
     </div>
-    @if (_manualStations.Count == 0)
+    @if (_manualSlots.Count == 0)
     {
         <div class="hint-text" style="margin-top:10px;">请先到“地图信息”页读取地图。手工入库只允许框选已同步到 WCS 的空储位。</div>
     }
@@ -105,6 +105,29 @@
                 </div>
 
                 <aside class="manual-inventory-panel">
+                    @if (_sortingEdit && _sortingSelectedMarks.Count > 0)
+                    {
+                        <div class="manual-sorting-actions">
+                            <div class="manual-actions-title">分拣台关联</div>
+                            <div class="manual-sorting-parent">人工分拣台 <code>@_sortingParentMark</code></div>
+                            <div class="manual-selected-stations">
+                                <b>已选实际分拣台（@_sortingSelectedMarks.Count）</b>
+                                <div class="manual-selected-chips">
+                                    @foreach (var mark in _sortingSelectedMarks.Order(StringComparer.OrdinalIgnoreCase))
+                                    {
+                                        <code>@mark</code>
+                                    }
+                                </div>
+                            </div>
+                            <div class="manual-action-grid">
+                                <button class="btn btn-primary btn-sm" @onclick="SaveSortingAssociation" disabled="@_sortingSaving">@(_sortingSaving ? "关联中..." : "关联")</button>
+                                <button class="btn btn-outline btn-sm" @onclick="RestoreSortingSelection" disabled="@_sortingSaving">取消</button>
+                                <button class="btn btn-outline btn-sm" @onclick="SaveAndEndSortingAssociation" disabled="@_sortingSaving">关联并结束</button>
+                            </div>
+                        </div>
+                    }
+                    @if (!_sortingEdit)
+                    {
                     <div class="form-group">
                         <label>库存类型</label>
                         <select @bind="_manualInventoryType" @bind:after="OnManualTypeChanged">
@@ -215,6 +238,7 @@
                         </button>
                         <span class="hint-text">以 RCS 当前库存重建 WCS 库存账本；存在在途自动化任务时会被拒绝。</span>
                     </div>
+                    }
                 </aside>
             </div>
     }
@@ -259,9 +283,15 @@
     private bool _syncLoading;
 
     // ── WCS 手工入库地图 ──
+    // Canvas 地图只由 WCS 的 wcs_slots 快照派生，不读取浏览器 grcs_map_stations 缓存。
     private List<MapStationLite> _manualStations = [];
     private readonly Dictionary<string, WcsSlotRow> _manualSlots = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _manualSelectedMarks = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _sortingSelectedMarks = new(StringComparer.OrdinalIgnoreCase);
+    private string _selectedSortingParentMark = "";
+    private string _sortingParentMark = "";
+    private bool _sortingEdit;
+    private bool _sortingSaving;
     private List<int> _manualFloors = [];
     private int _manualFloor;
     private string _manualInventoryType = ManualInventoryTypes.Pallet;
@@ -323,21 +353,7 @@
         if (wasCollapsed && !IsCollapsed("inv_manual")) await RefreshManualSnapshot();
     }
 
-    protected override async Task OnInitializedAsync()
-    {
-        try
-        {
-            if (V("grcs_map_stations") is string mapJson)
-            {
-                var cache = JsonSerializer.Deserialize<MapStationCache>(mapJson, JsonOpts);
-                _manualStations = cache?.Stations ?? [];
-                _manualFloors = _manualStations
-                    .Where(IsInventoryMapStation).Select(station => station.Floor).Distinct().Order().ToList();
-                _manualFloor = _manualFloors.FirstOrDefault();
-            }
-        }
-        catch { }
-    }
+    protected override Task OnInitializedAsync() => Task.CompletedTask;
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
@@ -349,7 +365,7 @@
             await InvokeAsync(StateHasChanged);
         }
 
-        if (_manualMapPendingMount && _manualStations.Count > 0)
+        if (_manualMapPendingMount && _manualSlots.Count > 0)
         {
             _manualMapPendingMount = false;
             await MountManualMapAsync();
@@ -380,7 +396,43 @@
 
     /// <summary>库存地图同时显示储位与接驳位；手工入库选点仍只接受储位。</summary>
     private static bool IsInventoryMapStation(MapStationLite station)
-        => (station.StationType & (MapStationTypeBits.StorageLocation | MapStationTypeBits.TransferPoint)) != 0;
+        => (station.StationType & (MapStationTypeBits.StorageLocation | MapStationTypeBits.TransferPoint
+            | MapStationTypeBits.PickingStation | MapStationTypeBits.PeopleStation)) != 0;
+
+    private static bool IsInventoryMapSlot(WcsSlotRow slot)
+        => slot.SiteType is "Storage" or "Terminal" or "PeopleStation" or "Sorting";
+
+    private static MapStationLite ToMapStation(WcsSlotRow slot) => new()
+    {
+        Mark = slot.Mark,
+        StationType = slot.SiteType switch
+        {
+            "Storage" => MapStationTypeBits.StorageLocation,
+            "Terminal" => MapStationTypeBits.TransferPoint,
+            "PeopleStation" => MapStationTypeBits.PeopleStation,
+            "Sorting" => MapStationTypeBits.PickingStation,
+            _ => 0,
+        },
+        X = slot.X,
+        Y = slot.Y,
+        Floor = slot.Floor,
+        StaEnable = true,
+    };
+
+    /// <summary>实际分拣台由地图类型决定；WCS 储位账本仅用于保存其库存和关联关系。</summary>
+    private bool IsSortingChildStation(string mark)
+        => _manualStations.Any(station => string.Equals(station.Mark, mark, StringComparison.OrdinalIgnoreCase)
+            && (station.StationType & MapStationTypeBits.PickingStation) != 0);
+
+    private bool IsPeopleSortingStation(string mark)
+        => _manualStations.Any(station => string.Equals(station.Mark, mark, StringComparison.OrdinalIgnoreCase)
+            && (station.StationType & MapStationTypeBits.PeopleStation) != 0);
+
+    private List<string> CurrentSortingChildren => string.IsNullOrWhiteSpace(_sortingParentMark)
+        ? []
+        : _manualSlots.Values
+            .Where(slot => string.Equals(slot.ParentStationCode, _sortingParentMark, StringComparison.OrdinalIgnoreCase))
+            .Select(slot => slot.Mark).Order(StringComparer.OrdinalIgnoreCase).ToList();
 
     private void SelectManualFloor(int floor) => _manualFloor = floor;
 
@@ -393,9 +445,17 @@
             var transitPositions = await WcsService.GetTransitPalletPositionsAsync();
             _manualSlots.Clear();
             foreach (var slot in slots ?? []) _manualSlots[slot.Mark] = slot;
+            _manualStations = _manualSlots.Values
+                .Where(IsInventoryMapSlot)
+                .Select(ToMapStation)
+                .ToList();
+            _manualFloors = _manualSlots.Values.Where(IsInventoryMapSlot)
+                .Select(slot => slot.Floor).Distinct().Order().ToList();
+            if (!_manualFloors.Contains(_manualFloor)) _manualFloor = _manualFloors.FirstOrDefault();
             _transitPositions = transitPositions ?? [];
             _transitLoadedAt = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
             _manualSelectedMarks.RemoveWhere(mark => !IsManualMapSelectable(mark));
+            _sortingSelectedMarks.RemoveWhere(mark => !IsSortingChildStation(mark));
             _manualMapRenderKey++;
             _manualMapPendingMount = true;
         }
@@ -412,9 +472,13 @@
             X = station.X,
             Y = station.Y,
             Floor = station.Floor,
-            StaEnable = IsManualMapSelectable(station.Mark),
-            VisualKind = ManualVisualKind(station.Mark),
+            StaEnable = _sortingEdit
+                ? IsSortingChildStation(station.Mark)
+                : IsManualMapSelectable(station.Mark) || IsPeopleSortingStation(station.Mark),
+            VisualKind = ManualVisualKind(station),
             Tooltip = ManualStationTooltip(station),
+            BadgeText = SortingStationBadge(station),
+            ParentMark = SortingMapParent(station),
         }).ToList();
 
         foreach (var transit in _transitPositions.Where(position => position.CurrentLocation != null))
@@ -438,10 +502,15 @@
             Floors = _manualFloors,
             InitialFloor = _manualFloor,
             Stations = stations,
-            Preselected = _manualSelectedMarks.ToList(),
+            Preselected = _sortingEdit
+                ? _sortingSelectedMarks.ToList()
+                : _manualSelectedMarks.Append(_selectedSortingParentMark)
+                    .Where(mark => !string.IsNullOrWhiteSpace(mark)).ToList(),
             ScaleSymbolsWithZoom = true,
             CompactSelection = true,
             ShowSelectedLabels = false,
+            ShowSortingLinks = _sortingEdit,
+            RightClickPeopleStationSelection = true,
         };
     }
 
@@ -460,9 +529,24 @@
     public Task OnManualMapSelectionChanged(List<string>? marks)
     {
         var next = new HashSet<string>(marks ?? [], StringComparer.OrdinalIgnoreCase);
-        if (_manualSelectedMarks.SetEquals(next)) return Task.CompletedTask;
+        if (_sortingEdit)
+        {
+            if (_sortingSelectedMarks.SetEquals(next)) return Task.CompletedTask;
+            _sortingSelectedMarks.Clear();
+            foreach (var mark in next) _sortingSelectedMarks.Add(mark);
+            return InvokeAsync(StateHasChanged);
+        }
+
+        var nextParent = next.Contains(_selectedSortingParentMark)
+            ? _selectedSortingParentMark
+            : next.Where(IsPeopleSortingStation).Order(StringComparer.OrdinalIgnoreCase).FirstOrDefault() ?? "";
+        var nextManual = new HashSet<string>(next.Where(IsManualMapSelectable), StringComparer.OrdinalIgnoreCase);
+        if (string.Equals(_selectedSortingParentMark, nextParent, StringComparison.OrdinalIgnoreCase)
+            && _manualSelectedMarks.SetEquals(nextManual)) return Task.CompletedTask;
+
+        _selectedSortingParentMark = nextParent;
         _manualSelectedMarks.Clear();
-        foreach (var mark in next) _manualSelectedMarks.Add(mark);
+        foreach (var mark in nextManual) _manualSelectedMarks.Add(mark);
         return InvokeAsync(StateHasChanged);
     }
 
@@ -471,6 +555,21 @@
     {
         if (_manualFloor == floor) return Task.CompletedTask;
         _manualFloor = floor;
+        return InvokeAsync(StateHasChanged);
+    }
+
+    [JSInvokable]
+    public Task OnManualMapSortingAssociationRequested(string mark)
+    {
+        var station = _manualStations.FirstOrDefault(item => string.Equals(item.Mark, mark, StringComparison.OrdinalIgnoreCase));
+        if (station == null || (station.StationType & MapStationTypeBits.PeopleStation) == 0) return Task.CompletedTask;
+        _selectedSortingParentMark = station.Mark;
+        _sortingParentMark = station.Mark;
+        _sortingSelectedMarks.Clear();
+        foreach (var child in CurrentSortingChildren) _sortingSelectedMarks.Add(child);
+        _sortingEdit = true;
+        _manualMapRenderKey++;
+        _manualMapPendingMount = true;
         return InvokeAsync(StateHasChanged);
     }
 
@@ -510,6 +609,50 @@
             && !string.Equals(slot.CargoStatus, "transit", StringComparison.OrdinalIgnoreCase);
     }
 
+    private void CancelSortingEdit()
+    {
+        _sortingEdit = false;
+        _sortingSelectedMarks.Clear();
+        _manualMapRenderKey++;
+        _manualMapPendingMount = true;
+    }
+
+    /// <summary>放弃本次尚未保存的点选，恢复为数据库中已有的关联。</summary>
+    private void RestoreSortingSelection()
+    {
+        _sortingSelectedMarks.Clear();
+        foreach (var child in CurrentSortingChildren) _sortingSelectedMarks.Add(child);
+        _manualMapRenderKey++;
+        _manualMapPendingMount = true;
+    }
+
+    private async Task SaveSortingAssociation()
+        => await PersistSortingAssociationAsync();
+
+    private async Task SaveAndEndSortingAssociation()
+    {
+        if (await PersistSortingAssociationAsync()) CancelSortingEdit();
+    }
+
+    private async Task<bool> PersistSortingAssociationAsync()
+    {
+        if (string.IsNullOrWhiteSpace(_sortingParentMark)) return false;
+        _sortingSaving = true;
+        try
+        {
+            var (ok, json) = await WcsService.SaveSortingAssociationAsync(new SortingStationAssociationRequest
+            {
+                ParentStationCode = _sortingParentMark,
+                ChildStationCodes = _sortingSelectedMarks.Order(StringComparer.OrdinalIgnoreCase).ToList(),
+            });
+            var result = JsonSerializer.Deserialize<SortingStationAssociationResult>(json, JsonOpts);
+            ShowFeedback(ok ? "✅" : "❌", result?.Message ?? json);
+            if (!ok) return false;
+            await RefreshManualSnapshot();
+            return true;
+        }
+        finally { _sortingSaving = false; }
+    }
     private IEnumerable<WcsSlotRow> SelectedManualSlots => _manualSelectedMarks
         .Select(mark => _manualSlots.TryGetValue(mark, out var slot) ? slot : null)
         .Where(slot => slot != null)
@@ -555,6 +698,32 @@
         return "empty";
     }
 
+    private string ManualVisualKind(MapStationLite station)
+    {
+        if ((station.StationType & MapStationTypeBits.PeopleStation) == 0)
+            return ManualVisualKind(station.Mark);
+        var children = _manualSlots.Values.Where(slot => string.Equals(slot.ParentStationCode, station.Mark, StringComparison.OrdinalIgnoreCase)).ToList();
+        if (children.Count == 0) return "empty";
+        var occupied = children.Count(slot => !string.IsNullOrEmpty(slot.PalletCode) || !string.IsNullOrEmpty(slot.CargoCode));
+        return occupied == children.Count ? "locked" : occupied > 0 ? "cargo" : "empty";
+    }
+
+    private string? SortingStationBadge(MapStationLite station)
+    {
+        if ((station.StationType & MapStationTypeBits.PeopleStation) == 0) return null;
+        var children = _manualSlots.Values.Where(slot => string.Equals(slot.ParentStationCode, station.Mark, StringComparison.OrdinalIgnoreCase)).ToList();
+        if (children.Count == 0) return null;
+        var occupied = children.Count(slot => !string.IsNullOrEmpty(slot.PalletCode) || !string.IsNullOrEmpty(slot.CargoCode));
+        return $"{occupied}/{children.Count}";
+    }
+
+    private string? SortingMapParent(MapStationLite station)
+    {
+        if (!_manualSlots.TryGetValue(station.Mark, out var slot)) return null;
+        if (_sortingEdit && _sortingSelectedMarks.Contains(station.Mark)) return _sortingParentMark;
+        return slot.ParentStationCode;
+    }
+
     private string ManualStationColor(MapStationLite station)
     {
         if (_manualSelectedMarks.Contains(station.Mark)) return "#38bdf8";
@@ -570,6 +739,13 @@
 
     private string ManualStationTooltip(MapStationLite station)
     {
+        if ((station.StationType & MapStationTypeBits.PeopleStation) != 0)
+        {
+            var children = _manualSlots.Values.Where(slot => string.Equals(slot.ParentStationCode, station.Mark, StringComparison.OrdinalIgnoreCase)).OrderBy(slot => slot.Mark).ToList();
+            if (children.Count == 0) return $"人工分拣台 {station.Mark}：未关联实际分拣台；右键可关联";
+            var occupied = children.Count(slot => !string.IsNullOrEmpty(slot.PalletCode) || !string.IsNullOrEmpty(slot.CargoCode));
+            return $"人工分拣台 {station.Mark}：占用 {occupied}/{children.Count}；右键可修改关联";
+        }
         if (!_manualSlots.TryGetValue(station.Mark, out var slot)) return $"{station.Mark}：未同步到 WCS 储位表";
         var pallet = string.IsNullOrWhiteSpace(slot.PalletCode) ? "无托盘" : $"托盘 {slot.PalletCode}（{slot.PalletStatus}）";
         var cargo = string.IsNullOrWhiteSpace(slot.CargoCode) ? "无货物" : $"货物 {slot.CargoCode}（{slot.CargoStatus}）";

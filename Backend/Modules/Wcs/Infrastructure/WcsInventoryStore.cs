@@ -22,6 +22,7 @@ public class WcsInventoryStore
         public IEnumerable<string> Codes => new[] { PalletCode, CargoCode }
             .Where(code => !string.IsNullOrWhiteSpace(code))!;
     }
+    public record SortingCompletionResult(bool IsSortingParent, bool Success, string DestinationMark, string Message);
 
     public const string FailPrefix = "fail:";
     public const string SelectionAvailable = "available";
@@ -63,6 +64,83 @@ public class WcsInventoryStore
     {
         using var uow = _uow.Create();
         return uow.Repository<WcsSlotRow>().FindAsync(mark).GetAwaiter().GetResult();
+    }
+
+    /// <summary>
+    /// 任务下发前，将模板生成或前置传入的容器准备到起点。
+    /// 已存在的同号单元仅转为 picked；新生成的单元以 picked 预写，
+    /// 由调用方在 RCS 明确拒绝任务时精确移除。
+    /// </summary>
+    public bool TryPrepareTaskStartContainer(string mark, string? code, out bool inserted, out string message)
+    {
+        inserted = false;
+        message = "";
+        if (string.IsNullOrWhiteSpace(code)) return true;
+
+        lock (WriteLock)
+        {
+            using var uow = _uow.Create();
+            var slot = uow.Repository<WcsSlotRow>().FindAsync(mark).GetAwaiter().GetResult();
+            if (slot == null) { message = "起点未同步到 WCS 库存"; return false; }
+
+            if (IsCargo(code))
+            {
+                if (!string.IsNullOrWhiteSpace(slot.CargoCode)
+                    && !string.Equals(slot.CargoCode, code, StringComparison.OrdinalIgnoreCase))
+                {
+                    message = $"起点已有其他货物 {slot.CargoCode}";
+                    return false;
+                }
+                inserted = string.IsNullOrWhiteSpace(slot.CargoCode);
+                slot.CargoCode = code;
+                if (slot.CargoStatus is "" or "ready") slot.CargoStatus = "picked";
+            }
+            else
+            {
+                if (!string.IsNullOrWhiteSpace(slot.PalletCode)
+                    && !string.Equals(slot.PalletCode, code, StringComparison.OrdinalIgnoreCase))
+                {
+                    message = $"起点已有其他托盘 {slot.PalletCode}";
+                    return false;
+                }
+                inserted = string.IsNullOrWhiteSpace(slot.PalletCode);
+                slot.PalletCode = code;
+                if (slot.PalletStatus is "" or "ready") slot.PalletStatus = "picked";
+            }
+            RefreshSelectionStatus(slot);
+            slot.UpdatedAt = DateTime.Now.ToString("O");
+            uow.CommitAsync().GetAwaiter().GetResult();
+            return true;
+        }
+    }
+
+    /// <summary>RCS 明确拒绝下发时，仅移除本次预写的新单元，不触碰原有托盘或货物。</summary>
+    public void RollbackPreparedTaskStartContainer(string mark, string? code)
+    {
+        if (string.IsNullOrWhiteSpace(mark) || string.IsNullOrWhiteSpace(code)) return;
+        lock (WriteLock)
+        {
+            using var uow = _uow.Create();
+            var slot = uow.Repository<WcsSlotRow>().FindAsync(mark).GetAwaiter().GetResult();
+            if (slot == null) return;
+            if (IsCargo(code) && string.Equals(slot.CargoCode, code, StringComparison.OrdinalIgnoreCase)
+                && slot.CargoStatus == "picked")
+            {
+                slot.CargoCode = "";
+                slot.CargoStatus = "";
+            }
+            else if (!IsCargo(code) && string.Equals(slot.PalletCode, code, StringComparison.OrdinalIgnoreCase)
+                && slot.PalletStatus == "picked")
+            {
+                slot.PalletCode = "";
+                slot.PalletStatus = "";
+            }
+            else return;
+
+            RefreshSelectionStatus(slot);
+            slot.UpdatedAt = DateTime.Now.ToString("O");
+            uow.CommitAsync().GetAwaiter().GetResult();
+        }
     }
 
     /// <summary>读取已完成装载、尚未完成任务的在途记录；每条记录包含同次搬运的托盘和货物。</summary>
@@ -190,29 +268,100 @@ public class WcsInventoryStore
 
     // ── 储位表（地图镜像）──
 
-    /// <summary>全量重建储位表：清空全部储位行 → 按地图储位+接驳位点重新填充（仅「同步至 WCS」时执行）。</summary>
+    /// <summary>全量重建库存站点表：按地图写入储位、接驳位、人工拣选台和实际分拣点（仅「同步至 WCS」时执行）。</summary>
     public void EnsureSlots()
     {
         lock (WriteLock)
         {
             using var uow = _uow.Create();
             var repo = uow.Repository<WcsSlotRow>();
+            // 同步库存会重建账本行，但人工分拣台关联是 WCS 自己维护的配置，必须保留。
+            // 必须无跟踪读取：后续 ExecuteDelete 后会为相同 Mark 建立新对象，
+            // 旧对象仍被 DbContext 跟踪时会触发“同主键实体已被跟踪”。
+            var parentByMark = repo.FindAllAsync().GetAwaiter().GetResult()
+                .Where(row => !string.IsNullOrWhiteSpace(row.ParentStationCode))
+                .ToDictionary(row => row.Mark, row => row.ParentStationCode, StringComparer.OrdinalIgnoreCase);
             repo.DeleteWhereAsync(_ => true).GetAwaiter().GetResult();
-            var stations = _map.GetStations();
+            var stations = InventoryMapStations();
             foreach (var st in stations)
             {
-                if ((st.StationType & (Contracts.Dtos.MapStationTypeBits.StorageLocation | Contracts.Dtos.MapStationTypeBits.TransferPoint)) == 0) continue;
-                var siteType = (st.StationType & Contracts.Dtos.MapStationTypeBits.StorageLocation) != 0 ? "Storage" : "Terminal";
+                if (!IsInventoryMapStation(st)) continue;
+                var siteType = SiteTypeOf(st);
                 repo.AddAsync(new WcsSlotRow
                 {
                     Mark = st.Mark,
                     SiteType = siteType,
+                    Floor = st.Floor,
+                    X = st.X,
+                    Y = st.Y,
+                    ParentStationCode = parentByMark.TryGetValue(st.Mark, out var parent) ? parent : "",
                     SelectionStatus = siteType == "Storage" ? SelectionStartUnavailable : SelectionAvailable,
                     UpdatedAt = DateTime.Now.ToString("O")
                 }).GetAwaiter().GetResult();
             }
             uow.CommitAsync().GetAwaiter().GetResult();
         }
+    }
+
+    /// <summary>
+    /// 地图读取后更新站点定义。相同 Mark 的库存、锁和人工分拣关联均保留，仅刷新类型和坐标；
+    /// 新站点按空库存创建，使库存地图不再依赖浏览器地图缓存。
+    /// </summary>
+    public int SyncMapSlots()
+    {
+        lock (WriteLock)
+        {
+            using var uow = _uow.Create();
+            var repo = uow.Repository<WcsSlotRow>();
+            var rows = repo.Query().ToList().ToDictionary(row => row.Mark, StringComparer.OrdinalIgnoreCase);
+            var count = 0;
+            foreach (var station in InventoryMapStations())
+            {
+                var siteType = SiteTypeOf(station);
+                if (rows.TryGetValue(station.Mark, out var row))
+                {
+                    row.SiteType = siteType;
+                    row.Floor = station.Floor;
+                    row.X = station.X;
+                    row.Y = station.Y;
+                    row.UpdatedAt = DateTime.Now.ToString("O");
+                }
+                else
+                {
+                    repo.AddAsync(new WcsSlotRow
+                    {
+                        Mark = station.Mark,
+                        SiteType = siteType,
+                        Floor = station.Floor,
+                        X = station.X,
+                        Y = station.Y,
+                        SelectionStatus = siteType == "Storage" ? SelectionStartUnavailable : SelectionAvailable,
+                        UpdatedAt = DateTime.Now.ToString("O")
+                    }).GetAwaiter().GetResult();
+                }
+                count++;
+            }
+            uow.CommitAsync().GetAwaiter().GetResult();
+            return count;
+        }
+    }
+
+    private static bool IsInventoryMapStation(MapStationLite station)
+        => (station.StationType & (MapStationTypeBits.StorageLocation | MapStationTypeBits.TransferPoint
+            | MapStationTypeBits.PickingStation | MapStationTypeBits.PeopleStation)) != 0;
+
+    /// <summary>同一站点号只建一行；RCS 地图当前无重复，此处作为写库边界保护。</summary>
+    private List<MapStationLite> InventoryMapStations()
+        => _map.GetStations().Where(IsInventoryMapStation)
+            .GroupBy(station => station.Mark, StringComparer.OrdinalIgnoreCase)
+            .Select(group => group.Last()).ToList();
+
+    private static string SiteTypeOf(MapStationLite station)
+    {
+        if ((station.StationType & MapStationTypeBits.StorageLocation) != 0) return "Storage";
+        if ((station.StationType & MapStationTypeBits.TransferPoint) != 0) return "Terminal";
+        if ((station.StationType & MapStationTypeBits.PeopleStation) != 0) return "PeopleStation";
+        return "Sorting";
     }
 
     /// <summary>
@@ -576,6 +725,122 @@ public class WcsInventoryStore
         }
     }
 
+    /// <summary>
+    /// 人工分拣台完成时，由 WCS 在其空闲的实际分拣台中选择一格写入库存。
+    /// 整个选择和写入操作在同一把 SQLite 写锁内完成，两个 FINISHED 回调不会占用同一分拣台。
+    /// </summary>
+    public SortingCompletionResult TryReleaseToSortingChild(string taskId, string parentMark)
+    {
+        if (string.IsNullOrWhiteSpace(parentMark))
+            return new(false, false, "", "人工分拣台为空");
+
+        lock (WriteLock)
+        {
+            using var uow = _uow.Create();
+            var repo = uow.Repository<WcsSlotRow>();
+            var isPeopleStation = _map.GetStations().Any(station =>
+                string.Equals(station.Mark, parentMark, StringComparison.OrdinalIgnoreCase)
+                && (station.StationType & MapStationTypeBits.PeopleStation) != 0);
+            if (!isPeopleStation)
+                return new(false, false, "", "不是人工分拣台");
+            var candidates = repo.Query().ToList()
+                .Where(row => string.Equals(row.ParentStationCode, parentMark, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+            if (candidates.Count == 0)
+                return new(true, false, "", $"人工分拣台 {parentMark} 尚未关联实际分拣台");
+
+            var destination = candidates
+                .Where(row => string.IsNullOrEmpty(row.PalletCode)
+                    && string.IsNullOrEmpty(row.CargoCode)
+                    && string.IsNullOrEmpty(row.TaskLockId))
+                .OrderBy(_ => Random.Shared.Next())
+                .FirstOrDefault();
+            if (destination == null)
+                return new(true, false, "", $"人工分拣台 {parentMark} 的实际分拣台均已占用");
+
+            var codes = GetTaskTransitCodes(taskId);
+            if (codes.Count == 0)
+                return new(true, false, "", "任务没有 TRANSIT 记录，未写入分拣库存");
+
+            foreach (var code in codes)
+            {
+                foreach (var row in repo.Query().AsEnumerable().Where(row =>
+                    string.Equals(row.PalletCode, code, StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(row.CargoCode, code, StringComparison.OrdinalIgnoreCase)).ToList())
+                {
+                    if (string.Equals(row.PalletCode, code, StringComparison.OrdinalIgnoreCase)) { row.PalletCode = ""; row.PalletStatus = ""; }
+                    if (string.Equals(row.CargoCode, code, StringComparison.OrdinalIgnoreCase)) { row.CargoCode = ""; row.CargoStatus = ""; }
+                    RefreshSelectionStatus(row);
+                    row.UpdatedAt = DateTime.Now.ToString("O");
+                }
+            }
+
+            foreach (var code in codes)
+            {
+                if (IsCargo(code)) { destination.CargoCode = code; destination.CargoStatus = "ready"; }
+                else { destination.PalletCode = code; destination.PalletStatus = "ready"; }
+            }
+            RefreshSelectionStatus(destination);
+            destination.UpdatedAt = DateTime.Now.ToString("O");
+            uow.CommitAsync().GetAwaiter().GetResult();
+            return new(true, true, destination.Mark, "已写入实际分拣台");
+        }
+    }
+
+    /// <summary>保存人工分拣台与实际分拣台的关联。库存或任务锁定中的分拣台不能被改绑。</summary>
+    public SortingStationAssociationResult SaveSortingAssociation(SortingStationAssociationRequest request)
+    {
+        var parent = request.ParentStationCode?.Trim() ?? "";
+        var children = (request.ChildStationCodes ?? [])
+            .Select(mark => mark?.Trim() ?? "")
+            .Where(mark => !string.IsNullOrWhiteSpace(mark))
+            .Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        var stations = _map.GetStations();
+        var parentStation = stations.FirstOrDefault(station => string.Equals(station.Mark, parent, StringComparison.OrdinalIgnoreCase));
+        if (parentStation == null || (parentStation.StationType & MapStationTypeBits.PeopleStation) == 0)
+            return new() { Message = "请选择地图中的人工分拣台" };
+        var validChildren = stations.Where(station => children.Contains(station.Mark, StringComparer.OrdinalIgnoreCase)
+                && (station.StationType & MapStationTypeBits.PickingStation) != 0)
+            .Select(station => station.Mark).ToList();
+        if (validChildren.Count != children.Count)
+            return new() { ParentStationCode = parent, Message = "只能关联地图中的实际分拣台" };
+
+        lock (WriteLock)
+        {
+            using var uow = _uow.Create();
+            var repo = uow.Repository<WcsSlotRow>();
+            var rows = repo.Query().ToList();
+            var selected = rows.Where(row => validChildren.Contains(row.Mark, StringComparer.OrdinalIgnoreCase)).ToList();
+            if (selected.Count != validChildren.Count)
+                return new() { ParentStationCode = parent, Message = "实际分拣台尚未同步到 WCS，请先执行 RCS 同步至 WCS" };
+
+            var current = rows.Where(row => string.Equals(row.ParentStationCode, parent, StringComparison.OrdinalIgnoreCase)).ToList();
+            var changed = current.Concat(selected).DistinctBy(row => row.Mark, StringComparer.OrdinalIgnoreCase)
+                .Where(row => !string.Equals(row.ParentStationCode, parent, StringComparison.OrdinalIgnoreCase)
+                    || !validChildren.Contains(row.Mark, StringComparer.OrdinalIgnoreCase)).ToList();
+            if (changed.Any(row => !string.IsNullOrEmpty(row.PalletCode) || !string.IsNullOrEmpty(row.CargoCode) || !string.IsNullOrEmpty(row.TaskLockId)))
+                return new() { ParentStationCode = parent, Message = "存在库存或任务锁定的实际分拣台，不能修改关联" };
+            var taken = selected.FirstOrDefault(row => !string.IsNullOrEmpty(row.ParentStationCode)
+                && !string.Equals(row.ParentStationCode, parent, StringComparison.OrdinalIgnoreCase));
+            if (taken != null)
+                return new() { ParentStationCode = parent, Message = $"实际分拣台 {taken.Mark} 已关联到 {taken.ParentStationCode}" };
+
+            foreach (var row in current.Where(row => !validChildren.Contains(row.Mark, StringComparer.OrdinalIgnoreCase)))
+            {
+                row.ParentStationCode = "";
+                row.UpdatedAt = DateTime.Now.ToString("O");
+            }
+            foreach (var row in selected)
+            {
+                row.ParentStationCode = parent;
+                row.UpdatedAt = DateTime.Now.ToString("O");
+            }
+            uow.CommitAsync().GetAwaiter().GetResult();
+            return new() { Success = true, ParentStationCode = parent, ChildStationCodes = validChildren,
+                Message = validChildren.Count == 0 ? "已解除人工分拣台关联" : "人工分拣台关联已保存" };
+        }
+    }
+
     /// <summary>链 finally 回收：选过但未下发的 picked 记录 → ready。</summary>
     public void RecyclePicked(IEnumerable<string> codes)
     {
@@ -720,12 +985,14 @@ public class WcsInventoryStore
             .Select(s => s.Mark), StringComparer.OrdinalIgnoreCase);
     }
 
-    /// <summary>储位+接驳位（任务终点可落地容器的非储位点）集合：查库存展示与储位表建行共用。</summary>
+    /// <summary>储位、接驳位和实际分拣台集合：查库存展示与储位表建行共用。</summary>
     public HashSet<string> StorageAndTerminalMarks()
     {
         var stations = _map.GetStations();
         return new HashSet<string>(stations
-            .Where(s => (s.StationType & (Contracts.Dtos.MapStationTypeBits.StorageLocation | Contracts.Dtos.MapStationTypeBits.TransferPoint)) != 0)
+            .Where(s => (s.StationType & (Contracts.Dtos.MapStationTypeBits.StorageLocation
+                | Contracts.Dtos.MapStationTypeBits.TransferPoint
+                | Contracts.Dtos.MapStationTypeBits.PickingStation)) != 0)
             .Select(s => s.Mark), StringComparer.OrdinalIgnoreCase);
     }
 

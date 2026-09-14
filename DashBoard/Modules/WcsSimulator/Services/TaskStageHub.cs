@@ -97,7 +97,7 @@ public class TaskStageHub : IDisposable
         }
     }
 
-    /// <summary>已 FINISHED 的任务号集合（大小写不敏感）。</summary>
+    /// <summary>已 WCS 任务完成的任务号集合（大小写不敏感）。</summary>
     public HashSet<string> FinishedTaskIds => _finished;
 
     /// <summary>纯移动任务循环状态（后端 MoveLoopRunner SignalR 广播，本标签页实时快照）。</summary>
@@ -204,7 +204,8 @@ public class TaskStageHub : IDisposable
         {
             _records.Add(evt);
             if (_records.Count > MaxCache) _records.RemoveRange(0, _records.Count - MaxCache);
-            if (string.Equals(evt.Stage, "FINISHED", StringComparison.OrdinalIgnoreCase))
+            if (string.Equals(evt.Stage, "WCS_COMPLETED", StringComparison.OrdinalIgnoreCase)
+                && string.Equals(evt.StageStatus, TaskStageStatuses.Success, StringComparison.OrdinalIgnoreCase))
                 _finished.Add(evt.TaskId);
         }
         Changed?.Invoke();
@@ -221,7 +222,9 @@ public class TaskStageHub : IDisposable
             if (_records.Count > MaxCache) _records.RemoveRange(0, _records.Count - MaxCache);
             _finished.Clear();
             foreach (var r in _records)
-                if (string.Equals(r.Stage, "FINISHED", StringComparison.OrdinalIgnoreCase) && !string.IsNullOrEmpty(r.TaskId))
+                if (string.Equals(r.Stage, "WCS_COMPLETED", StringComparison.OrdinalIgnoreCase)
+                    && string.Equals(r.StageStatus, TaskStageStatuses.Success, StringComparison.OrdinalIgnoreCase)
+                    && !string.IsNullOrEmpty(r.TaskId))
                     _finished.Add(r.TaskId);
         }
         Changed?.Invoke();

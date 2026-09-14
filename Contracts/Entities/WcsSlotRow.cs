@@ -10,8 +10,12 @@ namespace Contracts.Entities;
 public class WcsSlotRow
 {
     public string Mark { get; set; } = "";
-    /// <summary>站点类型：Storage（储位）/ Terminal（接驳位），建行时按地图站点类型写入。</summary>
+    /// <summary>站点类型：Storage（储位）/ Terminal（接驳位）/ PeopleStation（人工拣选台）/ Sorting（实际分拣点）。</summary>
     public string SiteType { get; set; } = "";
+    /// <summary>地图绘制坐标，由读取 RCS 地图时写入；库存页以本表为唯一地图数据源。</summary>
+    public int Floor { get; set; }
+    public double X { get; set; }
+    public double Y { get; set; }
     public string PalletCode { get; set; } = "";
     public string PalletStatus { get; set; } = "";
     public string CargoCode { get; set; } = "";
@@ -19,6 +23,8 @@ public class WcsSlotRow
     /// <summary>已选中该储位的 WCS 任务号；非空时该储位不可再次作为任务终点。</summary>
     /// <summary>当前锁定该储位的 WCS 任务号；储位作为任务起点或终点时均会写入。</summary>
     public string TaskLockId { get; set; } = "";
+    /// <summary>实际分拣台所属的人工分拣台 Mark；非分拣台为空。</summary>
+    public string ParentStationCode { get; set; } = "";
     /// <summary>站点选取状态：available / start_unavailable / destination_unavailable / task_start_locked / task_end_locked。</summary>
     public string SelectionStatus { get; set; } = "available";
     public string UpdatedAt { get; set; } = "";
