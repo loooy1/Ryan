@@ -73,30 +73,6 @@ public class TaskStageHub : IDisposable
         }
     }
 
-    /// <summary>创建视图（stage=CREATED，替代原 TaskLedgerService.GetAsync 读台账；最新在前）。</summary>
-    public IReadOnlyList<TaskLedgerEntry> CreatedTasks
-    {
-        get
-        {
-            lock (_lock)
-            {
-                return _records.Where(r => r.IsCreated).Reverse().Select(r => new TaskLedgerEntry
-                {
-                    TaskId = r.TaskId,
-                    TaskType = r.TaskType,
-                    ContainerCode = r.ContainerCode,
-                    CargoCode = r.CargoCode,
-                    StartStationCode = r.StartStationCode,
-                    EndStationCode = r.EndStationCode,
-                    Warehouse = r.Warehouse,
-                    Time = r.Time.ToString("O"),
-                    Ok = r.IsSuccess,
-                    StatusCode = r.StatusCode,
-                }).ToList();
-            }
-        }
-    }
-
     /// <summary>已 WCS 任务完成的任务号集合（大小写不敏感）。</summary>
     public HashSet<string> FinishedTaskIds => _finished;
 

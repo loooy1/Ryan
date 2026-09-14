@@ -1,8 +1,6 @@
 @page "/wcs-simulator/task-stages"
 @page "/wcs-simulator/history"
 @inject WcsApiClient WcsApi
-@inject TaskLedgerService Ledger
-@inject TaskStageHub StageHub
 @inject AutomationHub AutoHub
 @inject BackendHealthService Health
 @inherits Dashboard.Modules.WcsSimulator.Components.PageStateBase
@@ -196,10 +194,10 @@
 
 @code {
     // ── 台账展示 ──
-    private List<TaskLedgerEntry> _ledger = [];     // 台账原始数据（TaskLedgerService 内存缓存读取）
-    private Dictionary<string, TaskLedgerEntry> _ledgerMap = new(StringComparer.OrdinalIgnoreCase); // TaskId → 条目（回库任务关联查找用）
-    private List<TaskLedgerEntry> _filtered = [];   // 经筛选 + 关键词过滤后的结果
-    private List<TaskLedgerEntry> _visible = [];    // 当前已加载的可视窗口（分页加载，每页 PageSize 条）
+    private List<TaskRecord> _ledger = [];     // 台账原始数据（task_records 内存缓存读取）
+    private Dictionary<string, TaskRecord> _ledgerMap = new(StringComparer.OrdinalIgnoreCase); // TaskId → 条目（回库任务关联查找用）
+    private List<TaskRecord> _filtered = [];   // 经筛选 + 关键词过滤后的结果
+    private List<TaskRecord> _visible = [];    // 当前已加载的可视窗口（分页加载，每页 PageSize 条）
     private string _activeFilter = "all";           // 当前类型筛选键（见 _filters）
     private string _keyword = "";                   // 关键词（任务ID/托盘/货物/站点）
     private const int PageSize = 100;               // 每页条数，防大量记录一次渲染卡顿
@@ -221,7 +219,6 @@
     private string _lastError = "";
     private bool _showMockReminder;                 // task_stage_change 未配置 Mock 时提示
     private Dictionary<string, List<TaskRecord>> _groups = [];         // TaskId → task_records 完整阶段记录（时间正序）
-    private Dictionary<string, string> _taskTypeMap = [];              // TaskId → TaskType（从下发历史还原）
     private bool _clearConfirming;                                     // 清空全部确认态
     private bool _forceConfirming;                                      // 强制删除输入行显示态
     private string _forceTaskId = "";                                   // 强制删除目标任务ID
@@ -252,7 +249,6 @@
         catch { }
 
         // 恢复下发历史（台账内存缓存，无 JS 边界）
-        try { await RebuildTaskTypeMap(); } catch { }
         try { await CheckMockConfig(); } catch { }
 
         // 懒加载：只有展开才发 HTTP/读台账，折叠的等用户展开时再拉
@@ -292,19 +288,7 @@
     }
 
     /// <summary>从台账重建 TaskId → TaskType 映射（台账走内存缓存，轮询中重复调用开销极小）。</summary>
-    private async Task RebuildTaskTypeMap()
-    {
-        try
-        {
-            var entries = await Ledger.GetAsync();
-            foreach (var t in entries)
-            {
-                if (!string.IsNullOrEmpty(t.TaskId) && !string.IsNullOrEmpty(t.TaskType))
-                    _taskTypeMap[t.TaskId] = t.TaskType;
-            }
-        }
-        catch { }
-    }
+
 
     private async Task CheckMockConfig()
     {
@@ -321,21 +305,29 @@
     /// </summary>
     private async Task LoadEvents()
     {
-        await RebuildTaskTypeMap();
-        await StageHub.EnsureStartedAsync();
-        if (Health.WcsOnline == false) { _pollingOk = false; _lastError = "无法连接 WCS 后端"; return; }
-        _pollingOk = true;
-        var records = StageHub.TaskRecords.ToList();
-        try
+        if (Health.WcsOnline == false)
         {
-            foreach (var record in records)
-            {
-                if (string.IsNullOrEmpty(record.TaskType) && _taskTypeMap.TryGetValue(record.TaskId, out var tt))
-                    record.TaskType = tt;
-            }
-            BuildGroups(records);
+            _pollingOk = false;
+            _lastError = "WCS backend is unavailable";
+            return;
         }
-        catch { }
+
+        var records = await WcsApi.GetTaskRecordsAsync();
+        if (records == null)
+        {
+            _pollingOk = false;
+            _lastError = "Failed to read task records";
+            return;
+        }
+
+        _pollingOk = true;
+        BuildGroups(records);
+        _ledger = records.Where(record => record.IsCreated)
+            .OrderByDescending(record => record.Id).ToList();
+        _ledgerMap = _ledger.Where(record => !string.IsNullOrEmpty(record.TaskId))
+            .GroupBy(record => record.TaskId, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
+        ApplyFilter();
     }
 
     /// <summary>将 task_records 完整记录按 TaskId 分组，供任意台账行展开完整时间线。</summary>
@@ -349,23 +341,16 @@
     }
 
     /// <summary>重新读台账并应用筛选（台账 2s 缓存，刷新成本低）。</summary>
-    private async Task LoadLedger()
+    private Task LoadLedger()
     {
-        try
-        {
-            _ledger = await Ledger.GetAsync();
-            _ledgerMap = _ledger.Where(x => !string.IsNullOrEmpty(x.TaskId))
-                .ToDictionary(x => x.TaskId, StringComparer.OrdinalIgnoreCase);
-        }
-        catch { }
         ApplyFilter();
+        return Task.CompletedTask;
     }
 
     /// <summary>手动触发一次刷新。</summary>
     private async Task RefreshNow()
     {
         _busy = true;
-        await StageHub.RefreshSnapshotAsync();
         await RefreshAll();
         _busy = false;
     }
@@ -378,29 +363,11 @@
         StateHasChanged();
     }
 
-    /// <summary>分拣任务 → 回库任务号：优先取已发送参数（workflow_state sent 行），未发送回退 TaskId+"_R"。</summary>
-    private string ReturnTaskIdOf(string taskId)
-    {
-        if (AutoHub.ConfirmState.TryGetValue("sent", out var rows))
-        {
-            var row = rows.FirstOrDefault(r => r.TaskId == taskId);
-            if (row?.Value is string v)
-            {
-                try
-                {
-                    var p = System.Text.Json.JsonSerializer.Deserialize<SortingSendParams>(v, _jsonOpts);
-                    if (!string.IsNullOrWhiteSpace(p?.ReturnTaskId)) return p.ReturnTaskId;
-                }
-                catch { }
-            }
-        }
-        return taskId + "_R";
-    }
-
-    private static readonly System.Text.Json.JsonSerializerOptions _jsonOpts = new() { PropertyNameCaseInsensitive = true };
+    /// <summary>分拣任务的回库任务号由模块执行前效果固定生成。</summary>
+    private static string ReturnTaskIdOf(string taskId) => taskId + "_R";
 
     /// <summary>任务状态：由 task_records 的完整阶段和创建行结果推导。</summary>
-    private string TaskStatus(TaskLedgerEntry e)
+    private string TaskStatus(TaskRecord e)
     {
         if (_groups.TryGetValue(e.TaskId, out var evts))
         {
@@ -415,8 +382,8 @@
                 || x.Stage.StartsWith("AFTER_END_MODULE:", StringComparison.OrdinalIgnoreCase))) return "执行中";
             if (evts.Any(x => x.Stage == "DISPATCHED")) return "已下发";
         }
-        if (!e.Ok && e.StatusCode != 0) return "失败";
-        if (!e.Ok) return "已创建";
+        if (!e.IsSuccess && e.StatusCode != 0) return "失败";
+        if (!e.IsSuccess) return "已创建";
         if (_groups.TryGetValue(e.TaskId, out var createdRecords) && createdRecords.Any(x => x.Stage == "CREATED")) return "已创建";
         return "已下发";
     }
@@ -440,7 +407,7 @@
     /// <summary>按类型 + 关键词过滤台账（回库任务不单独成行，挂在分拣任务展开区），过滤后只取前 PageSize 条进入可视窗口。</summary>
     private void ApplyFilter()
     {
-        IEnumerable<TaskLedgerEntry> q = _ledger.Where(e => e.TaskType != "SORTING_RETURN");
+        IEnumerable<TaskRecord> q = _ledger.Where(e => e.TaskType != "RCS_RETURN");
         switch (_activeFilter)
         {
             case "in": q = q.Where(e => e.TaskType is "CONTAINER_CARRY_INBOUND" or "CARGO_CARRY_INBOUND"); break;
@@ -467,6 +434,8 @@
     /// <summary>任务类型码 → 显示文本：附加中文标签，未知码原样显示。</summary>
     private static string TypeLabel(string code)
     {
+        if (string.Equals(code, "RCS_RETURN", StringComparison.OrdinalIgnoreCase))
+            return "RCS_RETURN（RCS 回库任务）";
         var t = TaskTypeRegistry.All.FirstOrDefault(x => x.Value == code);
         return t != null ? $"{code}（{t.Label}）" : code;
     }
@@ -484,7 +453,6 @@
             _busy = false;
             return;
         }
-        StageHub.RemoveTask(taskId);   // 同步共享缓存，避免其他页面的等待者基于已删除事件误判
         _groups.Remove(taskId);
         _expanded.Remove(taskId);
         _busy = false;
@@ -512,10 +480,12 @@
     }
 
     /// <summary>任务是否可删除：下发失败（结束态）或已完成（FINISHED）→ 可删；已下发/执行中 → 禁止。</summary>
-    private bool IsDeletable(TaskLedgerEntry e)
+    private bool IsDeletable(TaskRecord e)
     {
-        if (!e.Ok) return true;
-        return StageHub.FinishedTaskIds.Contains(e.TaskId);
+        if (!e.IsSuccess) return true;
+        return _groups.TryGetValue(e.TaskId, out var stages)
+            && stages.Any(stage => (stage.Stage == "WCS_COMPLETED" && stage.StageStatus == TaskStageStatuses.Success)
+                || stage.Stage is "WCS_FINALIZATION_FAILED" or "CANCELLED" or "DISPATCH_FAILED");
     }
 
     /// <summary>强制删除：无视任务状态直接删除全行（后端 + 本地缓存 + 列表）。</summary>
@@ -531,12 +501,10 @@
             _busy = false;
             return;
         }
-        StageHub.RemoveTask(taskId);   // 同步共享缓存（含 FINISHED 集合）
         _groups.Remove(taskId);
         _expanded.Remove(taskId);
         _ledger.RemoveAll(x => string.Equals(x.TaskId, taskId, StringComparison.OrdinalIgnoreCase));
         _ledgerMap.Remove(taskId);
-        _taskTypeMap.Remove(taskId);
         ApplyFilter();
         _forceConfirming = false;
         _forceTaskId = "";
@@ -548,14 +516,10 @@
         if (e.Key == "Enter") await ForceDelete();
     }
 
-    /// <summary>将任务类型代码映射为中文含义。</summary>
-    private static string TaskTypeLabel(string code) => TaskTypeRegistry.All
-        .FirstOrDefault(t => t.Value == code)?.Label ?? code;
-
     private static string StageLabel(string stage)
     {
         const StringComparison comparison = StringComparison.OrdinalIgnoreCase;
-        if (string.Equals(stage, "CREATED", comparison)) return "创建任务";
+        if (string.Equals(stage, "CREATED", comparison)) return "WCS任务创建";
         if (string.Equals(stage, "DISPATCHED", comparison)) return "已下发 RCS";
         if (string.Equals(stage, "START", comparison)) return "任务开始";
         if (string.Equals(stage, "LOAD_FINISH", comparison)) return "装载完成";
@@ -567,11 +531,13 @@
         if (string.Equals(stage, "WCS_FINALIZATION_FAILED", comparison)) return "WCS任务收尾失败";
         if (string.Equals(stage, "CANCELLED", comparison)) return "任务取消";
         if (string.Equals(stage, "DISPATCH_FAILED", comparison)) return "下发失败";
+        if (string.Equals(stage, "RETURN_TASK_REGISTERED", comparison)) return "RCS回库任务已登记";
+        if (stage.StartsWith("PRE_EFFECT:", comparison)) return "模块执行前效果：" + stage["PRE_EFFECT:".Length..];
+        if (stage.StartsWith("EFFECT_CONFIGURATION:", comparison)) return "模块效果配置错误：" + stage["EFFECT_CONFIGURATION:".Length..];
         if (stage.StartsWith("BEFORE_MODULE:", comparison)) return "起点前模块：" + stage["BEFORE_MODULE:".Length..];
         if (stage.StartsWith("AFTER_START_MODULE:", comparison)) return "起点后模块：" + stage["AFTER_START_MODULE:".Length..];
         if (stage.StartsWith("AFTER_END_MODULE:", comparison)) return "终点后模块：" + stage["AFTER_END_MODULE:".Length..];
         if (stage.StartsWith("INVENTORY_EFFECT:", comparison)) return InventoryEffectLabel(stage["INVENTORY_EFFECT:".Length..]);
-        if (string.Equals(stage, "INVENTORY_RELEASE_FAILED:NO_TRANSIT", comparison)) return "库存收尾失败：未生成在途记录";
         return "未知阶段：" + stage;
     }
 
@@ -579,6 +545,7 @@
     {
         "cargo_arrival" => "库存效果：货物到达",
         "cargo_removal" => "库存效果：货物移除",
+        "create_return_task" => "库存效果：创建回库任务",
         _ => "库存效果：" + effect
     };
 
@@ -600,12 +567,13 @@
 
     private static string StageBadgeClass(string s)
     {
-        if (s is "CANCELLED" or "DISPATCH_FAILED" or "WCS_FINALIZATION_FAILED" || s.StartsWith("INVENTORY_RELEASE_FAILED:", StringComparison.OrdinalIgnoreCase)) return "badge-danger";
-        if (s == "WCS_COMPLETED") return "badge-ok";
+        if (s is "CANCELLED" or "DISPATCH_FAILED" or "WCS_FINALIZATION_FAILED" || s.StartsWith("INVENTORY_RELEASE_FAILED:", StringComparison.OrdinalIgnoreCase) || s.StartsWith("EFFECT_CONFIGURATION:", StringComparison.OrdinalIgnoreCase)) return "badge-danger";
+        if (s == "WCS_COMPLETED" || s == "RETURN_TASK_REGISTERED") return "badge-ok";
         if (s == "FINISHED" || s == "WCS_FINALIZING" || s == "WCS_INVENTORY_FINALIZED") return "badge-selected";
         if (s == "LOAD_FINISH" || s.StartsWith("TRANSIT:", StringComparison.OrdinalIgnoreCase)) return "badge-selected";
         if (s == "START" || s == "DISPATCHED" || s.StartsWith("BEFORE_MODULE:", StringComparison.OrdinalIgnoreCase)) return "badge-info";
-        if (s.StartsWith("AFTER_START_MODULE:", StringComparison.OrdinalIgnoreCase)
+        if (s.StartsWith("PRE_EFFECT:", StringComparison.OrdinalIgnoreCase)
+            || s.StartsWith("AFTER_START_MODULE:", StringComparison.OrdinalIgnoreCase)
             || s.StartsWith("AFTER_END_MODULE:", StringComparison.OrdinalIgnoreCase)
             || s.StartsWith("INVENTORY_EFFECT:", StringComparison.OrdinalIgnoreCase)) return "badge-selected";
         return "badge-empty";
@@ -613,10 +581,11 @@
 
     private static string StageDotClass(string s)
     {
-        if (s is "CANCELLED" or "DISPATCH_FAILED" or "WCS_FINALIZATION_FAILED" || s.StartsWith("INVENTORY_RELEASE_FAILED:", StringComparison.OrdinalIgnoreCase)) return "dot-other";
-        if (s == "WCS_COMPLETED") return "dot-finished";
+        if (s is "CANCELLED" or "DISPATCH_FAILED" or "WCS_FINALIZATION_FAILED" || s.StartsWith("INVENTORY_RELEASE_FAILED:", StringComparison.OrdinalIgnoreCase) || s.StartsWith("EFFECT_CONFIGURATION:", StringComparison.OrdinalIgnoreCase)) return "dot-other";
+        if (s == "WCS_COMPLETED" || s == "RETURN_TASK_REGISTERED") return "dot-finished";
         if (s == "FINISHED" || s == "WCS_FINALIZING" || s == "WCS_INVENTORY_FINALIZED") return "dot-load";
         if (s == "LOAD_FINISH" || s.StartsWith("TRANSIT:", StringComparison.OrdinalIgnoreCase)
+            || s.StartsWith("PRE_EFFECT:", StringComparison.OrdinalIgnoreCase)
             || s.StartsWith("AFTER_START_MODULE:", StringComparison.OrdinalIgnoreCase)
             || s.StartsWith("AFTER_END_MODULE:", StringComparison.OrdinalIgnoreCase)
             || s.StartsWith("INVENTORY_EFFECT:", StringComparison.OrdinalIgnoreCase)) return "dot-load";

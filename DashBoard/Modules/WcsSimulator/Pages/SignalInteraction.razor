@@ -126,6 +126,10 @@
                     <div class="mod-card-url">@m.ApiUrl</div>
                     <div class="mod-card-meta">
                         <span class="badge-info">@(m.Params.Count) 参数</span>
+                        @if (!string.IsNullOrWhiteSpace(m.PreExecutionEffect))
+                        {
+                            <span class="badge-info">@PreExecutionEffectLabel(m.PreExecutionEffect)</span>
+                        }
                         @if (!string.IsNullOrWhiteSpace(m.InventoryEffect))
                         {
                             <span class="badge-warning">@InventoryEffectLabel(m.InventoryEffect)</span>
@@ -310,18 +314,30 @@
                             <input type="text" @bind="m.ApiUrl" placeholder="如 /api/v1/container_remove" />
                         </div>
                         <div class="form-group">
+                            <label>执行前效果 <span class="hint-inline">请求前预处理，可生成模块上下文变量</span></label>
+                            <select @bind="m.PreExecutionEffect">
+                                <option value="">无</option>
+                                <option value="prepare_return_task">回库任务预处理：选终点并锁定储位</option>
+                            </select>
+                            @if (string.Equals(m.PreExecutionEffect, "prepare_return_task", StringComparison.OrdinalIgnoreCase))
+                            {
+                                <span class="hint-text">参数来源选择“回库任务预处理”后，可选择回库任务号或回库任务终点。</span>
+                            }
+                        </div>
+                        <div class="form-group">
                             <label>库存效果 <span class="hint-inline">模块请求成功后执行</span></label>
                             <select @bind="m.InventoryEffect">
                                 <option value="">无</option>
                                 <option value="cargo_arrival">货物到达：写入当前任务的货物</option>
                                 <option value="cargo_removal">货物移除：移除当前任务的货物</option>
+                                <option value="create_return_task">创建回库任务：登记并跟踪 RCS 回库任务</option>
                             </select>
                         </div>
                     </div>
 
                     <div class="tpl-section-title" style="margin-top:16px;">参数配置</div>
                     <table class="workitem-table mod-param-table">
-                        <thead><tr><th style="width:28%;">参数</th><th style="width:26%;">值来源</th><th>固定值</th><th style="width:38px;"></th></tr></thead>
+                        <thead><tr><th style="width:28%;">参数</th><th style="width:26%;">值来源</th><th>配置值</th><th style="width:38px;"></th></tr></thead>
                         <tbody>
                         @foreach (var p in m.Params)
                         {
@@ -338,8 +354,23 @@
                                         <option value="TaskType">任务类型</option>
                                         <option value="TaskId">任务号</option>
                                         <option value="Now">当前时间</option>
+                                        <option value="ModuleContext">回库任务预处理</option>
+                                        <option value="JsonLiteral">JSON 固定值</option>
                                     </select></td>
-                                <td>@if (p.Source == WorkValueSourceDto.Fixed) { <input type="text" @bind="p.FixedValue" placeholder="固定值" /> }</td>
+                                <td>
+                                    @if (p.Source == WorkValueSourceDto.ModuleContext)
+                                    {
+                                        <select @bind="p.FixedValue">
+                                            <option value="">请选择预处理变量</option>
+                                            <option value="returnTaskId">回库任务号</option>
+                                            <option value="returnDestination">回库任务终点</option>
+                                        </select>
+                                    }
+                                    else if (p.Source == WorkValueSourceDto.Fixed || p.Source == WorkValueSourceDto.JsonLiteral)
+                                    {
+                                        <input type="text" @bind="p.FixedValue" placeholder="@(p.Source == WorkValueSourceDto.JsonLiteral ? "JSON 值，如 false" : "固定值")" />
+                                    }
+                                </td>
                                 <td><button class="btn btn-danger btn-xs" @onclick="() => RemoveModuleParam(p)">✕</button></td>
                             </tr>
                         }
@@ -347,6 +378,10 @@
                     </table>
                     <div style="display:flex;gap:8px;margin-top:6px;flex-wrap:wrap;">
                         <button class="btn btn-outline btn-xs" @onclick="AddModuleRecommendedParams">+ 推荐参数（StationCode/ContainerCode/MsgTime/Warehouse）</button>
+                        @if (string.Equals(m.PreExecutionEffect, "prepare_return_task", StringComparison.OrdinalIgnoreCase))
+                        {
+                            <button class="btn btn-outline btn-xs" @onclick="ConfigureReturnTaskParams">填充回库任务参数</button>
+                        }
                         <button class="btn btn-outline btn-xs" @onclick="AddModuleCustomParam">+ 自定义参数</button>
                     </div>
 
@@ -661,6 +696,13 @@
     {
         "cargo_arrival" => "货物到达",
         "cargo_removal" => "货物移除",
+        "create_return_task" => "创建回库任务",
+        _ => effect,
+    };
+
+    private static string PreExecutionEffectLabel(string effect) => effect switch
+    {
+        "prepare_return_task" => "回库任务预处理",
         _ => effect,
     };
 
@@ -673,6 +715,7 @@
             Id = "MOD_" + DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString("x").ToUpper(),
             Name = "新模块",
             ApiUrl = "/api/v1/container_remove",
+            PreExecutionEffect = "",
             InventoryEffect = "",
             Params =
             [
@@ -695,6 +738,7 @@
             Id = m.Id,
             Name = m.Name,
             ApiUrl = m.ApiUrl,
+            PreExecutionEffect = m.PreExecutionEffect,
             InventoryEffect = m.InventoryEffect,
             Params = m.Params.Select(p => new WorkParamDto { Name = p.Name, Source = p.Source, FixedValue = p.FixedValue }).ToList()
         };
@@ -732,6 +776,7 @@
             // 更新已有模块
             _editingModule.Name = d.Name.Trim();
             _editingModule.ApiUrl = d.ApiUrl.Trim();
+            _editingModule.PreExecutionEffect = d.PreExecutionEffect;
             _editingModule.InventoryEffect = d.InventoryEffect;
             _editingModule.Params = d.Params;
         }
@@ -759,6 +804,33 @@
         if (!ps.Any(p => p.Name == "ContainerCode")) ps.Add(new WorkParamDto { Name = "ContainerCode", Source = WorkValueSourceDto.TaskContainer });
         if (!ps.Any(p => p.Name == "MsgTime")) ps.Add(new WorkParamDto { Name = "MsgTime", Source = WorkValueSourceDto.Now });
         if (!ps.Any(p => p.Name == "Warehouse")) ps.Add(new WorkParamDto { Name = "Warehouse", Source = WorkValueSourceDto.TaskWarehouse });
+    }
+
+    private void ConfigureReturnTaskParams()
+    {
+        if (_moduleDraft is null) return;
+        _moduleDraft.PreExecutionEffect = "prepare_return_task";
+        _moduleDraft.InventoryEffect = "create_return_task";
+        UpsertModuleParam("TaskId", WorkValueSourceDto.ModuleContext, "returnTaskId");
+        UpsertModuleParam("StationCode", WorkValueSourceDto.ModuleContext, "returnDestination");
+        UpsertModuleParam("ContainerCode", WorkValueSourceDto.TaskContainer);
+        UpsertModuleParam("RemoveContainer", WorkValueSourceDto.JsonLiteral, "false");
+        UpsertModuleParam("AreaCode", WorkValueSourceDto.Fixed, "");
+        UpsertModuleParam("MsgTime", WorkValueSourceDto.Now);
+        UpsertModuleParam("Warehouse", WorkValueSourceDto.TaskWarehouse);
+    }
+
+    private void UpsertModuleParam(string name, WorkValueSourceDto source, string fixedValue = "")
+    {
+        if (_moduleDraft is null) return;
+        var parameter = _moduleDraft.Params.FirstOrDefault(item => string.Equals(item.Name, name, StringComparison.OrdinalIgnoreCase));
+        if (parameter == null)
+        {
+            _moduleDraft.Params.Add(new WorkParamDto { Name = name, Source = source, FixedValue = fixedValue });
+            return;
+        }
+        parameter.Source = source;
+        parameter.FixedValue = fixedValue;
     }
 
     private void AddModuleCustomParam()
@@ -986,13 +1058,6 @@
         _execLog = StageHub.ExecLogEntries.ToList();
         StateHasChanged();
         await Task.CompletedTask;
-    }
-
-    private async Task ClearModuleLog()
-    {
-        await Api.ClearModuleExecLogsAsync();
-        _execLog = StageHub.ExecLogEntries.ToList();
-        StateHasChanged();
     }
 
     // ── 模块执行记录重试 ──

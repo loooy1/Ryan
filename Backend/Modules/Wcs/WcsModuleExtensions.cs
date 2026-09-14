@@ -22,7 +22,6 @@ public static class WcsModuleExtensions
         services.AddSingleton<RangeConfigService>();
         services.AddSingleton<WcsSettingsService>();
         services.AddSingleton<CargoCodeStore>();
-        services.AddSingleton<LedgerStore>();
         services.AddSingleton<SignalConfirmStore>();
         services.AddSingleton<ExceptionRecordStore>();
         services.AddSingleton<ProjectLogStore>();
@@ -48,7 +47,7 @@ public static class WcsModuleExtensions
         // 模块执行记录（内存环形缓冲，供「模块执行记录」面板增量拉取）
         // 统一模块执行引擎：起点/起点之后在下发时、终点在 FINISHED 后，统一在后端执行
         services.AddSingleton<TaskLifecycleService>();
-        services.AddSingleton<InventoryModuleEffectService>();
+        services.AddSingleton<ModuleEffectService>();
         services.AddSingleton<ModuleRunService>();
         // 任务完成协调器：统一监管 LOAD_FINISH/FINISHED 后的库存、锁与终点模块副作用
         services.AddSingleton<TaskCompletionCoordinator>();
@@ -58,8 +57,6 @@ public static class WcsModuleExtensions
         services.AddSingleton<AutoTemplateRunner>();
         services.AddHostedService(sp => sp.GetRequiredService<AutoTemplateRunner>());
         // 信号自动放行：宿主启动即常驻（后端唯一，取代前端 leader 模式）
-        services.AddSingleton<SignalAutoHostedService>();
-        services.AddHostedService(sp => sp.GetRequiredService<SignalAutoHostedService>());
 
         // ── Console（控制台/阶段/台账/地图）──
         // 任务阶段事件跨请求共享（GRCS 上报 + 前端轮询），用 Singleton

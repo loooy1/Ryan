@@ -126,6 +126,11 @@ namespace WCSBackend.Migrations
                         .HasColumnType("TEXT")
                         .HasColumnName("inventory_effect");
 
+                    b.Property<string>("PreExecutionEffect")
+                        .IsRequired()
+                        .HasColumnType("TEXT")
+                        .HasColumnName("pre_execution_effect");
+
                     b.Property<string>("Name")
                         .IsRequired()
                         .HasColumnType("TEXT")

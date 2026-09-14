@@ -23,7 +23,7 @@ builder.Services.AddScoped(sp => new HttpClient
 // 组件销毁不重置状态，与 Singleton 行为等价。因此凡是依赖其他 Scoped 服务的服务
 // 一律注册 AddScoped——注册成 Singleton 会在应用启动时被 DI 容器校验拦截
 // （ScopedInSingletonException），页面白屏"An unhandled error has occurred"
-// （2026-08-14 曾因此故障：SignalAutoService 曾被误注册为 Singleton）。
+// （2026-08-14 曾因此故障：obsolete signal service 曾被误注册为 Singleton）。
 // Module navigation state (scoped = per-browser-tab)
 builder.Services.AddScoped<Dashboard.Modules.WcsSimulator.Services.ModuleNavigationService>();
 // 后端存活状态共享服务（BackendStatus 渲染 + 各页面连接判定，单一数据源）
@@ -33,8 +33,6 @@ builder.Services.AddScoped<Dashboard.Modules.WcsSimulator.Services.LocalStoreSer
 // Skill E：后端遥控壳（WcsApiClient + 共享状态/日志轮询中枢 + 三个瘦壳服务）
 builder.Services.AddScoped<Dashboard.Modules.WcsSimulator.Services.WcsApiClient>();
 builder.Services.AddScoped<Dashboard.Modules.WcsSimulator.Services.AutomationHub>();
-builder.Services.AddScoped<Dashboard.Modules.WcsSimulator.Services.SignalAutoService>();
-builder.Services.AddScoped<Dashboard.Modules.WcsSimulator.Services.TaskLedgerService>();
 // 任务阶段事件共享轮询器：全应用唯一轮询 task-stages，替代各处各自轮询
 builder.Services.AddScoped<Dashboard.Modules.WcsSimulator.Services.TaskStageHub>();
 // 纯移动任务循环（scoped：跨页面导航存活，离开自动化页任务继续下发）

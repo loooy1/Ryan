@@ -19,17 +19,9 @@ public class AutoStatusSnapshot
     public bool NestRunning { get; set; }
     public List<AutoTemplateDto> Templates { get; set; } = [];
     public WcsSettingsDto Settings { get; set; } = new();
-    public SignalFlagsDto Signals { get; set; } = new();
 }
 
 /// <summary>信号自动化开关（到达/取走/自动下发）。</summary>
-public class SignalFlagsDto
-{
-    public bool ArrivalAuto { get; set; }
-    public bool RemovalAuto { get; set; }
-    public bool AutoSend { get; set; }
-}
-
 /// <summary>移动任务循环租约登记结果（POST /api/wcs/auto/move/start）。</summary>
 public class MoveLeaseResult
 {
@@ -89,15 +81,6 @@ public class MapUploadPayload
     public List<MapStationLite> Stations { get; set; } = [];
 }
 
-/// <summary>分拣已发送的编辑参数（workflow_state sent 行的 value JSON）。</summary>
-public class SortingSendParams
-{
-    public string ReturnTaskId { get; set; } = "";
-    public bool RemoveContainer { get; set; }
-    public string DestStation { get; set; } = "";
-    public string DestArea { get; set; } = "";
-}
-
 /// <summary>模块执行记录条目（GET /api/wcs/modules/logs）。</summary>
 public class ModuleExecLogEntry
 {
@@ -109,11 +92,4 @@ public class ModuleExecLogEntry
     public bool Ok { get; set; }
     public int HttpCode { get; set; }
     public string Detail { get; set; } = "";
-}
-
-/// <summary>模块执行记录增量响应（GET /api/wcs/modules/logs）。</summary>
-public class ModuleExecLogsResponse
-{
-    public long MaxId { get; set; }
-    public List<ModuleExecLogEntry> Entries { get; set; } = [];
 }

@@ -33,75 +33,6 @@
                     </div>
                     <div id="manual-inventory-map" class="manual-map-canvas"></div>
                     @* 已由下方 Canvas 框选器替代。保留旧 SVG 仅为源代码迁移过渡，运行时不渲染。 *@
-                    @if (ShowLegacyManualMap)
-                    {
-                    <div class="manual-map-viewport">
-                        <svg class="manual-inventory-map" width="1000" height="600" viewBox="0 0 1000 600"
-                             @onmousedown="StartManualBox" @onmousemove="MoveManualBox" @onmouseup="FinishManualBox"
-                             @onmouseleave="CancelManualBox" @oncontextmenu:preventDefault="true">
-                            <rect x="0" y="0" width="1000" height="600" fill="#0f172a" />
-                            @foreach (var station in ManualFloorStations)
-                            {
-                                var point = ManualMapPointOf(station);
-                                var selected = _manualSelectedMarks.Contains(station.Mark);
-                                <g>
-                                    @if (selected)
-                                    {
-                                        <circle cx="@point.X" cy="@point.Y" r="10" fill="none" stroke="#ffffff" stroke-width="3" />
-                                    }
-                                    @if (HasLoadedInventory(station.Mark))
-                                    {
-                                        @* 带货托：上层货箱 + 下层托盘。 *@
-                                        <rect x="@(point.X - 7)" y="@(point.Y + 2)" width="14" height="4" rx="1" fill="#a78bfa" stroke="#312e81" stroke-width="1" />
-                                        <line x1="@(point.X - 4)" y1="@(point.Y + 2)" x2="@(point.X - 4)" y2="@(point.Y + 6)" stroke="#312e81" stroke-width="1" />
-                                        <line x1="@(point.X + 4)" y1="@(point.Y + 2)" x2="@(point.X + 4)" y2="@(point.Y + 6)" stroke="#312e81" stroke-width="1" />
-                                        <rect x="@(point.X - 5)" y="@(point.Y - 7)" width="10" height="9" rx="1" fill="#c4b5fd" stroke="#312e81" stroke-width="1" />
-                                        <path d="M@(point.X - 5) @(point.Y - 3) L@point.X @(point.Y) L@(point.X + 5) @(point.Y - 3)" fill="none" stroke="#312e81" stroke-width="1" />
-                                    }
-                                    else if (HasPalletInventory(station.Mark))
-                                    {
-                                        @* 纯托盘：三根承载条和底座。 *@
-                                        <rect x="@(point.X - 7)" y="@(point.Y - 2)" width="14" height="4" rx="1" fill="#4ade80" stroke="#166534" stroke-width="1" />
-                                        <line x1="@(point.X - 4)" y1="@(point.Y - 2)" x2="@(point.X - 4)" y2="@(point.Y + 2)" stroke="#166534" stroke-width="1" />
-                                        <line x1="@point.X" y1="@(point.Y - 2)" x2="@point.X" y2="@(point.Y + 2)" stroke="#166534" stroke-width="1" />
-                                        <line x1="@(point.X + 4)" y1="@(point.Y - 2)" x2="@(point.X + 4)" y2="@(point.Y + 2)" stroke="#166534" stroke-width="1" />
-                                        <line x1="@(point.X - 7)" y1="@(point.Y + 4)" x2="@(point.X + 7)" y2="@(point.Y + 4)" stroke="#166534" stroke-width="2" />
-                                    }
-                                    else if (HasCargoInventory(station.Mark))
-                                    {
-                                        @* 纯货物：独立货箱。 *@
-                                        <rect x="@(point.X - 5)" y="@(point.Y - 5)" width="10" height="10" rx="1" fill="#22d3ee" stroke="#155e75" stroke-width="1" />
-                                        <path d="M@(point.X - 5) @point.Y L@point.X @(point.Y + 3) L@(point.X + 5) @point.Y M@point.X @(point.Y - 5) V@(point.Y + 3)" fill="none" stroke="#155e75" stroke-width="1" />
-                                    }
-                                    else
-                                    {
-                                        <circle cx="@point.X" cy="@point.Y" r="5" fill="@ManualStationColor(station)" stroke="#334155" stroke-width="1.5" />
-                                    }
-                                    @if (selected)
-                                    {
-                                        <svg:text x="@(point.X + 10)" y="@(point.Y + 4)" class="manual-map-label">@station.Mark</svg:text>
-                                    }
-                                    <title>@ManualStationTooltip(station)</title>
-                                </g>
-                            }
-                            @foreach (var transit in TransitOnCurrentFloor)
-                            {
-                                var point = ManualTransitPointOf(transit);
-                                <g>
-                                    <circle cx="@point.X" cy="@point.Y" r="8" fill="#fbbf24" stroke="#fff" stroke-width="2" />
-                                    <svg:text x="@(point.X + 11)" y="@(point.Y + 4)" class="manual-map-label">@transit.PalletCode</svg:text>
-                                    <title>@TransitTooltip(transit)</title>
-                                </g>
-                            }
-                            @if (_manualBoxActive)
-                            {
-                                <rect x="@ManualBoxX" y="@ManualBoxY" width="@ManualBoxWidth" height="@ManualBoxHeight"
-                                      fill="rgba(56,189,248,0.12)" stroke="#38bdf8" stroke-width="1.5" stroke-dasharray="6 4" />
-                            }
-                        </svg>
-                    </div>
-                    <div class="hint-text" style="margin-top:6px;">左键单击切换储位；左键拖拽框选。拖拽会替换当前选择，按住 Ctrl 或 Shift 可增选。</div>
-                    }
                 </div>
 
                 <aside class="manual-inventory-panel">
@@ -303,19 +234,10 @@
     private bool _manualMapMounted;
     private bool _manualLoading;
     private bool _manualSubmitting;
-    private bool _manualBoxActive;
-    private double _manualBoxStartX;
-    private double _manualBoxStartY;
-    private double _manualBoxEndX;
-    private double _manualBoxEndY;
     private List<TransitPalletPositionDto> _transitPositions = [];
     private string _transitLoadedAt = "";
     private ManualInventoryEnterResult? _manualResult;
-    private bool ShowLegacyManualMap => false;
-    private const double ManualMapWidth = 1000;
-    private const double ManualMapHeight = 600;
 
-    private sealed record ManualMapPoint(double X, double Y);
 
     /// <summary>从 RCS 同步库存账本到 WCS（清空重建；有在途自动化任务时后端拒绝）。</summary>
     private async Task SyncLedger()
@@ -381,13 +303,6 @@
 
     public void Dispose() => _manualMapDotNetRef?.Dispose();
 
-    private IEnumerable<MapStationLite> ManualFloorStations => _manualStations
-        .Where(station => IsInventoryMapStation(station) && station.Floor == _manualFloor)
-        .OrderBy(station => station.Mark);
-
-    private IEnumerable<TransitPalletPositionDto> TransitOnCurrentFloor => _transitPositions.Where(position =>
-        position.CurrentLocation != null && ResolveTransitFloor(position) == _manualFloor);
-
     private IEnumerable<string> ManualCodePreview
     {
         get
@@ -398,8 +313,6 @@
         }
     }
 
-    private static bool IsStorageStation(MapStationLite station)
-        => (station.StationType & MapStationTypeBits.StorageLocation) != 0;
 
     /// <summary>库存地图同时显示储位与接驳位；手工入库选点仍只接受储位。</summary>
     private static bool IsInventoryMapStation(MapStationLite station)
@@ -441,7 +354,6 @@
             .Where(slot => string.Equals(slot.ParentStationCode, _sortingParentMark, StringComparison.OrdinalIgnoreCase))
             .Select(slot => slot.Mark).Order(StringComparer.OrdinalIgnoreCase).ToList();
 
-    private void SelectManualFloor(int floor) => _manualFloor = floor;
 
     private async Task RefreshManualSnapshot()
     {
@@ -694,14 +606,6 @@
     /// <summary>库存增删动作暂为 UI 占位，不执行任何本地或 RCS 写入。</summary>
     private void NoopInventoryAction() { }
 
-    private bool HasPalletInventory(string mark)
-        => _manualSlots.TryGetValue(mark, out var slot) && !string.IsNullOrEmpty(slot.PalletCode);
-
-    private bool HasCargoInventory(string mark)
-        => _manualSlots.TryGetValue(mark, out var slot) && !string.IsNullOrEmpty(slot.CargoCode);
-
-    private bool HasLoadedInventory(string mark) => HasPalletInventory(mark) && HasCargoInventory(mark);
-
     private string ManualVisualKind(string mark)
     {
         if (!_manualSlots.TryGetValue(mark, out var slot)) return "empty";
@@ -740,19 +644,6 @@
         return slot.ParentStationCode;
     }
 
-    private string ManualStationColor(MapStationLite station)
-    {
-        if (_manualSelectedMarks.Contains(station.Mark)) return "#38bdf8";
-        if (!_manualSlots.TryGetValue(station.Mark, out var slot)) return "#475569";
-        if (!string.IsNullOrEmpty(slot.TaskLockId)) return "#ef4444";
-        if (!string.IsNullOrEmpty(slot.PalletCode) && !string.IsNullOrEmpty(slot.CargoCode)) return "#a78bfa";
-        if (string.Equals(slot.PalletStatus, "transit", StringComparison.OrdinalIgnoreCase)
-            || string.Equals(slot.CargoStatus, "transit", StringComparison.OrdinalIgnoreCase)) return "#a78bfa";
-        if (!string.IsNullOrEmpty(slot.PalletCode)) return "#4ade80";
-        if (!string.IsNullOrEmpty(slot.CargoCode)) return "#22d3ee";
-        return IsManualSelectable(station.Mark) ? "#64748b" : "#475569";
-    }
-
     private string ManualStationTooltip(MapStationLite station)
     {
         if ((station.StationType & MapStationTypeBits.PeopleStation) != 0)
@@ -768,84 +659,6 @@
         var locked = string.IsNullOrWhiteSpace(slot.TaskLockId) ? "" : $"；任务锁 {slot.TaskLockId}";
         return $"{station.Mark}：{pallet}；{cargo}{locked}";
     }
-
-    private ManualMapPoint ManualMapPointOf(MapStationLite station) => ManualMapPointOf(station.X, station.Y);
-    private ManualMapPoint ManualTransitPointOf(TransitPalletPositionDto position)
-        => ManualMapPointOf(position.CurrentLocation?.X ?? 0, position.CurrentLocation?.Y ?? 0);
-
-    private ManualMapPoint ManualMapPointOf(double x, double y)
-    {
-        var stations = ManualFloorStations.ToList();
-        if (stations.Count == 0) return new(ManualMapWidth / 2, ManualMapHeight / 2);
-        var minX = stations.Min(station => station.X);
-        var maxX = stations.Max(station => station.X);
-        var minY = stations.Min(station => station.Y);
-        var maxY = stations.Max(station => station.Y);
-        var spanX = Math.Max(1, maxX - minX);
-        var spanY = Math.Max(1, maxY - minY);
-        const double padding = 48;
-        return new(
-            padding + (x - minX) / spanX * (ManualMapWidth - padding * 2),
-            ManualMapHeight - padding - (y - minY) / spanY * (ManualMapHeight - padding * 2));
-    }
-
-    private void StartManualBox(MouseEventArgs e)
-    {
-        if (e.Button != 0) return;
-        _manualBoxActive = true;
-        _manualBoxStartX = _manualBoxEndX = e.OffsetX;
-        _manualBoxStartY = _manualBoxEndY = e.OffsetY;
-    }
-
-    private void MoveManualBox(MouseEventArgs e)
-    {
-        if (!_manualBoxActive) return;
-        _manualBoxEndX = e.OffsetX;
-        _manualBoxEndY = e.OffsetY;
-    }
-
-    private void FinishManualBox(MouseEventArgs e)
-    {
-        if (!_manualBoxActive) return;
-        _manualBoxEndX = e.OffsetX;
-        _manualBoxEndY = e.OffsetY;
-        var width = Math.Abs(_manualBoxEndX - _manualBoxStartX);
-        var height = Math.Abs(_manualBoxEndY - _manualBoxStartY);
-        if (width < 6 && height < 6)
-        {
-            var hit = ManualFloorStations.Where(station => IsManualSelectable(station.Mark))
-                .Select(station => new { Station = station, Point = ManualMapPointOf(station) })
-                .OrderBy(item => Distance(item.Point.X, item.Point.Y, e.OffsetX, e.OffsetY)).FirstOrDefault();
-            if (hit != null && Distance(hit.Point.X, hit.Point.Y, e.OffsetX, e.OffsetY) <= 12)
-            {
-                if (!_manualSelectedMarks.Add(hit.Station.Mark)) _manualSelectedMarks.Remove(hit.Station.Mark);
-            }
-        }
-        else
-        {
-            if (!e.CtrlKey && !e.ShiftKey) _manualSelectedMarks.Clear();
-            var minX = Math.Min(_manualBoxStartX, _manualBoxEndX);
-            var maxX = Math.Max(_manualBoxStartX, _manualBoxEndX);
-            var minY = Math.Min(_manualBoxStartY, _manualBoxEndY);
-            var maxY = Math.Max(_manualBoxStartY, _manualBoxEndY);
-            foreach (var station in ManualFloorStations.Where(station => IsManualSelectable(station.Mark)))
-            {
-                var point = ManualMapPointOf(station);
-                if (point.X >= minX && point.X <= maxX && point.Y >= minY && point.Y <= maxY)
-                    _manualSelectedMarks.Add(station.Mark);
-            }
-        }
-        _manualBoxActive = false;
-    }
-
-    private void CancelManualBox() => _manualBoxActive = false;
-    private void ClearManualSelection() => _manualSelectedMarks.Clear();
-    private static double Distance(double x1, double y1, double x2, double y2)
-        => Math.Sqrt((x1 - x2) * (x1 - x2) + (y1 - y2) * (y1 - y2));
-    private double ManualBoxX => Math.Min(_manualBoxStartX, _manualBoxEndX);
-    private double ManualBoxY => Math.Min(_manualBoxStartY, _manualBoxEndY);
-    private double ManualBoxWidth => Math.Abs(_manualBoxEndX - _manualBoxStartX);
-    private double ManualBoxHeight => Math.Abs(_manualBoxEndY - _manualBoxStartY);
 
     private string TransitLocationText(TransitPalletPositionDto transit)
     {

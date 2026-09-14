@@ -1,5 +1,4 @@
 @inject AutomationHub Hub
-@inject SignalAutoService Signal
 @implements IDisposable
 
 @* ════════════════════════════════════════════════
@@ -27,28 +26,15 @@
         <span class="asb-meta">@(Hub.Status.MoveRunning ? "▶ 运行中" : "⏸ 停止")</span>
     </div>
 
-    <span class="asb-sep">│</span>
 
-    @* ── 信号自动：到达 / 移除 / 分拣 ── *@
-    <div class="asb-section" title="信号自动确认：
-到达自动@(Signal.ArrivalAuto ? " ✓ 开启" : " ✗ 关闭")
-移除自动@(Signal.RemovalAuto ? " ✓ 开启" : " ✗ 关闭")
-分拣自动@(Signal.AutoSend ? " ✓ 开启" : " ✗ 关闭")">
-        <span class="asb-dot @(Signal.Running && (Signal.ArrivalAuto || Signal.RemovalAuto || Signal.AutoSend) ? "on" : "")"></span>
-        <span class="asb-label">信号自动</span>
-        <span class="asb-chip @(Signal.ArrivalAuto ? "chip-on" : "")">到达@(Signal.ArrivalAuto ? " ✓" : "")</span>
-        <span class="asb-chip @(Signal.RemovalAuto ? "chip-on" : "")">移除@(Signal.RemovalAuto ? " ✓" : "")</span>
-        <span class="asb-chip @(Signal.AutoSend ? "chip-on" : "")">分拣@(Signal.AutoSend ? " ✓" : "")</span>
-    </div>
 </div>
 
 @code {
-    private bool HasActivity => Hub.Status.Running || Hub.Status.MoveRunning || Signal.Running;
+    private bool HasActivity => Hub.Status.Running || Hub.Status.MoveRunning;
 
     protected override void OnInitialized()
     {
         Hub.Changed += OnChanged;
-        Signal.Changed += OnChanged;
     }
 
     private void OnChanged() => InvokeAsync(StateHasChanged);
@@ -56,6 +42,5 @@
     public void Dispose()
     {
         Hub.Changed -= OnChanged;
-        Signal.Changed -= OnChanged;
     }
 }

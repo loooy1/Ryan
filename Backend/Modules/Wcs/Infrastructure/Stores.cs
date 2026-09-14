@@ -215,67 +215,6 @@ public class CargoCodeStore
     }
 }
 
-/// <summary>站点锁（纯内存 Singleton）：流程终点任务 FINISHED 后由 TaskStageService 事件即时释放。</summary>
-public class StationLockStore
-{
-    private readonly object _lock = new();
-    private readonly Dictionary<string, StationLockEntry> _locks = new(StringComparer.OrdinalIgnoreCase);
-
-    /// <summary>当前仍被锁定的站点（顺带按已完成任务惰性清理）。</summary>
-    public HashSet<string> GetLocked(ITaskStageService stages)
-    {
-        lock (_lock)
-        {
-            if (_locks.Count == 0) return [];
-            var finished = stages.FinishedTaskIds;
-            if (finished.Count > 0)
-            {
-                foreach (var st in _locks.Where(kv => finished.Contains(kv.Value.TaskId)).Select(kv => kv.Key).ToList())
-                    _locks.Remove(st);
-            }
-            return _locks.Keys.ToHashSet(StringComparer.OrdinalIgnoreCase);
-        }
-    }
-
-    public void Acquire(string station, string flowEndTaskId)
-    {
-        if (string.IsNullOrEmpty(station)) return;
-        lock (_lock)
-        {
-            if (_locks.ContainsKey(station)) return;
-            _locks[station] = new StationLockEntry { TaskId = flowEndTaskId };
-        }
-    }
-
-    /// <summary>释放指定站点锁（任务 FINISHED 后由自动化引擎调用）。</summary>
-    public void Release(string station)
-    {
-        if (string.IsNullOrEmpty(station)) return;
-        lock (_lock) _locks.Remove(station);
-    }
-}
-
-/// <summary>任务台账壳（底层为 task_records 合并表创建行，上限 10000 条）。Singleton。</summary>
-public class LedgerStore
-{
-    private readonly ITaskStageService _stages;
-
-    public LedgerStore(ITaskStageService stages) => _stages = stages;
-
-    /// <summary>写创建行（同一任务只写一条，重复调用后端跳过）并 SignalR 广播。</summary>
-    public Task AppendAsync(List<TaskLedgerEntry> entries)
-    {
-        _stages.RecordCreated(entries);
-        return Task.CompletedTask;
-    }
-
-    /// <summary>读创建行（投影为台账条目，id 倒序）。</summary>
-    public List<TaskLedgerEntry> Get(int limit = 500) => _stages.GetCreated(limit);
-
-    /// <summary>清空全表（创建行 + 阶段行）并广播 EventsReset。</summary>
-    public void Clear() => _stages.ClearAll();
-}
-
 /// <summary>
 /// 信号确认状态（由 task_records 中的 SIGNAL_* 阶段派生）。
 /// Set 是幂等抢占：新插入返回 true（claimed），已存在返回 false——前端据此

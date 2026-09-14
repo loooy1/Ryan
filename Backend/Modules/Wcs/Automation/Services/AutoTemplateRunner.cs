@@ -33,7 +33,6 @@ public class AutoTemplateRunner : IHostedService
     private readonly TaskTemplateStore _taskTemplates;
     private readonly AutoTemplateStore _templates;
     private readonly MockRuleStore _mocks;
-    private readonly GrcsInventoryCacheService _inventoryCache;
     private readonly WcsInventoryStore _invStore;
     private readonly TemplateValidator _validator;
     private readonly InventoryCoordinator _invCoord;
@@ -60,12 +59,12 @@ public class AutoTemplateRunner : IHostedService
         MapStoreService map, RangeConfigService range, WcsSettingsService settings,
         AutomationLogService log, ITaskStageService stage, AutomationGate gate,
         ModuleRunService modules, TaskTemplateStore taskTemplates, AutoTemplateStore templates,
-        MockRuleStore mocks, GrcsInventoryCacheService inventoryCache, WcsInventoryStore invStore,
+        MockRuleStore mocks, WcsInventoryStore invStore,
         ILogger<AutoTemplateRunner> logger, TaskCompletionCoordinator completion)
     {
         _map = map; _range = range; _settings = settings; _log = log;
         _stage = stage; _gate = gate; _modules = modules; _taskTemplates = taskTemplates;
-        _templates = templates; _mocks = mocks; _inventoryCache = inventoryCache; _invStore = invStore;
+        _templates = templates; _mocks = mocks; _invStore = invStore;
         _logger = logger;
         _validator = new TemplateValidator(map, range, taskTemplates, templates);
         _invCoord = new InventoryCoordinator(invStore, range, log);
@@ -493,7 +492,6 @@ public class AutoTemplateRunner : IHostedService
     /// 纯货物 = 编码含 Cargo 且无同站点托盘；托盘 = 编码含 Container；带货托 = 同当前站点有关联货物；
     /// 锁定中 = 移动单元数（任务数 + 选点未下发单元；货+托同任务算一个）。
     /// 明细仅列出有货/托的储位（不包含空储位）。</summary>
-    public async Task<InventorySummaryDto> GetInventorySummaryAsync() => await _invCoord.GetInventorySummaryAsync();
 }
 
 public class AutoTemplateStatusDto

@@ -7,7 +7,7 @@ namespace Dashboard.Modules.WcsSimulator.Services;
 /// 自动化状态/日志共享轮询中枢（Skill E：数据源在后端 WCSBackend）。
 /// 每 1 秒拉一次 /api/wcs/auto/status 快照 + /api/wcs/auto/logs?sinceId 增量日志，
 /// 以及进入申请 /api/wcs/status + /api/wcs/events（信号交互页进入信号多标签页同步）。
-/// AutoRunService / ContainerTaskService / SignalAutoService 三个瘦壳共享同一份数据与 Changed 事件。
+/// AutoRunService / ContainerTaskService / obsolete signal service 三个瘦壳共享同一份数据与 Changed 事件。
 /// 同时兼任后端健康探测源：每轮把 WCS（/api/wcs/status）与 GRCS（/api/wcs/grcs/health 代理）
 /// 状态回报给 BackendHealthService（BackendStatus 渲染 + 各页面连接判定，单一数据源）。
 /// 常驻：由 MainLayout 注入启动，任何页面打开即轮询。
@@ -56,15 +56,7 @@ public class AutomationHub : IDisposable
         catch { }
     }
 
-    /// <summary>乐观更新：信号自动开关（到达/移除/分拣）POST 后立即反映到快照，不等下一轮轮询。</summary>
-    public void ApplySignals(bool arrival, bool removal, bool sorting)
-    {
-        Status.Signals.ArrivalAuto = arrival;
-        Status.Signals.RemovalAuto = removal;
-        Status.Signals.AutoSend = sorting;
-        Changed?.Invoke();
-    }
-
+    /// <summary>乐观更新：信号自动开关（到达/移除）POST 后立即反映到快照，不等下一轮轮询。</summary>
     private async Task PollAsync()
     {
         _api.SuppressAlerts = true; // 自动轮询不弹告警，避免反复刷屏

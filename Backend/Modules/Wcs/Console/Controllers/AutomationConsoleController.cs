@@ -22,14 +22,13 @@ public class AutomationConsoleController : ControllerBase
     private readonly AutomationLogService _logs;
     private readonly RangeConfigService _rangeConfig;
     private readonly WcsSettingsService _settings;
-    private readonly SignalAutoHostedService _signals;
     private readonly MoveLoopRunner _moveLoop;
     private readonly NestRunner _nest;
     private readonly NestConfigService _nestConfig;
     private readonly GrcsHttpClient _grcs;
 
     public AutomationConsoleController(AutoTemplateRunner auto, AutoTemplateStore templates, AutomationLogService logs,
-        RangeConfigService rangeConfig, WcsSettingsService settings, SignalAutoHostedService signals,
+        RangeConfigService rangeConfig, WcsSettingsService settings,
         MoveLoopRunner moveLoop, NestRunner nest, NestConfigService nestConfig, GrcsHttpClient grcs)
     {
         _auto = auto;
@@ -37,7 +36,6 @@ public class AutomationConsoleController : ControllerBase
         _logs = logs;
         _rangeConfig = rangeConfig;
         _settings = settings;
-        _signals = signals;
         _moveLoop = moveLoop;
         _nest = nest;
         _nestConfig = nestConfig;
@@ -45,12 +43,6 @@ public class AutomationConsoleController : ControllerBase
     }
 
     /// <summary>库存分类汇总 + 明细（纯空托 / 带货托 / 纯货物 / 锁定中=移动单元数），按「以前逻辑」在后端统计。</summary>
-    [HttpGet("inventory-summary")]
-    public async Task<ActionResult<object>> InventorySummary()
-    {
-        return Ok(await _auto.GetInventorySummaryAsync());
-    }
-
     /// <summary>整体状态快照（前端 2s 轮询）。dispatchActive=任一下发模式进行中（前端跨标签页警示/禁用判断）。</summary>
     [HttpGet("status")]
     public ActionResult<object> Status()
@@ -74,7 +66,6 @@ public class AutomationConsoleController : ControllerBase
             moveLastError = _moveLoop.LastError,
             templates = _templates.GetAll(),
             settings = _settings.Get(),
-            signals = new { arrivalAuto = _signals.ArrivalAuto, removalAuto = _signals.RemovalAuto, autoSend = _signals.AutoSend },
             nestRunning = _nest.Running,
         });
     }
@@ -178,15 +169,6 @@ public class AutomationConsoleController : ControllerBase
     }
 
     /// <summary>信号自动开关（进入申请/到达/移除/分拣四档，字段可缺省：只改传了的档）。</summary>
-    [HttpPost("signals")]
-    public ActionResult<object> SetSignals([FromBody] SignalFlagsRequest req)
-    {
-        if (req.ArrivalAuto.HasValue) _signals.SetArrival(req.ArrivalAuto.Value);
-        if (req.RemovalAuto.HasValue) _signals.SetRemoval(req.RemovalAuto.Value);
-        if (req.AutoSend.HasValue) _signals.SetSorting(req.AutoSend.Value);
-        return Ok(new { success = true });
-    }
-
     // ── 归巢模式（地图框选巢区 → 持续调度：区域外就绪车逐台 MOVE_ONLY 到区内空点，直到点全被占用）──
 
     [HttpGet("nest/config")]
@@ -245,9 +227,3 @@ public class IntervalRequest { public int Interval { get; set; } } // 秒
 public class NestRunRequest { public List<string>? Vehicles { get; set; } } // 本次归巢车队（可空 = 自动捕获）
 public class StartRequest { public string? TabId { get; set; } public List<string>? TemplateIds { get; set; } public bool ChainTemplates { get; set; } }
 public class TabRequest { public string? TabId { get; set; } }
-public class SignalFlagsRequest
-{
-    public bool? ArrivalAuto { get; set; }
-    public bool? RemovalAuto { get; set; }
-    public bool? AutoSend { get; set; }
-}

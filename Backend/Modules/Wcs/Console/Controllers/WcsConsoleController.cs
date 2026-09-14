@@ -14,17 +14,14 @@ namespace WCSBackend.Modules.Wcs.Console.Controllers;
 public class WcsConsoleController : ControllerBase
 {
     private readonly ITaskStageService _stages;
-    private readonly SignalAutoHostedService _signals;
     private readonly MockApprovalService _mockApproval;
 
-    public WcsConsoleController(ITaskStageService stages, SignalAutoHostedService signals, MockApprovalService mockApproval)
+    public WcsConsoleController(ITaskStageService stages, MockApprovalService mockApproval)
     {
         _stages = stages;
-        _signals = signals;
         _mockApproval = mockApproval;
     }
 
-    /// <summary>当前状态：是否自动模式 + 待确认数（自动模式读统一信号源 SignalAutoHostedService）。</summary>
     [HttpGet("status")]
     public ActionResult<object> Status()
     {
@@ -32,6 +29,10 @@ public class WcsConsoleController : ControllerBase
     }
 
     /// <summary>删除指定任务的全部记录（创建行 + 阶段事件，task_records 全行）。</summary>
+    /// <summary>Task board reads the complete task_records database snapshot. SignalR only asks the UI to refresh.</summary>
+    [HttpGet("task-records")]
+    public ActionResult<object> TaskRecords() => Ok(_stages.GetAll());
+
     [HttpDelete("task-stages/{taskId}")]
     public ActionResult<object> DeleteTaskStages(string taskId)
     {

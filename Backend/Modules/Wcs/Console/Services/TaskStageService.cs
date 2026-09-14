@@ -18,7 +18,6 @@ public interface ITaskStageService
     void UpdateEndStationCode(string taskId, string endStationCode);
     List<StageChangeEvent> GetEventsSince(long sinceId, int limit = 1000);
     void RecordCreated(List<TaskLedgerEntry> entries);
-    List<TaskLedgerEntry> GetCreated(int limit = 500);
     List<TaskRecord> GetAll();
     TaskRecord? GetById(long id);
     void RemoveByTaskId(string taskId);
@@ -200,15 +199,6 @@ public class TaskStageService : ITaskStageService
             .Where(record => record.Stage != "CREATED" && record.Id > sinceId)
             .OrderBy(record => record.Id).Take(limit).ToList()
             .Select(record => record.Adapt<StageChangeEvent>()).ToList();
-    }
-
-    public List<TaskLedgerEntry> GetCreated(int limit = 500)
-    {
-        using var uow = _uow.Create();
-        return uow.Repository<TaskRecord>().Query()
-            .Where(record => record.Stage == "CREATED")
-            .OrderByDescending(record => record.Id).Take(limit).ToList()
-            .Select(record => record.Adapt<TaskLedgerEntry>()).ToList();
     }
 
     public List<TaskRecord> GetAll()

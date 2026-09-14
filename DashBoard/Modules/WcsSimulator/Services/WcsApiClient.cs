@@ -315,18 +315,6 @@ public class WcsApiClient
     }
 
     /// <summary>库存分类汇总（纯空托/带货托/纯货物/锁定中，后端按 GRCS 库存统计）。</summary>
-    public async Task<InventorySummaryDto?> GetInventorySummaryAsync()
-    {
-        if (!ConnectionReady()) return null;
-        if (_health.GrcsOnline == false)
-        {
-            if (_notifiedGrcsOffline == false && !SuppressAlerts) { _notifiedGrcsOffline = true; _alert.Show($"无法连接 GRCS 后端（{GrcsBaseUrl}）\n库存数据经 WCS 后端代理获取，请确认 GRCS 服务已启动。"); }
-            return null;
-        }
-        else { _notifiedGrcsOffline = false; }
-        return await GetAsync<InventorySummaryDto>("/api/wcs/auto/inventory-summary");
-    }
-
     // ── GRCS 代理接口（原 IWcsService/MockWcsService 并入，统一 HTTP 入口）──
 
     /// <summary>GRCS 连接守卫：WCS/GRCS 任一未连接即弹告警并返回失败（仅限经 WCS 代理请求 GRCS 数据的调用）。</summary>
@@ -452,6 +440,14 @@ public class WcsApiClient
     }
 
     /// <summary>删除指定任务的所有阶段事件（WCS 管理接口 DELETE /api/wcs/task-stages/{taskId}）。</summary>
+    /// <summary>Read task_records directly from the WCS backend database snapshot.</summary>
+    public async Task<List<TaskRecord>?> GetTaskRecordsAsync()
+    {
+        if (!ConnectionReady()) return null;
+        try { return await GetAsync<List<TaskRecord>>("/api/wcs/task-records"); }
+        catch { return null; }
+    }
+
     public async Task<(bool Ok, int StatusCode, string Json)> DeleteTaskStageAsync(string baseUrl, string taskId)
     {
         if (!ConnectionReady()) return (false, 0, JsonSerializer.Serialize(new { error = "backend offline" }));

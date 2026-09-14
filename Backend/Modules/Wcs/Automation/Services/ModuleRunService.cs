@@ -20,12 +20,12 @@ public class ModuleRunService
     private readonly AutomationLogService _logs;
     private readonly MockRuleStore _mocks;
     private readonly TaskLifecycleService _lifecycle;
-    private readonly InventoryModuleEffectService _inventoryEffects;
+    private readonly ModuleEffectService _effects;
 
     public ModuleRunService(GrcsHttpClient grcs, WcsSettingsService settings, TaskTemplateStore templates,
         FeatureModuleStore modules, ITaskStageService stages, ILogger<ModuleRunService> logger,
         AutomationLogService logs, MockRuleStore mocks, TaskLifecycleService lifecycle,
-        InventoryModuleEffectService inventoryEffects)
+        ModuleEffectService effects)
     {
         _grcs = grcs;
         _settings = settings;
@@ -36,7 +36,7 @@ public class ModuleRunService
         _logs = logs;
         _mocks = mocks;
         _lifecycle = lifecycle;
-        _inventoryEffects = inventoryEffects;
+        _effects = effects;
     }
 
     public class ModuleCtx
@@ -49,6 +49,13 @@ public class ModuleRunService
         public string Warehouse = "";
         public string TaskType = "";
         public string TaskId = "";
+        private readonly Dictionary<string, string> _context = new(StringComparer.OrdinalIgnoreCase);
+
+        public string GetContext(string key)
+            => _context.TryGetValue(key, out var value) ? value : "";
+
+        public void SetContext(string key, string? value)
+            => _context[key] = value?.Trim() ?? "";
     }
 
     public async Task<(bool ok, int code, string json)> SendTaskWithModulesAsync(WcsTaskGroup group, string? roundId = null)
@@ -134,14 +141,39 @@ public class ModuleRunService
                 continue;
             }
 
+            if (!_effects.Validate(module, out var validationMessage))
+            {
+                _stages.TryRecordSystemEvent(ctx.TaskId, $"EFFECT_CONFIGURATION:{id}", false, 0);
+                allOk = false;
+                if (roundId != null) _logs.Add(roundId, validationMessage, "#f87171");
+                if (stopOnFailure) return false;
+                continue;
+            }
+            if (!_effects.HandleBefore(ctx, module.PreExecutionEffect))
+            {
+                _stages.TryRecordSystemEvent(ctx.TaskId, $"PRE_EFFECT:{id}", false, 0);
+                allOk = false;
+                if (roundId != null)
+                    _logs.Add(roundId, $"Module '{module.Name}' pre-execution effect failed.", "#f87171");
+                if (stopOnFailure) return false;
+                continue;
+            }
+            if (!string.IsNullOrWhiteSpace(module.PreExecutionEffect))
+                _stages.TryRecordSystemEvent(ctx.TaskId, $"PRE_EFFECT:{id}", true, 200);
+
+            var alreadyRegistered = string.Equals(module.PreExecutionEffect?.Trim(), ModulePreExecutionEffects.PrepareReturnTask,
+                                        StringComparison.OrdinalIgnoreCase)
+                && string.Equals(ctx.GetContext("returnTaskRegistered"), "true", StringComparison.OrdinalIgnoreCase);
             var body = new Dictionary<string, object?>();
             foreach (var parameter in module.Params) body[parameter.Name] = Resolve(parameter, ctx);
             var url = (_settings.Get()?.GrcsBaseUrl ?? "").TrimEnd('/') + module.ApiUrl;
             if (roundId != null) _logs.Add(roundId, $"Run module '{module.Name}' POST {url}", "#93c5fd");
-            var (ok, code, json) = await _grcs.ForwardAsync(url, HttpMethod.Post, JsonSerializer.Serialize(body));
+            var (ok, code, json) = alreadyRegistered
+                ? (true, 200, "{\"success\":true,\"message\":\"Return task was already registered.\"}")
+                : await _grcs.ForwardAsync(url, HttpMethod.Post, JsonSerializer.Serialize(body));
             _stages.TryRecordSystemEvent(ctx.TaskId, $"{prefix}:{id}", ok, code);
 
-            if (ok && !_inventoryEffects.HandleSucceeded(ctx.TaskId, module.InventoryEffect, prefix))
+            if (ok && !_effects.HandleSucceeded(ctx, module.InventoryEffect, prefix))
             {
                 allOk = false;
                 _logger.LogError("Module {Module} succeeded, but inventory effect {Effect} failed for {TaskId}.",
@@ -155,6 +187,7 @@ public class ModuleRunService
             _logger.LogInformation("[Module] {TaskId} {Prefix} {Module}: {Ok} {Code}", ctx.TaskId, prefix, module.Name, ok, code);
             if (!ok)
             {
+                _effects.HandleFailed(ctx, module.PreExecutionEffect);
                 allOk = false;
                 if (stopOnFailure) return false;
             }
@@ -183,7 +216,8 @@ public class ModuleRunService
         {
             Start = record.StartStationCode,
             End = record.EndStationCode,
-            Container = record.ContainerCode,
+            // task_records 将托盘与货物拆列保存；纯货任务没有托盘时，任务容器回退为货物号。
+            Container = !string.IsNullOrWhiteSpace(record.ContainerCode) ? record.ContainerCode : record.CargoCode,
             Pallet = record.ContainerCode,
             Cargo = record.CargoCode,
             Warehouse = record.Warehouse,
@@ -203,8 +237,23 @@ public class ModuleRunService
         WorkValueSourceDto.TaskType => ctx.TaskType,
         WorkValueSourceDto.TaskId => ctx.TaskId,
         WorkValueSourceDto.Now => DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"),
+        WorkValueSourceDto.ModuleContext => ctx.GetContext(parameter.FixedValue),
+        WorkValueSourceDto.JsonLiteral => ResolveJsonLiteral(parameter.FixedValue),
         _ => parameter.FixedValue,
     };
+
+    private static object? ResolveJsonLiteral(string value)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(value);
+            return document.RootElement.Clone();
+        }
+        catch
+        {
+            return value;
+        }
+    }
 
     private static bool IsAccepted(string json)
     {

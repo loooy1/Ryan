@@ -54,6 +54,8 @@ public class GrcsApiDocsController : ControllerBase
         WorkValueSourceDto.TaskType => "任务类型",
         WorkValueSourceDto.TaskId => "任务编号",
         WorkValueSourceDto.Now => "当前时间",
+        WorkValueSourceDto.ModuleContext => "回库任务预处理",
+        WorkValueSourceDto.JsonLiteral => "JSON 固定值",
         _ => "固定值",
     };
 

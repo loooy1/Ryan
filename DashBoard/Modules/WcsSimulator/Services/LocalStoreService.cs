@@ -13,7 +13,7 @@ namespace Dashboard.Modules.WcsSimulator.Services;
 ///
 /// ── 边界 ──
 /// 只预加载配置/开关/折叠状态等小 key；台账（grcs_task_ledger，上限 2000 条大 JSON）
-/// 和地图缓存（grcs_map_stations）等大 key 由各自服务（TaskLedgerService 等）独立缓存，
+/// 和地图缓存（grcs_map_stations）等大 key 由各自服务（task_records 等）独立缓存，
 /// 避免启动时一次性反序列化大对象。新增持久化 key 时想清楚它属于哪一类。
 ///
 /// ── 跨标签页 ──

@@ -8,6 +8,7 @@ public class FeatureModuleRow
     public string Id { get; set; } = "";
     public string Name { get; set; } = "";
     public string ApiUrl { get; set; } = "";
+    public string PreExecutionEffect { get; set; } = "";
     public string InventoryEffect { get; set; } = "";
     public List<WorkParamDto> Params { get; set; } = [];
     public string UpdatedAt { get; set; } = "";

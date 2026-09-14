@@ -103,50 +103,6 @@ public class WcsSettingsDto
     public string SceneName { get; set; } = "Show";
 }
 
-/// <summary>自动化运行状态（GET /api/wcs/auto/status 快照）。</summary>
-public class InventoryCountsDto
-{
-    public int EmptyPallets { get; set; }
-    public int LoadedPallets { get; set; }
-    public int Cargos { get; set; }
-    public int PairedCargos { get; set; }
-}
-
-/// <summary>库存明细条目（仅列出有货/托的储位，不包含空储位）。</summary>
-public class InventoryDetailItem
-{
-    /// <summary>容器号（托盘号或货物号）。</summary>
-    public string Code { get; set; } = "";
-    /// <summary>当前所在站点（空 = 在途/无站点记录）。</summary>
-    public string? Station { get; set; }
-    /// <summary>在途单元所属任务；储位现存库存为空。</summary>
-    public string? TaskId { get; set; }
-    /// <summary>带货托关联的货物号（纯空托/纯货物为 null）。</summary>
-    public string? CargoCode { get; set; }
-    /// <summary>锁定状态：transit 在途 / picked 已选未下发 / fail 下发失败（仅锁定明细）。</summary>
-    public string? Status { get; set; }
-}
-
-/// <summary>库存分类汇总 + 明细（GET /api/wcs/auto/inventory-summary）。</summary>
-public class InventorySummaryDto
-{
-    public int Empty { get; set; }
-    public int Loaded { get; set; }
-    public int Cargo { get; set; }
-    /// <summary>锁定中 = 非在途锁定单元数（picked/fail；货+托同储位算一个）。</summary>
-    public int Locked { get; set; }
-    /// <summary>在途 = transit 单元数（已取走，号码保留作出发记录；货+托同储位算一个）。</summary>
-    public int Transit { get; set; }
-    /// <summary>接驳位 = 非储位终点行上的容器数（货+托同接驳位算一个）。</summary>
-    public int Terminal { get; set; }
-    public List<InventoryDetailItem> EmptyItems { get; set; } = [];
-    public List<InventoryDetailItem> LoadedItems { get; set; } = [];
-    public List<InventoryDetailItem> CargoItems { get; set; } = [];
-    public List<InventoryDetailItem> LockedItems { get; set; } = [];
-    public List<InventoryDetailItem> TransitItems { get; set; } = [];
-    public List<InventoryDetailItem> TerminalItems { get; set; } = [];
-}
-
 /// <summary>日志条目（自动化/批量执行共用，带自增 Id 供前端 sinceId 增量拉取）。</summary>
 public class LogEntryDto
 {
@@ -373,12 +329,6 @@ public class NestStatsDto
 public class ExceptionRecordReproduceRequest
 {
     public string? VehicleCode { get; set; }
-}
-
-/// <summary>站点锁条目（流程终点任务 FINISHED 后释放）。</summary>
-public class StationLockEntry
-{
-    public string TaskId { get; set; } = "";
 }
 
 /// <summary>地图上传请求（POST /api/wcs/map/upload）。</summary>

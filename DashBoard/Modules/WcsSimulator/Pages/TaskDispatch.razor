@@ -1,5 +1,4 @@
 @page "/wcs-simulator/dispatch"
-@inject TaskLedgerService Ledger
 @inject WcsApiClient Api
 @inherits Dashboard.Modules.WcsSimulator.Components.PageStateBase
 @implements IDisposable
@@ -11,11 +10,9 @@
        起点之前/起点之后/终点之后的功能模块）；选中后编辑任务的容器 + 起点 + 终点
    ② 站点编码按地图类型转换为实际下发编码（储位 → mark_1、接驳位 → mark_0）
    ③ 组装 WcsTaskGroup 报文 POST 到 GRCS WCS 任务组接口
-   ④ 下发结果写入任务台账（TaskLedgerService，唯一数据源），
       供任务看板展示、信号交互页按模板「离开起点前工作」生成 container_remove 等卡片
    ── 交互服务 ──
    WcsApiClient：任务组下发 + GRCS 库存查询
-   TaskLedgerService：台账写入；LocalStoreService：表单快照/模板持久化
    ════════════════════════════════════════════════ *@
 <PageTitle>WCS 任务下发</PageTitle>
 
@@ -1208,7 +1205,6 @@
     /// <summary>
     /// 下发主流程：前端校验 → 站点编码按地图类型转换 → 站点类型校验 →
     /// 组装 WcsTaskGroup 报文 POST 到 GRCS 任务组接口 →
-    /// 结果写入任务台账（TaskLedgerService，唯一数据源）→ 成功后刷新所有任务号。
     /// </summary>
     private async Task SendTasks()
     {
@@ -1293,24 +1289,7 @@
         // ── 保存到台账（唯一数据源，取代下发历史）。
         //    台账同时供两个下游消费：下发历史页直接展示；
         //    信号交互页据此按模板关联的【手动】货物移除模块生成 container_remove 待确认卡片 ──
-        try
-        {
-            var ledgerEntries = tasks.Select(t => new TaskLedgerEntry
-            {
-                TaskId = t.TaskId,
-                TaskType = t.TaskType,
-                ContainerCode = t.ContainerCode,
-                CargoCode = "",
-                StartStationCode = t.StationCode.FirstOrDefault() ?? "",
-                EndStationCode = t.StationCode.LastOrDefault() ?? "",
-                Warehouse = _warehouse,
-                Time = DateTime.Now.ToString("O"),
-                Ok = ok,
-                StatusCode = code
-            }).ToList();
-            await Ledger.AppendAsync(ledgerEntries);
-        }
-        catch { /* localStorage 不可用时静默忽略 */ }
+
 
         // 下发后刷新所有任务号
         if (ok)
