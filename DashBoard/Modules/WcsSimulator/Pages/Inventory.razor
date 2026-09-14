@@ -31,7 +31,7 @@
                             @(_manualLoading ? "⏳ 刷新中..." : "🔄 刷新库存和位置")
                         </button>
                     </div>
-                    <div id="manual-inventory-map" class="manual-map-canvas" @key="_manualMapRenderKey"></div>
+                    <div id="manual-inventory-map" class="manual-map-canvas"></div>
                     @* 已由下方 Canvas 框选器替代。保留旧 SVG 仅为源代码迁移过渡，运行时不渲染。 *@
                     @if (ShowLegacyManualMap)
                     {
@@ -120,8 +120,6 @@
                                 </div>
                             </div>
                             <div class="manual-action-grid">
-                                <button class="btn btn-primary btn-sm" @onclick="SaveSortingAssociation" disabled="@_sortingSaving">@(_sortingSaving ? "关联中..." : "关联")</button>
-                                <button class="btn btn-outline btn-sm" @onclick="RestoreSortingSelection" disabled="@_sortingSaving">取消</button>
                                 <button class="btn btn-outline btn-sm" @onclick="SaveAndEndSortingAssociation" disabled="@_sortingSaving">关联并结束</button>
                             </div>
                         </div>
@@ -301,7 +299,8 @@
     private bool _manualCargoSizesLoading;
     private DotNetObjectReference<Inventory>? _manualMapDotNetRef;
     private bool _manualMapPendingMount;
-    private int _manualMapRenderKey;
+    private bool _manualMapPendingUpdate;
+    private bool _manualMapMounted;
     private bool _manualLoading;
     private bool _manualSubmitting;
     private bool _manualBoxActive;
@@ -363,12 +362,20 @@
             await RefreshManualSnapshot();
             await LoadManualCargoSizes();
             await InvokeAsync(StateHasChanged);
+            return;
         }
 
         if (_manualMapPendingMount && _manualSlots.Count > 0)
         {
             _manualMapPendingMount = false;
             await MountManualMapAsync();
+            return;
+        }
+
+        if (_manualMapPendingUpdate && _manualSlots.Count > 0)
+        {
+            _manualMapPendingUpdate = false;
+            await UpdateManualMapAsync();
         }
     }
 
@@ -456,8 +463,8 @@
             _transitLoadedAt = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
             _manualSelectedMarks.RemoveWhere(mark => !IsManualMapSelectable(mark));
             _sortingSelectedMarks.RemoveWhere(mark => !IsSortingChildStation(mark));
-            _manualMapRenderKey++;
-            _manualMapPendingMount = true;
+            if (_manualMapMounted) _manualMapPendingUpdate = true;
+            else _manualMapPendingMount = true;
         }
         finally { _manualLoading = false; }
     }
@@ -521,8 +528,20 @@
         {
             await Js.InvokeVoidAsync("grcsStationMapPickerMount", "manual-inventory-map",
                 JsonSerializer.Serialize(BuildManualMapConfig()), _manualMapDotNetRef);
+            _manualMapMounted = true;
         }
         catch (Exception ex) { ShowFeedback("❌", $"库存地图加载失败：{ex.Message}"); }
+    }
+
+    private async Task UpdateManualMapAsync()
+    {
+        if (!_manualMapMounted) return;
+        try
+        {
+            await Js.InvokeVoidAsync("grcsStationMapPickerUpdate", "manual-inventory-map",
+                JsonSerializer.Serialize(BuildManualMapConfig()));
+        }
+        catch (Exception ex) { ShowFeedback("❌", $"库存地图更新失败：{ex.Message}"); }
     }
 
     [JSInvokable]
@@ -559,18 +578,18 @@
     }
 
     [JSInvokable]
-    public Task OnManualMapSortingAssociationRequested(string mark)
+    public async Task OnManualMapSortingAssociationRequested(string mark)
     {
         var station = _manualStations.FirstOrDefault(item => string.Equals(item.Mark, mark, StringComparison.OrdinalIgnoreCase));
-        if (station == null || (station.StationType & MapStationTypeBits.PeopleStation) == 0) return Task.CompletedTask;
+        if (station == null || (station.StationType & MapStationTypeBits.PeopleStation) == 0) return;
         _selectedSortingParentMark = station.Mark;
         _sortingParentMark = station.Mark;
         _sortingSelectedMarks.Clear();
         foreach (var child in CurrentSortingChildren) _sortingSelectedMarks.Add(child);
         _sortingEdit = true;
-        _manualMapRenderKey++;
-        _manualMapPendingMount = true;
-        return InvokeAsync(StateHasChanged);
+        await Js.InvokeVoidAsync("grcsStationMapPickerSetSortingMode", "manual-inventory-map",
+            _sortingParentMark, _sortingSelectedMarks.Order(StringComparer.OrdinalIgnoreCase).ToList());
+        await InvokeAsync(StateHasChanged);
     }
 
     private async Task OnManualTypeChanged()
@@ -609,29 +628,22 @@
             && !string.Equals(slot.CargoStatus, "transit", StringComparison.OrdinalIgnoreCase);
     }
 
-    private void CancelSortingEdit()
+    private async Task CompleteSortingEdit()
     {
+        var selectedMarks = _sortingSelectedMarks.Order(StringComparer.OrdinalIgnoreCase).ToList();
+        var parentStation = _manualStations.FirstOrDefault(station =>
+            string.Equals(station.Mark, _sortingParentMark, StringComparison.OrdinalIgnoreCase));
         _sortingEdit = false;
         _sortingSelectedMarks.Clear();
-        _manualMapRenderKey++;
-        _manualMapPendingMount = true;
+        await Js.InvokeVoidAsync("grcsStationMapPickerCompleteSortingAssociation", "manual-inventory-map",
+            _sortingParentMark, selectedMarks, ManualVisualKind(_sortingParentMark),
+            parentStation == null ? null : SortingStationBadge(parentStation));
+        await InvokeAsync(StateHasChanged);
     }
-
-    /// <summary>放弃本次尚未保存的点选，恢复为数据库中已有的关联。</summary>
-    private void RestoreSortingSelection()
-    {
-        _sortingSelectedMarks.Clear();
-        foreach (var child in CurrentSortingChildren) _sortingSelectedMarks.Add(child);
-        _manualMapRenderKey++;
-        _manualMapPendingMount = true;
-    }
-
-    private async Task SaveSortingAssociation()
-        => await PersistSortingAssociationAsync();
 
     private async Task SaveAndEndSortingAssociation()
     {
-        if (await PersistSortingAssociationAsync()) CancelSortingEdit();
+        if (await PersistSortingAssociationAsync()) await CompleteSortingEdit();
     }
 
     private async Task<bool> PersistSortingAssociationAsync()
@@ -648,7 +660,11 @@
             var result = JsonSerializer.Deserialize<SortingStationAssociationResult>(json, JsonOpts);
             ShowFeedback(ok ? "✅" : "❌", result?.Message ?? json);
             if (!ok) return false;
-            await RefreshManualSnapshot();
+            foreach (var slot in _manualSlots.Values
+                .Where(slot => string.Equals(slot.ParentStationCode, _sortingParentMark, StringComparison.OrdinalIgnoreCase)))
+                slot.ParentStationCode = "";
+            foreach (var mark in _sortingSelectedMarks)
+                if (_manualSlots.TryGetValue(mark, out var slot)) slot.ParentStationCode = _sortingParentMark;
             return true;
         }
         finally { _sortingSaving = false; }

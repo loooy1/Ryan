@@ -80,6 +80,26 @@
         buildPicker(config, null, host, dotNetRef);
     };
 
+    // 更新嵌入式地图的数据，不重建 Canvas，因此保留用户当前的缩放与平移位置。
+    window.grcsStationMapPickerUpdate = function (hostId, configJson) {
+        const host = document.getElementById(hostId);
+        if (!host || typeof host.__smpInlineUpdate !== 'function') return;
+        host.__smpInlineUpdate(configJson);
+    };
+
+    // 分拣台关联只传递必要的编号，避免跨 Blazor 往返整份地图配置。
+    window.grcsStationMapPickerSetSortingMode = function (hostId, parentMark, selectedMarks) {
+        const host = document.getElementById(hostId);
+        if (!host || typeof host.__smpInlineSetSortingMode !== 'function') return;
+        host.__smpInlineSetSortingMode(parentMark, selectedMarks || []);
+    };
+
+    window.grcsStationMapPickerCompleteSortingAssociation = function (hostId, parentMark, selectedMarks, parentVisualKind, parentBadgeText) {
+        const host = document.getElementById(hostId);
+        if (!host || typeof host.__smpInlineCompleteSortingAssociation !== 'function') return;
+        host.__smpInlineCompleteSortingAssociation(parentMark, selectedMarks || [], parentVisualKind, parentBadgeText);
+    };
+
     function buildPicker(config, resolve, host, dotNetRef) {
         const inline = !!host;
         // ── DOM 骨架 ──
@@ -140,21 +160,29 @@
         const ctx = canvas.getContext('2d');
 
         // ── 状态 ──
-        const byFloor = new Map();
-        for (const st of config.Stations) {
-            if (!byFloor.has(st.Floor)) byFloor.set(st.Floor, { enabled: [], disabled: [] });
-            const bucket = byFloor.get(st.Floor);
-            (st.StaEnable ? bucket.enabled : bucket.disabled).push(st);
+        let byFloor = new Map();
+        let candidateMarks = new Set();
+        let selection = new Set();
+        let preserved = new Set();
+        function rebuildStationState() {
+            byFloor = new Map();
+            for (const st of config.Stations) {
+                if (!byFloor.has(st.Floor)) byFloor.set(st.Floor, { enabled: [], disabled: [] });
+                const bucket = byFloor.get(st.Floor);
+                (st.StaEnable ? bucket.enabled : bucket.disabled).push(st);
+            }
+            candidateMarks = new Set(config.Stations.map(function (s) { return s.Mark; }));
+            selection = new Set((config.Preselected || []).map(function (m) { return String(m).trim(); }).filter(Boolean));
+            // 候选集外的既有手输 Mark（如已禁用/类型过滤外的站点）：替换框选时保留，避免增量编辑丢数据
+            preserved = new Set(Array.from(selection).filter(function (m) { return !candidateMarks.has(m); }));
         }
-        const candidateMarks = new Set(config.Stations.map(function (s) { return s.Mark; }));
-        const selection = new Set((config.Preselected || []).map(function (m) { return String(m).trim(); }).filter(Boolean));
-        // 候选集外的既有手输 Mark（如已禁用/类型过滤外的站点）：替换框选时保留，避免增量编辑丢数据
-        const preserved = new Set(Array.from(selection).filter(function (m) { return !candidateMarks.has(m); }));
+        rebuildStationState();
         let currentFloor = config.InitialFloor !== undefined && config.Floors.indexOf(config.InitialFloor) >= 0
             ? config.InitialFloor : config.Floors[0];
         let view = { scale: 1, ox: 0, oy: 0, fitScale: 1 };
         let drag = null;
         let hover = null;
+        let normalMapState = null;
 
         function hideSortingMenu() { sortingMenu.style.display = 'none'; }
 
@@ -187,6 +215,81 @@
             buildLegend();
             updateCount();
             if (dotNetRef) dotNetRef.invokeMethodAsync('OnManualMapFloorChanged', f);
+        }
+
+        function updateInline(configJson) {
+            let next;
+            try { next = JSON.parse(configJson); } catch (e) { next = null; }
+            if (!next || !Array.isArray(next.Stations) || !Array.isArray(next.Floors) || next.Floors.length === 0) return;
+
+            config = next;
+            rebuildStationState();
+            hideSortingMenu();
+
+            // 关联编辑只会变更选中状态和关联线；当前楼层存在时绝不调用 fit，保留视角。
+            if (config.Floors.indexOf(currentFloor) < 0) {
+                const nextFloor = config.InitialFloor !== undefined && config.Floors.indexOf(config.InitialFloor) >= 0
+                    ? config.InitialFloor : config.Floors[0];
+                setCurrentFloor(nextFloor);
+                return;
+            }
+
+            chips.forEach(function (c) { c.el.classList.toggle('on', c.floor === currentFloor); });
+            buildLegend();
+            updateCount();
+            draw();
+        }
+
+        function setSortingMode(parentMark, selectedMarks) {
+            if (!normalMapState) {
+                normalMapState = {
+                    enabled: new Map(config.Stations.map(function (s) { return [s.Mark, !!s.StaEnable]; })),
+                    selection: new Set(selection),
+                    preserved: new Set(preserved),
+                    showSortingLinks: !!config.ShowSortingLinks
+                };
+            }
+
+            const selected = new Set((selectedMarks || []).map(function (m) { return String(m).trim(); }).filter(Boolean));
+            config.ShowSortingLinks = true;
+            for (const station of config.Stations) {
+                station.StaEnable = (station.StationType & 64) !== 0;
+                if (station.ParentMark === parentMark) station.ParentMark = null;
+                if (selected.has(station.Mark)) station.ParentMark = parentMark;
+            }
+            selection = selected;
+            preserved = new Set();
+            hideSortingMenu();
+            rebuildStationState();
+            buildLegend();
+            updateCount(false);
+            draw();
+        }
+
+        function completeSortingAssociation(parentMark, selectedMarks, parentVisualKind, parentBadgeText) {
+            const selected = new Set((selectedMarks || []).map(function (m) { return String(m).trim(); }).filter(Boolean));
+            for (const station of config.Stations) {
+                if (station.ParentMark === parentMark) station.ParentMark = null;
+                if (selected.has(station.Mark)) station.ParentMark = parentMark;
+                if (station.Mark === parentMark) {
+                    station.VisualKind = parentVisualKind || station.VisualKind;
+                    station.BadgeText = parentBadgeText || null;
+                }
+            }
+
+            if (normalMapState) {
+                for (const station of config.Stations)
+                    station.StaEnable = normalMapState.enabled.get(station.Mark) === true;
+                selection = normalMapState.selection;
+                preserved = normalMapState.preserved;
+                config.ShowSortingLinks = normalMapState.showSortingLinks;
+                normalMapState = null;
+            }
+            hideSortingMenu();
+            rebuildStationState();
+            buildLegend();
+            updateCount(false);
+            draw();
         }
 
         function fit() {
@@ -518,9 +621,10 @@
             }
         }
 
-        function updateCount() {
+        function updateCount(notifyDotNet) {
             countEl.textContent = '已选 ' + selection.size;
-            if (dotNetRef) dotNetRef.invokeMethodAsync('OnManualMapSelectionChanged', Array.from(selection));
+            if (notifyDotNet !== false && dotNetRef)
+                dotNetRef.invokeMethodAsync('OnManualMapSelectionChanged', Array.from(selection));
         }
 
         function buildLegend() {
@@ -699,12 +803,20 @@
         canvas.addEventListener('wheel', onWheel, { passive: false });
         if (!inline) window.addEventListener('keydown', onKey);
 
-        const ro = new ResizeObserver(function () { requestAnimationFrame(fit); });
+        // 初始挂载会在下方 setCurrentFloor 中完成 fit；后续布局变化只重绘，避免关联面板
+        // 开关或窗口尺寸变化时把用户正在查看的位置重新缩放回全图。
+        const ro = new ResizeObserver(function () { requestAnimationFrame(draw); });
         ro.observe(wrap);
 
         if (inline) {
+            host.__smpInlineUpdate = updateInline;
+            host.__smpInlineSetSortingMode = setSortingMode;
+            host.__smpInlineCompleteSortingAssociation = completeSortingAssociation;
             host.__smpInlineDispose = function () {
                 ro.disconnect();
+                if (host.__smpInlineUpdate) delete host.__smpInlineUpdate;
+                if (host.__smpInlineSetSortingMode) delete host.__smpInlineSetSortingMode;
+                if (host.__smpInlineCompleteSortingAssociation) delete host.__smpInlineCompleteSortingAssociation;
                 if (host.__smpInlineDispose) delete host.__smpInlineDispose;
             };
         } else {
