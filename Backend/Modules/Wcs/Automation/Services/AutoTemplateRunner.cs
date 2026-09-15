@@ -354,7 +354,7 @@ public class AutoTemplateRunner : IHostedService
                             AutoStepKinds.PickPallet => $"选托盘（{step.PalletFilter}）",
                             AutoStepKinds.PickCargo => "选货物",
                             AutoStepKinds.PickLoadedPallet => "选带货托",
-                            AutoStepKinds.RunTemplate => $"执行任务模板「{TaskTemplateLabel(step.TemplateValue)}」({step.TemplateValue}) · 容器={(step.PickedStepIndex > 0 ? $"第{step.PickedStepIndex}步挑选" : (step.PickedStepIndex == -1 || step.UsePickedContainer) ? "前置挑选" : "自动生成")} · 起点={(step.UsePickedStart ? "前置终点" : "类型选点")} · 等待完成={(step.WaitForFinish ? "是" : "否")}",
+                            AutoStepKinds.RunTemplate => $"\u6267\u884c\u4efb\u52a1\u6a21\u677f\u300c{TaskTemplateLabel(step.TemplateValue)}\u300d({step.TemplateValue}) \u00b7 \u8d77\u70b9={StartSourceLabel(step)} \u00b7 \u7b49\u5f85\u5b8c\u6210={(step.WaitForFinish ? "\u662f" : "\u5426")}",
                             _ => step.Kind,
                         };
                         _log.Add(childId, $"▶ 步骤 {stepNo}：{desc}", "#38bdf8");
@@ -376,8 +376,7 @@ public class AutoTemplateRunner : IHostedService
                                 _invStore.Pick(pick.Code);   // 账本占用（picked，持久化）
                                 pickedBusy.Add(pick.Code);
                             }
-                            ctx.PalletCode = pick.Code; ctx.PalletMark = pick.Mark; ctx.ContainerCode = pick.Code;
-                            ctx.PickedByStep[i + 1] = pick.Code;
+                            ctx.SelectedStartMark = pick.Mark;
                             _log.Add(childId, $"✓ 步骤 {stepNo} 完成！", "#4ade80");
                             MarkFirst(childId, name);
                         }
@@ -393,8 +392,7 @@ public class AutoTemplateRunner : IHostedService
                                 _invStore.Pick(pick.Code);   // 账本占用（picked，持久化）
                                 pickedBusy.Add(pick.Code);
                             }
-                            ctx.CargoCode = pick.Code; ctx.CargoMark = pick.Mark; ctx.ContainerCode = pick.Code;
-                            ctx.PickedByStep[i + 1] = pick.Code;
+                            ctx.SelectedStartMark = pick.Mark;
                             _log.Add(childId, $"✓ 步骤 {stepNo} 完成！", "#4ade80");
                             MarkFirst(childId, name);
                         }
@@ -412,11 +410,7 @@ public class AutoTemplateRunner : IHostedService
                                 pickedBusy.Add(pick.Code);
                                 if (!string.IsNullOrEmpty(pick.CargoCode)) pickedBusy.Add(pick.CargoCode);
                             }
-                            var cargoCode = pick.CargoCode ?? pick.Code;
-                            ctx.PalletCode = pick.Code; ctx.PalletMark = pick.Mark;
-                            ctx.CargoCode = cargoCode; ctx.CargoMark = pick.Mark;
-                            ctx.ContainerCode = cargoCode; // 带货托取货物号而非托盘号
-                            ctx.PickedByStep[i + 1] = cargoCode;
+                            ctx.SelectedStartMark = pick.Mark;
                             _log.Add(childId, $"✓ 步骤 {stepNo} 完成！", "#4ade80");
                             MarkFirst(childId, name);
                         }
@@ -424,7 +418,6 @@ public class AutoTemplateRunner : IHostedService
                         {
                             var tid = await _dispatcher.RunTemplateStep(step, ctx, settings, childId, stepNo, taskIds, taskDetails, _running, _halted, _invCoord);
                             if (tid == null) return;
-                            ctx.PickedByStep[i + 1] = ctx.ContainerCode ?? "";
                             MarkFirst(childId, name);
                         }
                     }
@@ -447,9 +440,6 @@ public class AutoTemplateRunner : IHostedService
             }
         }
 
-        string? chainContainer = null;
-        string? chainPallet = null;
-        string? chainCargo = null;
         string? chainLastTaskId = null;
         for (int k = 0; k < tpls.Count; k++)
         {
@@ -460,13 +450,7 @@ public class AutoTemplateRunner : IHostedService
                 // 链路模式：顺序执行，将上一模板的终点/容器注入下一模板的 ctx
                 var ctx = new TaskDispatcher.ExecCtx();
                 if (chainLastTaskId != null) ctx.LastTaskId = chainLastTaskId;
-                if (chainContainer != null) ctx.ContainerCode = chainContainer;
-                if (chainPallet != null) ctx.PalletCode = chainPallet;
-                if (chainCargo != null) ctx.CargoCode = chainCargo;
                 await RunOne(tpls[idx], idx, cid, ctx);
-                chainContainer = ctx.ContainerCode;
-                chainPallet = ctx.PalletCode;
-                chainCargo = ctx.CargoCode;
                 chainLastTaskId = ctx.LastTaskId;
             }
             else
@@ -487,6 +471,14 @@ public class AutoTemplateRunner : IHostedService
 
     /// <summary>任务模板 Value → 显示名（未找到回退原值），用于步骤开始日志。</summary>
     private string TaskTemplateLabel(string value) => _validator.TaskTemplateLabel(value);
+
+    private static string StartSourceLabel(AutoStepDto step) => step.StartSource switch
+    {
+        AutoStartSources.SelectedStation => "\u9009\u4e2d\u7ad9\u70b9",
+        AutoStartSources.PreviousTaskEnd => "\u524d\u7f6e\u4efb\u52a1\u7ec8\u70b9",
+        AutoStartSources.AutoSelect => "\u6309\u7c7b\u578b\u81ea\u52a8\u9009\u70b9",
+        _ => step.UsePickedStart ? "\u65e7\u914d\u7f6e\u9009\u4e2d\u7ad9\u70b9" : "\u65e7\u914d\u7f6e\u81ea\u52a8\u9009\u70b9",
+    };
 
     /// <summary>查询 GRCS 库存并按「以前的逻辑」分类统计 + 明细：纯空托 / 带货托 / 纯货物 / 锁定中。
     /// 纯货物 = 编码含 Cargo 且无同站点托盘；托盘 = 编码含 Container；带货托 = 同当前站点有关联货物；

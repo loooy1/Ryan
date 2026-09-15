@@ -421,6 +421,9 @@ input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 18px;
 .tpl-inline { display: inline-flex; align-items: center; gap: 6px; flex-direction: row; }
 .tpl-inline label { margin: 0; white-space: nowrap; font-size: 0.78rem; }
 .tpl-inline input { width: 180px; padding: 7px 10px; }
+.tpl-container-modes { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; align-items: center; flex: 1 1 500px; }
+.tpl-container-modes .tpl-inline { min-width: 0; }
+.tpl-container-modes select { min-width: 0; flex: 1; }
 
 .tpl-points { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
 @media (max-width: 900px) { .tpl-points { grid-template-columns: 1fr; } }

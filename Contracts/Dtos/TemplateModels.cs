@@ -44,6 +44,13 @@ public class TaskPointDto
     public int StationTypeBits { get; set; }
 }
 
+public static class TaskContainerModes
+{
+    public const string ExistingInventory = "existing_inventory";
+    public const string GenerateCargo = "generate_cargo";
+    public const string GeneratePallet = "generate_pallet";
+}
+
 /// <summary>任务类型模板 DTO（与前端 TaskTypeTemplate 同构）。</summary>
 public class TaskTemplateDto
 {
@@ -60,6 +67,9 @@ public class TaskTemplateDto
     public string ContainerPrefix { get; set; } = "";
 
     public bool RandomContainer { get; set; }
+
+    /// <summary>Automation dispatch container policy.</summary>
+    public string ContainerMode { get; set; } = TaskContainerModes.ExistingInventory;
 
     public TaskPointDto Start { get; set; } = new();
 

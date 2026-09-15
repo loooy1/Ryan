@@ -565,7 +565,7 @@ public class WcsInventoryStore
             uow.CommitAsync().GetAwaiter().GetResult();
             if (!string.IsNullOrWhiteSpace(palletCode) || !string.IsNullOrWhiteSpace(cargoCode))
                 _stages.TryRecordSystemEvent(taskId, $"TRANSIT:{palletCode}({cargoCode})", true, 0,
-                    sourceMark, palletCode, cargoCode);
+                    sourceMark, palletCode ?? "", cargoCode ?? "");
         }
     }
 

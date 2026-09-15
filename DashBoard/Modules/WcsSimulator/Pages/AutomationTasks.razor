@@ -213,27 +213,15 @@
                                                 </select>
                                             }
                                             <input class="step-label" @bind="step.Label" placeholder="步骤备注(可选)" />
-                                            @if (i >= 1 && step.Kind == "RunTemplate")
+                                            @if (step.Kind == "RunTemplate")
                                             {
-                                                <label class="step-toggle" title="容器来源：引用前置某步骤挑选的容器号（选托盘=托盘号、选货物=货物号），或按模板容器号前缀自动生成。">
-                                                    <span class="step-toggle-text">容器来源</span>
-                                                    <select class="step-sub" style="width:auto;margin-left:6px;"
-                                                            value="@(step.PickedStepIndex == 0 && step.UsePickedContainer ? -1 : step.PickedStepIndex)"
-                                                            @onchange="e => { step.PickedStepIndex = int.TryParse(e.Value?.ToString(), out var v) ? v : 0; step.UsePickedContainer = step.PickedStepIndex != 0; }">
-                                                        <option value="0">自动生成（模板容器前缀）</option>
-                                                        <option value="-1">最近前置挑选的容器</option>
-                                                        @for (var p = 0; p < i; p++)
-                                                        {
-                                                            <option value="@(p + 1)">第 @(p + 1) 步：@StepPickDesc(_editing.Steps[p])</option>
-}
-
+                                                <label class="step-toggle" title="&#x8d77;&#x70b9;&#x4ece;&#x9009;&#x4e2d;&#x7ad9;&#x70b9;&#x3001;&#x524d;&#x7f6e;&#x4efb;&#x52a1;&#x7ec8;&#x70b9;&#x6216;&#x6a21;&#x677f;&#x7c7b;&#x578b;&#x81ea;&#x52a8;&#x9009;&#x70b9;&#x83b7;&#x53d6;&#x3002;">
+                                                    <span class="step-toggle-text">&#x8d77;&#x70b9;&#x6765;&#x6e90;</span>
+                                                    <select class="step-sub" style="width:auto;margin-left:6px;" @bind="step.StartSource">
+                                                        <option value="selected_station">&#x9009;&#x4e2d;&#x7ad9;&#x70b9;</option>
+                                                        <option value="previous_task_end">&#x524d;&#x7f6e;&#x4efb;&#x52a1;&#x7ec8;&#x70b9;</option>
+                                                        <option value="auto_select">&#x6309;&#x7c7b;&#x578b;&#x81ea;&#x52a8;&#x9009;&#x70b9;</option>
                                                     </select>
-                                                </label>
-                                                <label class="step-toggle" title="起点是否取自前置步骤的终点（链路衔接）；关闭则按模板起点类型在选点范围内自行选点。">
-                                                    <span class="toggle-switch @(step.UsePickedStart ? "on" : "")" @onclick="() => step.UsePickedStart = !step.UsePickedStart">
-                                                        <span class="toggle-track"><span class="toggle-thumb"></span></span>
-                                                    </span>
-                                                    <span class="step-toggle-text">起点取自前置终点</span>
                                                 </label>
                                             }
                                         </div>
@@ -272,6 +260,9 @@
             </button>
             <button class="btn btn-danger" @onclick="RequestForceStop" title="停止轮询、放弃进行中任务、释放所有占用与站点锁并清空日志">🧹 全部重置</button>
 
+            <button class="btn btn-outline" @onclick="QueryInventorySummary" disabled="@_invLoading">
+                📦 查库存
+            </button>
             <span class="hint-text" style="padding-bottom:6px;">
                 @if (Hub.Status.Running) { <text>轮询中… 已执行 @Hub.Status.Executed 个任务（@Hub.Status.ActiveTemplateName）</text> }
                 else if (_selectedIds.Count == 0) { <text>请先在左侧选择至少一个模板（可多选）</text> }
@@ -433,6 +424,200 @@
         </div>
         }
     }
+    }
+
+    @if (_invDialogOpen && _invSummary != null)
+    {
+        <div class="template-modal-overlay" @onclick="CloseInventory">
+            <div class="tpl-modal" @onclick:stopPropagation style="width:820px;max-width:96vw;max-height:90vh;display:flex;flex-direction:column;">
+                <div class="tpl-modal-header">
+                    <div class="tpl-modal-title">
+                        <span class="tpl-modal-icon">📦</span>
+                        <div>
+                            <div class="tpl-modal-title-text">库存查询</div>
+                            <div class="tpl-modal-sub">仅列有货/托的储位；锁定中 = 移动单元数（货+托算一个）</div>
+                        </div>
+                    </div>
+                    <button class="tpl-modal-close" @onclick="CloseInventory" title="关闭">✕</button>
+                </div>
+                <div class="tpl-modal-body" style="flex:1;min-height:0;overflow-y:auto;max-height:none;">
+                    <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px;">
+                        <div style="flex:1;min-width:130px;background:#0f172a;border:1px solid #1e293b;border-radius:8px;padding:10px 14px;text-align:center;">
+                            <div style="font-size:1.5rem;font-weight:700;color:#38bdf8;">@_invSummary.Empty</div>
+                            <div class="hint-text" style="margin-top:2px;">纯空托</div>
+                        </div>
+                        <div style="flex:1;min-width:130px;background:#0f172a;border:1px solid #1e293b;border-radius:8px;padding:10px 14px;text-align:center;">
+                            <div style="font-size:1.5rem;font-weight:700;color:#38bdf8;">@_invSummary.Loaded</div>
+                            <div class="hint-text" style="margin-top:2px;">带货托</div>
+                        </div>
+                        <div style="flex:1;min-width:130px;background:#0f172a;border:1px solid #1e293b;border-radius:8px;padding:10px 14px;text-align:center;">
+                            <div style="font-size:1.5rem;font-weight:700;color:#38bdf8;">@_invSummary.Cargo</div>
+                            <div class="hint-text" style="margin-top:2px;">纯货物</div>
+                        </div>
+                        <div style="flex:1;min-width:130px;background:#0f172a;border:1px solid #1e293b;border-radius:8px;padding:10px 14px;text-align:center;">
+                            <div style="font-size:1.5rem;font-weight:700;color:#a78bfa;">@_invSummary.Terminal</div>
+                            <div class="hint-text" style="margin-top:2px;">接驳位</div>
+                        </div>
+                        <div style="flex:1;min-width:130px;background:#0f172a;border:1px solid #1e293b;border-radius:8px;padding:10px 14px;text-align:center;">
+                            <div style="font-size:1.5rem;font-weight:700;color:#f59e0b;">@_invSummary.Locked</div>
+                            <div class="hint-text" style="margin-top:2px;">锁定中</div>
+                        </div>
+                        <div style="flex:1;min-width:130px;background:#0f172a;border:1px solid #1e293b;border-radius:8px;padding:10px 14px;text-align:center;">
+                            <div style="font-size:1.5rem;font-weight:700;color:#fbbf24;">@_invSummary.Transit</div>
+                            <div class="hint-text" style="margin-top:2px;">在途</div>
+                        </div>
+                    </div>
+
+                    <div style="display:flex;flex-direction:column;gap:8px;">
+                        <div style="background:#0f172a;border:1px solid #1e293b;border-radius:8px;padding:8px 14px;">
+                            <div style="font-weight:600;color:#38bdf8;cursor:pointer;user-select:none;" @onclick="ToggleEmptyInv">
+                                <span>🟦 纯空托 @_invSummary.EmptyItems.Count</span>
+                                <span style="float:right;">@(IsInvExpanded("empty") ? "▾" : "▸")</span>
+                            </div>
+                            @if (IsInvExpanded("empty"))
+                            {
+                                @if (_invSummary.EmptyItems.Count == 0) { <div class="hint-text" style="margin-top:4px;">（无）</div> }
+                                else
+                                {
+                                    <div style="max-height:180px;overflow-y:auto;display:flex;flex-direction:column;gap:3px;margin-top:6px;">
+                                        @foreach (var it in _invSummary.EmptyItems)
+                                        {
+                                            <div style="display:flex;gap:8px;align-items:baseline;font-size:0.85rem;">
+                                                <span style="font-weight:600;">@it.Code</span>
+                                                <span class="hint-text">@it.Station</span>
+                                            </div>
+                                        }
+                                    </div>
+                                }
+                            }
+                        </div>
+
+                        <div style="background:#0f172a;border:1px solid #1e293b;border-radius:8px;padding:8px 14px;">
+                            <div style="font-weight:600;color:#38bdf8;cursor:pointer;user-select:none;" @onclick="ToggleLoadedInv">
+                                <span>🟨 带货托 @_invSummary.LoadedItems.Count</span>
+                                <span style="float:right;">@(IsInvExpanded("loaded") ? "▾" : "▸")</span>
+                            </div>
+                            @if (IsInvExpanded("loaded"))
+                            {
+                                @if (_invSummary.LoadedItems.Count == 0) { <div class="hint-text" style="margin-top:4px;">（无）</div> }
+                                else
+                                {
+                                    <div style="max-height:180px;overflow-y:auto;display:flex;flex-direction:column;gap:3px;margin-top:6px;">
+                                        @foreach (var it in _invSummary.LoadedItems)
+                                        {
+                                            <div style="display:flex;gap:8px;align-items:baseline;font-size:0.85rem;">
+                                                <span style="font-weight:600;">@it.Code</span>
+                                                <span class="hint-text">@it.Station</span>
+                                                <span class="hint-text">货物：@it.CargoCode</span>
+                                            </div>
+                                        }
+                                    </div>
+                                }
+                            }
+                        </div>
+
+                        <div style="background:#0f172a;border:1px solid #1e293b;border-radius:8px;padding:8px 14px;">
+                            <div style="font-weight:600;color:#38bdf8;cursor:pointer;user-select:none;" @onclick="ToggleCargoInv">
+                                <span>🟩 纯货物 @_invSummary.CargoItems.Count</span>
+                                <span style="float:right;">@(IsInvExpanded("cargo") ? "▾" : "▸")</span>
+                            </div>
+                            @if (IsInvExpanded("cargo"))
+                            {
+                                @if (_invSummary.CargoItems.Count == 0) { <div class="hint-text" style="margin-top:4px;">（无）</div> }
+                                else
+                                {
+                                    <div style="max-height:180px;overflow-y:auto;display:flex;flex-direction:column;gap:3px;margin-top:6px;">
+                                        @foreach (var it in _invSummary.CargoItems)
+                                        {
+                                            <div style="display:flex;gap:8px;align-items:baseline;font-size:0.85rem;">
+                                                <span style="font-weight:600;">@it.Code</span>
+                                                <span class="hint-text">@it.Station</span>
+                                            </div>
+                                        }
+                                    </div>
+                                }
+                            }
+                        </div>
+
+                        <div style="background:#0f172a;border:1px solid #1e293b;border-radius:8px;padding:8px 14px;">
+                            <div style="font-weight:600;color:#f59e0b;cursor:pointer;user-select:none;" @onclick="ToggleLockedInv">
+                                <span>🟠 锁定中 @_invSummary.LockedItems.Count</span>
+                                <span style="float:right;">@(IsInvExpanded("locked") ? "▾" : "▸")</span>
+                            </div>
+                            @if (IsInvExpanded("locked"))
+                            {
+                                @if (_invSummary.LockedItems.Count == 0) { <div class="hint-text" style="margin-top:4px;">（无）</div> }
+                                else
+                                {
+                                    <div style="max-height:180px;overflow-y:auto;display:flex;flex-direction:column;gap:3px;margin-top:6px;">
+                                        @foreach (var it in _invSummary.LockedItems)
+                                        {
+                                            <div style="display:flex;gap:8px;align-items:baseline;font-size:0.85rem;">
+                                                <span style="font-weight:600;">@it.Code</span>
+                                                <span class="hint-text">@it.Station</span>
+                                                @if (!string.IsNullOrEmpty(it.CargoCode)) { <span class="hint-text">货物：@it.CargoCode</span> }
+                                                @if (!string.IsNullOrEmpty(it.Status)) { <span style="color:@StatusColor(it.Status);font-size:0.75rem;">@StatusBadge(it.Status)</span> }
+                                            </div>
+                                        }
+                                    </div>
+                                }
+                            }
+                        </div>
+
+                        <div style="background:#0f172a;border:1px solid #1e293b;border-radius:8px;padding:8px 14px;">
+                            <div style="font-weight:600;color:#a78bfa;cursor:pointer;user-select:none;" @onclick="ToggleTerminalInv">
+                                <span>🟪 接驳位 @_invSummary.TerminalItems.Count</span>
+                                <span style="float:right;">@(IsInvExpanded("terminal") ? "▾" : "▸")</span>
+                            </div>
+                            @if (IsInvExpanded("terminal"))
+                            {
+                                @if (_invSummary.TerminalItems.Count == 0) { <div class="hint-text" style="margin-top:4px;">（无）</div> }
+                                else
+                                {
+                                    <div style="max-height:180px;overflow-y:auto;display:flex;flex-direction:column;gap:3px;margin-top:6px;">
+                                        @foreach (var it in _invSummary.TerminalItems)
+                                        {
+                                            <div style="display:flex;gap:8px;align-items:baseline;font-size:0.85rem;">
+                                                <span style="font-weight:600;">@it.Code</span>
+                                                <span class="hint-text">@it.Station</span>
+                                                @if (!string.IsNullOrEmpty(it.CargoCode)) { <span class="hint-text">货物：@it.CargoCode</span> }
+                                                @if (!string.IsNullOrEmpty(it.Status)) { <span style="color:@StatusColor(it.Status);font-size:0.75rem;">@StatusBadge(it.Status)</span> }
+                                            </div>
+                                        }
+                                    </div>
+                                }
+                            }
+                        </div>
+
+                        <div style="background:#0f172a;border:1px solid #1e293b;border-radius:8px;padding:8px 14px;">
+                            <div style="font-weight:600;color:#fbbf24;cursor:pointer;user-select:none;" @onclick="ToggleTransitInv">
+                                <span>🟡 在途 @_invSummary.TransitItems.Count</span>
+                                <span style="float:right;">@(IsInvExpanded("transit") ? "▾" : "▸")</span>
+                            </div>
+                            @if (IsInvExpanded("transit"))
+                            {
+                                @if (_invSummary.TransitItems.Count == 0) { <div class="hint-text" style="margin-top:4px;">（无）</div> }
+                                else
+                                {
+                                    <div style="max-height:180px;overflow-y:auto;display:flex;flex-direction:column;gap:3px;margin-top:6px;">
+                                        @foreach (var it in _invSummary.TransitItems)
+                                        {
+                                            <div style="display:flex;gap:8px;align-items:baseline;font-size:0.85rem;">
+                                                <span style="font-weight:600;">@it.Code</span>
+                                                <span class="hint-text">@it.Station</span>
+                                                @if (!string.IsNullOrEmpty(it.CargoCode)) { <span class="hint-text">货物：@it.CargoCode</span> }
+                                                @if (!string.IsNullOrEmpty(it.TaskId)) { <span class="hint-text">任务：@it.TaskId</span> }
+                                                <span style="color:#fbbf24;font-size:0.75rem;">在途</span>
+                                            </div>
+                                        }
+                                    </div>
+                                }
+                            }
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
     }
 
     @if (_confirmVisible)
@@ -763,24 +948,27 @@
         _editorOpen = true;
     }
 
-    private static AutoTemplateDto Clone(AutoTemplateDto src) => new()
+    private static AutoTemplateDto Clone(AutoTemplateDto src)
     {
-        Id = src.Id,
-        Name = src.Name,
-        Steps = src.Steps.Select(s => new AutoStepDto { Kind = s.Kind, PalletFilter = s.PalletFilter, TemplateValue = s.TemplateValue, Label = s.Label, WaitForFinish = s.WaitForFinish, UsePickedContainer = s.UsePickedContainer, UsePickedStart = s.UsePickedStart, PickedStepIndex = s.PickedStepIndex }).ToList(),
-    };
-
-    /// <summary>容器来源下拉的步骤描述：步骤类型 + 备注（如「选托盘·取空托」）。</summary>
-    private static string StepPickDesc(AutoStepDto s)
-    {
-        var kind = s.Kind switch
+        var sawTask = false;
+        return new AutoTemplateDto
         {
-            "PickPallet" => "选托盘",
-            "PickCargo" => "选货物",
-            "PickLoadedPallet" => "选带货托",
-            _ => "任务模板",
+            Id = src.Id,
+            Name = src.Name,
+            Steps = src.Steps.Select(s =>
+            {
+                var source = s.StartSource;
+                if (string.IsNullOrWhiteSpace(source))
+                    source = s.UsePickedStart ? (sawTask ? AutoStartSources.PreviousTaskEnd : AutoStartSources.SelectedStation) : AutoStartSources.AutoSelect;
+                if (s.Kind == AutoStepKinds.RunTemplate) sawTask = true;
+                return new AutoStepDto
+                {
+                    Kind = s.Kind, PalletFilter = s.PalletFilter, TemplateValue = s.TemplateValue, Label = s.Label,
+                    WaitForFinish = s.WaitForFinish, StartSource = source,
+                    UsePickedContainer = false, UsePickedStart = false, PickedStepIndex = 0,
+                };
+            }).ToList(),
         };
-        return string.IsNullOrEmpty(s.Label) ? kind : $"{kind}·{s.Label}";
     }
 
     private void AddStep() => _editing.Steps.Add(new AutoStepDto { Kind = "PickPallet", PalletFilter = "Empty" });
@@ -877,6 +1065,52 @@
     }
 
     // 库存分类汇总（纯空托 / 带货托 / 纯货物），点「查库存」按钮拉取
+    private InventorySummaryDto? _invSummary;
+
+    // 查库存弹窗分类区块折叠状态（默认折叠，点标题展开）
+    private readonly HashSet<string> _invExpanded = new(StringComparer.OrdinalIgnoreCase);
+    private bool IsInvExpanded(string key) => _invExpanded.Contains(key);
+    private void ToggleInv(string key) { if (!_invExpanded.Add(key)) _invExpanded.Remove(key); }
+    private void ToggleEmptyInv() => ToggleInv("empty");
+    private void ToggleLoadedInv() => ToggleInv("loaded");
+    private void ToggleCargoInv() => ToggleInv("cargo");
+    private void ToggleLockedInv() => ToggleInv("locked");
+    private void ToggleTerminalInv() => ToggleInv("terminal");
+    private void ToggleTransitInv() => ToggleInv("transit");
+
+    /// <summary>状态徽章文本（null = 无状态，不显示）。</summary>
+    private static string? StatusBadge(string status)
+        => status switch
+        {
+            "picked" => "已选",
+            "transit" => "在途",
+            "fail" => "失败",
+            _ => null,
+        };
+
+    /// <summary>状态徽章颜色。</summary>
+    private static string StatusColor(string status)
+        => status switch
+        {
+            "picked" => "#38bdf8",
+            "transit" => "#f59e0b",
+            "fail" => "#f87171",
+            _ => "#94a3b8",
+        };
+    private bool _invLoading;
+    private async Task QueryInventorySummary()
+    {
+        _invLoading = true; StateHasChanged();
+        try
+        {
+            _invSummary = await WcsApi.GetInventorySummaryAsync();
+            _invDialogOpen = _invSummary != null;
+        }
+        catch { _invSummary = null; }
+        finally { _invLoading = false; StateHasChanged(); }
+    }
+    private bool _invDialogOpen = false;
+    private void CloseInventory() { _invDialogOpen = false; _invExpanded.Clear(); }
     private string? _openRoundId;
     private void OpenRound(string id) { _openRoundId = id; StateHasChanged(); }
     private void CloseRound() { _openRoundId = null; StateHasChanged(); }

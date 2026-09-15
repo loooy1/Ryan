@@ -126,11 +126,6 @@ namespace WCSBackend.Migrations
                         .HasColumnType("TEXT")
                         .HasColumnName("inventory_effect");
 
-                    b.Property<string>("PreExecutionEffect")
-                        .IsRequired()
-                        .HasColumnType("TEXT")
-                        .HasColumnName("pre_execution_effect");
-
                     b.Property<string>("Name")
                         .IsRequired()
                         .HasColumnType("TEXT")
@@ -140,6 +135,11 @@ namespace WCSBackend.Migrations
                         .IsRequired()
                         .HasColumnType("TEXT")
                         .HasColumnName("params_json");
+
+                    b.Property<string>("PreExecutionEffect")
+                        .IsRequired()
+                        .HasColumnType("TEXT")
+                        .HasColumnName("pre_execution_effect");
 
                     b.Property<string>("UpdatedAt")
                         .IsRequired()
@@ -320,6 +320,67 @@ namespace WCSBackend.Migrations
                     b.ToTable("mock_rules", (string)null);
                 });
 
+            modelBuilder.Entity("Contracts.Entities.ModuleExecLogRow", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER")
+                        .HasColumnName("id");
+
+                    b.Property<string>("DetailJson")
+                        .IsRequired()
+                        .HasColumnType("TEXT")
+                        .HasColumnName("detail_json");
+
+                    b.Property<string>("ExecutionPhase")
+                        .IsRequired()
+                        .HasColumnType("TEXT")
+                        .HasColumnName("execution_phase");
+
+                    b.Property<string>("FinishedAt")
+                        .HasColumnType("TEXT")
+                        .HasColumnName("finished_at");
+
+                    b.Property<int>("HttpStatus")
+                        .HasColumnType("INTEGER")
+                        .HasColumnName("http_status");
+
+                    b.Property<string>("ModuleId")
+                        .IsRequired()
+                        .HasColumnType("TEXT")
+                        .HasColumnName("module_id");
+
+                    b.Property<string>("ModuleName")
+                        .IsRequired()
+                        .HasColumnType("TEXT")
+                        .HasColumnName("module_name");
+
+                    b.Property<string>("StartedAt")
+                        .IsRequired()
+                        .HasColumnType("TEXT")
+                        .HasColumnName("started_at");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasColumnType("TEXT")
+                        .HasColumnName("status");
+
+                    b.Property<string>("TaskId")
+                        .IsRequired()
+                        .HasColumnType("TEXT")
+                        .HasColumnName("task_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("StartedAt")
+                        .HasDatabaseName("idx_module_exec_logs_started_at");
+
+                    b.HasIndex("TaskId", "StartedAt")
+                        .HasDatabaseName("idx_module_exec_logs_task_time");
+
+                    b.ToTable("module_exec_logs", (string)null);
+                });
+
             modelBuilder.Entity("Contracts.Entities.ProjectLogDto", b =>
                 {
                     b.Property<long>("Id")
@@ -453,6 +514,11 @@ namespace WCSBackend.Migrations
                         .IsRequired()
                         .HasColumnType("TEXT")
                         .HasColumnName("container_prefix");
+
+                    b.Property<string>("ContainerMode")
+                        .IsRequired()
+                        .HasColumnType("TEXT")
+                        .HasColumnName("container_mode");
 
                     b.Property<string>("Description")
                         .IsRequired()

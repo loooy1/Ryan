@@ -12,6 +12,7 @@ public class TaskTemplateRow
     public bool NeedsContainer { get; set; }
     public string ContainerPrefix { get; set; } = "";
     public bool RandomContainer { get; set; }
+    public string ContainerMode { get; set; } = TaskContainerModes.ExistingInventory;
     public TaskPointDto Start { get; set; } = new();
     public TaskPointDto End { get; set; } = new();
     public string UpdatedAt { get; set; } = "";

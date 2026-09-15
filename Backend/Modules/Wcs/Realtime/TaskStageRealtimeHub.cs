@@ -22,14 +22,16 @@ public class TaskStageRealtimeHub : Hub
     private readonly MoveLoopRunner _moveLoop;
     private readonly NestRunner _nest;
     private readonly MockApprovalService _mockApproval;
+    private readonly ModuleExecutionLogStore _moduleLogs;
 
     public TaskStageRealtimeHub(ITaskStageService stages, MoveLoopRunner moveLoop, NestRunner nest,
-        MockApprovalService mockApproval)
+        MockApprovalService mockApproval, ModuleExecutionLogStore moduleLogs)
     {
         _stages = stages;
         _moveLoop = moveLoop;
         _nest = nest;
         _mockApproval = mockApproval;
+        _moduleLogs = moduleLogs;
     }
 
     public override async Task OnConnectedAsync()
@@ -42,10 +44,14 @@ public class TaskStageRealtimeHub : Hub
         await Clients.Caller.SendAsync("NestStats", _nest.Snapshot());
         // 回放请求信号记录全量（低频变更，全量快照最简可靠）
         await Clients.Caller.SendAsync("MockRequestEvents", _mockApproval.GetEvents());
+        await Clients.Caller.SendAsync("ModuleExecLogsReset", new { maxId = 0L, entries = _moduleLogs.GetRecent() });
         await base.OnConnectedAsync();
     }
 
     /// <summary>前端手动刷新时从 task_records 重取快照，覆盖浏览器显示缓存。</summary>
-    public Task RefreshSnapshot()
-        => Clients.Caller.SendAsync("EventsReset", _stages.GetAll());
+    public async Task RefreshSnapshot()
+    {
+        await Clients.Caller.SendAsync("EventsReset", _stages.GetAll());
+        await Clients.Caller.SendAsync("ModuleExecLogsReset", new { maxId = 0L, entries = _moduleLogs.GetRecent() });
+    }
 }

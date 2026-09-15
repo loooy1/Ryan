@@ -21,11 +21,12 @@ public class ModuleRunService
     private readonly MockRuleStore _mocks;
     private readonly TaskLifecycleService _lifecycle;
     private readonly ModuleEffectService _effects;
+    private readonly ModuleExecutionLogStore _moduleLogs;
 
     public ModuleRunService(GrcsHttpClient grcs, WcsSettingsService settings, TaskTemplateStore templates,
         FeatureModuleStore modules, ITaskStageService stages, ILogger<ModuleRunService> logger,
         AutomationLogService logs, MockRuleStore mocks, TaskLifecycleService lifecycle,
-        ModuleEffectService effects)
+        ModuleEffectService effects, ModuleExecutionLogStore moduleLogs)
     {
         _grcs = grcs;
         _settings = settings;
@@ -37,6 +38,7 @@ public class ModuleRunService
         _mocks = mocks;
         _lifecycle = lifecycle;
         _effects = effects;
+        _moduleLogs = moduleLogs;
     }
 
     public class ModuleCtx
@@ -56,6 +58,9 @@ public class ModuleRunService
 
         public void SetContext(string key, string? value)
             => _context[key] = value?.Trim() ?? "";
+
+        public IReadOnlyDictionary<string, string> SnapshotContext()
+            => new Dictionary<string, string>(_context, StringComparer.OrdinalIgnoreCase);
     }
 
     public async Task<(bool ok, int code, string json)> SendTaskWithModulesAsync(WcsTaskGroup group, string? roundId = null)
@@ -132,10 +137,14 @@ public class ModuleRunService
         var allOk = true;
         foreach (var id in ids)
         {
+            var startedAt = DateTime.Now.ToString("O");
             var module = _modules.GetAll().FirstOrDefault(x => string.Equals(x.Id, id, StringComparison.OrdinalIgnoreCase));
             if (module == null || string.IsNullOrWhiteSpace(module.ApiUrl))
             {
                 _stages.TryRecordSystemEvent(ctx.TaskId, $"{prefix}:{id}", false, 0);
+                RecordModuleLog(ctx, prefix, id, module?.Name ?? id, false, 0, startedAt,
+                    BuildModuleDetail(ctx, "Module configuration is missing or API URL is empty.", null,
+                        null, null, null, null, null));
                 allOk = false;
                 if (stopOnFailure) return false;
                 continue;
@@ -144,14 +153,25 @@ public class ModuleRunService
             if (!_effects.Validate(module, out var validationMessage))
             {
                 _stages.TryRecordSystemEvent(ctx.TaskId, $"EFFECT_CONFIGURATION:{id}", false, 0);
+                RecordModuleLog(ctx, prefix, id, module.Name, false, 0, startedAt,
+                    BuildModuleDetail(ctx, validationMessage, module.PreExecutionEffect, false,
+                        null, null, null, null));
                 allOk = false;
                 if (roundId != null) _logs.Add(roundId, validationMessage, "#f87171");
                 if (stopOnFailure) return false;
                 continue;
             }
-            if (!_effects.HandleBefore(ctx, module.PreExecutionEffect))
+
+            var preOk = true;
+            string? preException = null;
+            try { preOk = _effects.HandleBefore(ctx, module.PreExecutionEffect); }
+            catch (Exception ex) { preOk = false; preException = ex.Message; }
+            if (!preOk)
             {
                 _stages.TryRecordSystemEvent(ctx.TaskId, $"PRE_EFFECT:{id}", false, 0);
+                RecordModuleLog(ctx, prefix, id, module.Name, false, 0, startedAt,
+                    BuildModuleDetail(ctx, preException ?? "Pre-execution effect failed.", module.PreExecutionEffect, false,
+                        null, null, null, null));
                 allOk = false;
                 if (roundId != null)
                     _logs.Add(roundId, $"Module '{module.Name}' pre-execution effect failed.", "#f87171");
@@ -168,32 +188,102 @@ public class ModuleRunService
             foreach (var parameter in module.Params) body[parameter.Name] = Resolve(parameter, ctx);
             var url = (_settings.Get()?.GrcsBaseUrl ?? "").TrimEnd('/') + module.ApiUrl;
             if (roundId != null) _logs.Add(roundId, $"Run module '{module.Name}' POST {url}", "#93c5fd");
-            var (ok, code, json) = alreadyRegistered
-                ? (true, 200, "{\"success\":true,\"message\":\"Return task was already registered.\"}")
-                : await _grcs.ForwardAsync(url, HttpMethod.Post, JsonSerializer.Serialize(body));
+
+            var ok = false;
+            var code = 0;
+            var json = "";
+            string? requestException = null;
+            try
+            {
+                (ok, code, json) = alreadyRegistered
+                    ? (true, 200, "{\"success\":true,\"message\":\"Return task was already registered.\"}")
+                    : await _grcs.ForwardAsync(url, HttpMethod.Post, JsonSerializer.Serialize(body));
+            }
+            catch (Exception ex)
+            {
+                requestException = ex.Message;
+                json = ex.ToString();
+            }
             _stages.TryRecordSystemEvent(ctx.TaskId, $"{prefix}:{id}", ok, code);
 
-            if (ok && !_effects.HandleSucceeded(ctx, module.InventoryEffect, prefix))
+            var effectOk = true;
+            string? effectException = null;
+            if (ok)
             {
-                allOk = false;
-                _logger.LogError("Module {Module} succeeded, but inventory effect {Effect} failed for {TaskId}.",
-                    module.Name, module.InventoryEffect, ctx.TaskId);
-                if (roundId != null)
-                    _logs.Add(roundId, $"Module '{module.Name}' succeeded, but inventory effect '{module.InventoryEffect}' failed.", "#f87171");
+                try { effectOk = _effects.HandleSucceeded(ctx, module.InventoryEffect, prefix); }
+                catch (Exception ex) { effectOk = false; effectException = ex.Message; }
+                if (!effectOk)
+                {
+                    allOk = false;
+                    _logger.LogError("Module {Module} succeeded, but inventory effect {Effect} failed for {TaskId}.",
+                        module.Name, module.InventoryEffect, ctx.TaskId);
+                    if (roundId != null)
+                        _logs.Add(roundId, $"Module '{module.Name}' succeeded, but inventory effect '{module.InventoryEffect}' failed.", "#f87171");
+                }
             }
 
-            if (roundId != null)
-                _logs.Add(roundId, $"{(ok ? "OK" : "FAILED")} module '{module.Name}' HTTP {code}: {json[..Math.Min(json.Length, 200)]}", ok ? "#4ade80" : "#f87171");
-            _logger.LogInformation("[Module] {TaskId} {Prefix} {Module}: {Ok} {Code}", ctx.TaskId, prefix, module.Name, ok, code);
             if (!ok)
             {
-                _effects.HandleFailed(ctx, module.PreExecutionEffect);
+                try { _effects.HandleFailed(ctx, module.PreExecutionEffect); }
+                catch (Exception ex) { effectException ??= ex.Message; }
                 allOk = false;
-                if (stopOnFailure) return false;
             }
+
+            var completed = ok && effectOk;
+            var summary = requestException ?? effectException
+                ?? (completed ? "Module execution completed." : "Module execution failed.");
+            RecordModuleLog(ctx, prefix, id, module.Name, completed, code, startedAt,
+                BuildModuleDetail(ctx, summary, module.PreExecutionEffect, true,
+                    url, body, new { httpStatus = code, body = json, exception = requestException, skipped = alreadyRegistered },
+                    new { effect = module.InventoryEffect, ok = effectOk, exception = effectException }));
+
+            if (roundId != null)
+                _logs.Add(roundId, $"{(completed ? "OK" : "FAILED")} module '{module.Name}' HTTP {code}: {json[..Math.Min(json.Length, 200)]}", completed ? "#4ade80" : "#f87171");
+            _logger.LogInformation("[Module] {TaskId} {Prefix} {Module}: {Ok} {Code}", ctx.TaskId, prefix, module.Name, completed, code);
+            if (!completed && stopOnFailure) return false;
         }
         return allOk;
     }
+
+    private void RecordModuleLog(ModuleCtx ctx, string phase, string moduleId, string moduleName,
+        bool success, int httpStatus, string startedAt, object detail)
+    {
+        _moduleLogs.Record(new ModuleExecLogEntry
+        {
+            TaskId = ctx.TaskId,
+            ModuleId = moduleId,
+            Module = moduleName,
+            ExecutionPhase = phase,
+            Status = success ? "success" : "fail",
+            HttpCode = httpStatus,
+            StartedAt = startedAt,
+            FinishedAt = DateTime.Now.ToString("O"),
+            DetailJson = JsonSerializer.Serialize(detail)
+        });
+    }
+
+    private static object BuildModuleDetail(ModuleCtx ctx, string summary, string? preEffect, bool? preOk,
+        string? url, object? body, object? response, object? after)
+        => new
+        {
+            summary,
+            context = new
+            {
+                taskId = ctx.TaskId,
+                taskType = ctx.TaskType,
+                warehouse = ctx.Warehouse,
+                start = ctx.Start,
+                end = ctx.End,
+                container = ctx.Container,
+                pallet = ctx.Pallet,
+                cargo = ctx.Cargo,
+                values = ctx.SnapshotContext()
+            },
+            before = new { effect = preEffect ?? "", ok = preOk, values = ctx.SnapshotContext() },
+            request = url == null ? null : new { method = "POST", url, body },
+            response,
+            after
+        };
 
     private static ModuleCtx BuildCtxFromGroup(WcsTaskGroup group, WcsTaskItem task) => new()
     {

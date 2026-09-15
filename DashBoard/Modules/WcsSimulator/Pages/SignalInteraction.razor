@@ -576,20 +576,27 @@
                     <div style="display:flex;flex-direction:column;gap:8px;">
                         @foreach (var e in _filteredExecLog)
                         {
-                            <div style="border:1px solid #1e293b;border-radius:8px;background:#0f172a;padding:10px 12px;">
+                            <button type="button" @onclick="() => ToggleExecLog(e.Id)" style="border:1px solid #1e293b;border-radius:8px;background:#0f172a;padding:10px 12px;text-align:left;color:inherit;cursor:pointer;width:100%;">
                                 <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
-                                    <span class="badge @(e.Ok ? "badge-ok" : "badge-warn")">@(e.Ok ? "✅" : "❌") HTTP @e.HttpCode</span>
+                                    <span class="badge @(e.Ok ? "badge-ok" : "badge-warn")">@(e.Ok ? "\u6210\u529f" : "\u5931\u8d25") HTTP @e.HttpCode</span>
                                     <span style="color:#cbd5e1;font-family:Consolas,monospace;font-size:0.8rem;">@e.Time</span>
-                                    <span style="color:#e2e8f0;font-family:Consolas,monospace;font-size:0.85rem;" title="任务号">@e.TaskId</span>
+                                    <span style="color:#e2e8f0;font-family:Consolas,monospace;font-size:0.85rem;" title="Task ID">@e.TaskId</span>
                                     <span class="badge badge-info">@e.Point</span>
                                     <span style="color:#7dd3fc;font-size:0.85rem;">@e.Module</span>
                                     <span style="color:#64748b;font-size:0.8rem;flex:1;min-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="@e.Detail">@e.Detail</span>
-                                    @if (false && CanRetryLog(e))
-                                    {
-                                        <button class="btn btn-outline btn-xs" disabled="@_retryingLogId.Contains(e.Id)" @onclick="() => RetryModuleLog(e.Id)" title="重新执行该模块（MsgTime 用当前时间），新记录实时追加">🔄 重试</button>
-                                    }
+                                    <span style="color:#94a3b8;font-size:.75rem;">@(IsExecLogExpanded(e.Id) ? "\u6536\u8d77\u8be6\u60c5" : "\u67e5\u770b\u8be6\u60c5")</span>
                                 </div>
-                            </div>
+                                @if (IsExecLogExpanded(e.Id))
+                                {
+                                    <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:10px;padding-top:10px;border-top:1px solid #1e293b;">
+                                        <div><div class="hint-text">@("\u4efb\u52a1\u4e0a\u4e0b\u6587")</div><pre style="margin:4px 0 0;white-space:pre-wrap;word-break:break-word;color:#cbd5e1;">@DetailSection(e, "context")</pre></div>
+                                        <div><div class="hint-text">@("\u6267\u884c\u524d")</div><pre style="margin:4px 0 0;white-space:pre-wrap;word-break:break-word;color:#cbd5e1;">@DetailSection(e, "before")</pre></div>
+                                        <div><div class="hint-text">@("\u5b9e\u9645\u8bf7\u6c42")</div><pre style="margin:4px 0 0;white-space:pre-wrap;word-break:break-word;color:#cbd5e1;">@DetailSection(e, "request")</pre></div>
+                                        <div><div class="hint-text">@("\u5b9e\u9645\u54cd\u5e94")</div><pre style="margin:4px 0 0;white-space:pre-wrap;word-break:break-word;color:#cbd5e1;">@DetailSection(e, "response")</pre></div>
+                                        <div style="grid-column:1/-1;"><div class="hint-text">@("\u6267\u884c\u540e")</div><pre style="margin:4px 0 0;white-space:pre-wrap;word-break:break-word;color:#cbd5e1;">@DetailSection(e, "after")</pre></div>
+                                    </div>
+                                }
+                            </button>
                         }
                     </div>
                 }
@@ -1049,36 +1056,37 @@
                 e.Module.Contains(q, StringComparison.OrdinalIgnoreCase)
                 || e.TaskId.Contains(q, StringComparison.OrdinalIgnoreCase)
                 || e.Point.Contains(q, StringComparison.OrdinalIgnoreCase)
-                || e.Detail.Contains(q, StringComparison.OrdinalIgnoreCase)).ToList();
+                || e.Detail.Contains(q, StringComparison.OrdinalIgnoreCase)
+                || e.DetailJson.Contains(q, StringComparison.OrdinalIgnoreCase)).ToList();
         }
     }
 
     private async Task LoadExecLogAsync()
     {
+        await StageHub.RefreshSnapshotAsync();
         _execLog = StageHub.ExecLogEntries.ToList();
         StateHasChanged();
-        await Task.CompletedTask;
     }
 
-    // ── 模块执行记录重试 ──
-    private HashSet<long> _retryingLogId = new();
+    private readonly HashSet<long> _expandedExecLog = [];
 
-    /// <summary>可重试：模块名为正常配置名（非「模块未找到/API 为空」类特殊条目）。</summary>
-    private static bool CanRetryLog(ModuleExecLogEntry e)
-        => !e.Module.StartsWith("模块未找到", StringComparison.OrdinalIgnoreCase)
-           && e.Module != "API 地址为空，已跳过";
+    private bool IsExecLogExpanded(long id) => _expandedExecLog.Contains(id);
 
-    private async Task RetryModuleLog(long id)
+    private void ToggleExecLog(long id)
     {
-        if (!_retryingLogId.Add(id)) return;
-        StateHasChanged();
+        if (!_expandedExecLog.Add(id)) _expandedExecLog.Remove(id);
+    }
+
+    private static string DetailSection(ModuleExecLogEntry entry, string section)
+    {
         try
         {
-            await Api.RetryModuleLogAsync(id);
+            using var document = System.Text.Json.JsonDocument.Parse(entry.DetailJson);
+            if (document.RootElement.TryGetProperty(section, out var value))
+                return System.Text.Json.JsonSerializer.Serialize(value, new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
         }
         catch { }
-        _retryingLogId.Remove(id);
-        StateHasChanged();
+        return entry.Detail;
     }
 
     public void Dispose()

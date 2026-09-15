@@ -431,12 +431,23 @@
                                 <label>容器号前缀</label>
                                 <input type="text" @bind="_draft.ContainerPrefix" placeholder="如 Container（留空默认 Container）" />
                             </div>
-                            <label class="tpl-switch-line" @onclick="() => _draft.RandomContainer = !_draft.RandomContainer">
-                                <span class="tpl-switch-label">随机生成容器号</span>
-                                <span class="toggle-switch @(_draft.RandomContainer ? "on" : "")">
-                                    <span class="toggle-track"><span class="toggle-thumb"></span></span>
-                                </span>
-                            </label>
+                            <div class="tpl-container-modes">
+                                <div class="form-group tpl-inline">
+                                    <label>手动容器处理</label>
+                                    <select value='@(_draft.RandomContainer ? "random" : "manual")' @onchange="SetManualContainerMode">
+                                        <option value="random">随机生成容器号</option>
+                                        <option value="manual">手动输入容器号</option>
+                                    </select>
+                                </div>
+                                <div class="form-group tpl-inline">
+                                    <label>&#x81ea;&#x52a8;&#x4efb;&#x52a1;&#x5bb9;&#x5668;&#x5904;&#x7406;</label>
+                                    <select @bind="_draft.ContainerMode">
+                                        <option value="existing_inventory">&#x8bfb;&#x53d6;&#x8d77;&#x70b9;&#x5e93;&#x5b58;</option>
+                                        <option value="generate_cargo">&#x5728;&#x8d77;&#x70b9;&#x751f;&#x6210;&#x8d27;&#x7269;</option>
+                                        <option value="generate_pallet">&#x5728;&#x8d77;&#x70b9;&#x751f;&#x6210;&#x6258;&#x76d8;</option>
+                                    </select>
+                                </div>
+                            </div>
                         }
                     </div>
                 </div>
@@ -808,6 +819,7 @@
             NeedsContainer = tt.NeedsContainer,
             ContainerPrefix = tt.ContainerPrefix,
             RandomContainer = tt.RandomContainer,
+            ContainerMode = tt.ContainerMode,
             Start = ClonePoint(tt.Start),
             End = ClonePoint(tt.End),
         };
@@ -906,6 +918,7 @@
             NeedsContainer = _draft.NeedsContainer,
             ContainerPrefix = _draft.ContainerPrefix.Trim(),
             RandomContainer = _draft.RandomContainer,
+            ContainerMode = _draft.ContainerMode,
         };
 
         // ── 编辑模式：原地替换原模板（保留原位置，排序不动；Value 变更时校验新键冲突）──
@@ -1042,6 +1055,13 @@
         public bool NeedsContainer { get; set; } = true;
         public string ContainerPrefix { get; set; } = "";
         public bool RandomContainer { get; set; }
+        public string ContainerMode { get; set; } = TaskContainerModes.ExistingInventory;
+    }
+
+    private void SetManualContainerMode(ChangeEventArgs e)
+    {
+        _draft.RandomContainer = string.Equals(e.Value?.ToString(), "random", StringComparison.OrdinalIgnoreCase);
+        SaveFormState();
     }
 
     // ════════════ 初始化 / 持久化 ════════════

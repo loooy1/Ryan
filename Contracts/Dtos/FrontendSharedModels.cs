@@ -1,6 +1,6 @@
 namespace Contracts.Dtos;
 
-/// <summary>自动化/手动运行总览快照（GET /api/wcs/auto/status）。</summary>
+/// <summary>鑷姩鍖?鎵嬪姩杩愯鎬昏蹇収锛圙ET /api/wcs/auto/status锛夈€?/summary>
 public class AutoStatusSnapshot
 {
     public bool Running { get; set; }
@@ -21,15 +21,15 @@ public class AutoStatusSnapshot
     public WcsSettingsDto Settings { get; set; } = new();
 }
 
-/// <summary>信号自动化开关（到达/取走/自动下发）。</summary>
-/// <summary>移动任务循环租约登记结果（POST /api/wcs/auto/move/start）。</summary>
+/// <summary>淇″彿鑷姩鍖栧紑鍏筹紙鍒拌揪/鍙栬蛋/鑷姩涓嬪彂锛夈€?/summary>
+/// <summary>绉诲姩浠诲姟寰幆绉熺害鐧昏缁撴灉锛圥OST /api/wcs/auto/move/start锛夈€?/summary>
 public class MoveLeaseResult
 {
     public bool Success { get; set; }
     public string? Reason { get; set; }
 }
 
-/// <summary>纯移动任务循环状态（SignalR「MoveTaskStats」广播 + GET status 轮询字段）。</summary>
+/// <summary>绾Щ鍔ㄤ换鍔″惊鐜姸鎬侊紙SignalR銆孧oveTaskStats銆嶅箍鎾?+ GET status 杞瀛楁锛夈€?/summary>
 public class MoveTaskStatsDto
 {
     public bool Running { get; set; }
@@ -43,21 +43,21 @@ public class MoveTaskStatsDto
     public string LastStation { get; set; } = "";
 }
 
-/// <summary>归巢执行结果（POST /api/wcs/auto/nest/run）。</summary>
+/// <summary>褰掑发鎵ц缁撴灉锛圥OST /api/wcs/auto/nest/run锛夈€?/summary>
 public class NestRunResult
 {
     public bool Success { get; set; }
     public string? Reason { get; set; }
 }
 
-/// <summary>准入状态（GET /api/wcs/status：自动模式 + 待确认数）。</summary>
+/// <summary>鍑嗗叆鐘舵€侊紙GET /api/wcs/status锛氳嚜鍔ㄦā寮?+ 寰呯‘璁ゆ暟锛夈€?/summary>
 public class AdmittanceStatusDto
 {
     public bool AutoMode { get; set; }
     public int PendingCount { get; set; }
 }
 
-/// <summary>WCS 代理响应（/api/wcs/grcs/* 统一返回 { ok, code, json }）。</summary>
+/// <summary>WCS 浠ｇ悊鍝嶅簲锛?api/wcs/grcs/* 缁熶竴杩斿洖 { ok, code, json }锛夈€?/summary>
 public class GrcsProxyResult
 {
     public bool Ok { get; set; }
@@ -65,7 +65,7 @@ public class GrcsProxyResult
     public string Json { get; set; } = "";
 }
 
-/// <summary>地图缓存响应（GET /api/wcs/map）。</summary>
+/// <summary>鍦板浘缂撳瓨鍝嶅簲锛圙ET /api/wcs/map锛夈€?/summary>
 public class MapCacheDto
 {
     public string SavedAt { get; set; } = "";
@@ -73,23 +73,10 @@ public class MapCacheDto
     public List<MapStationLite> Stations { get; set; } = [];
 }
 
-/// <summary>地图上传负载（POST /api/wcs/map/upload）。</summary>
+/// <summary>鍦板浘涓婁紶璐熻浇锛圥OST /api/wcs/map/upload锛夈€?/summary>
 public class MapUploadPayload
 {
     public string SavedAt { get; set; } = "";
     public int PathsCount { get; set; }
     public List<MapStationLite> Stations { get; set; } = [];
-}
-
-/// <summary>模块执行记录条目（GET /api/wcs/modules/logs）。</summary>
-public class ModuleExecLogEntry
-{
-    public long Id { get; set; }
-    public string Time { get; set; } = "";
-    public string TaskId { get; set; } = "";
-    public string Point { get; set; } = "";
-    public string Module { get; set; } = "";
-    public bool Ok { get; set; }
-    public int HttpCode { get; set; }
-    public string Detail { get; set; } = "";
 }

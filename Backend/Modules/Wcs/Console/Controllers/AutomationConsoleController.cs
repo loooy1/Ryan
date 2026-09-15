@@ -1,7 +1,9 @@
 using WCSBackend.Modules.Wcs.Proxy.Services;
 using Contracts.Dtos;
+using Contracts.Entities;
 using WCSBackend.Modules.Wcs.Infrastructure;
 using WCSBackend.Modules.Wcs.Automation.Services;
+using WCSBackend.Modules.Wcs.Console.Services;
 using Microsoft.AspNetCore.Mvc;
 using System.Text.Json;
 
@@ -26,10 +28,13 @@ public class AutomationConsoleController : ControllerBase
     private readonly NestRunner _nest;
     private readonly NestConfigService _nestConfig;
     private readonly GrcsHttpClient _grcs;
+    private readonly WcsInventoryStore _inventory;
+    private readonly ITaskStageService _taskStages;
 
     public AutomationConsoleController(AutoTemplateRunner auto, AutoTemplateStore templates, AutomationLogService logs,
         RangeConfigService rangeConfig, WcsSettingsService settings,
-        MoveLoopRunner moveLoop, NestRunner nest, NestConfigService nestConfig, GrcsHttpClient grcs)
+        MoveLoopRunner moveLoop, NestRunner nest, NestConfigService nestConfig, GrcsHttpClient grcs, WcsInventoryStore inventory,
+        ITaskStageService taskStages)
     {
         _auto = auto;
         _templates = templates;
@@ -40,10 +45,122 @@ public class AutomationConsoleController : ControllerBase
         _nest = nest;
         _nestConfig = nestConfig;
         _grcs = grcs;
+        _inventory = inventory;
+        _taskStages = taskStages;
     }
 
     /// <summary>库存分类汇总 + 明细（纯空托 / 带货托 / 纯货物 / 锁定中=移动单元数），按「以前逻辑」在后端统计。</summary>
     /// <summary>整体状态快照（前端 2s 轮询）。dispatchActive=任一下发模式进行中（前端跨标签页警示/禁用判断）。</summary>
+    /// <summary>Inventory summary from WCS slots only, filtered by the active automation range.</summary>
+    [HttpGet("inventory-summary")]
+    public ActionResult<InventorySummaryDto> InventorySummary()
+    {
+        var dto = new InventorySummaryDto();
+        var range = _rangeConfig.Get();
+        var selectedMarks = range.Enabled && range.Marks.Count > 0
+            ? range.Marks.Where(mark => !string.IsNullOrWhiteSpace(mark))
+                .Select(mark => mark.Trim()).ToHashSet(StringComparer.OrdinalIgnoreCase)
+            : null;
+        var slots = _inventory.Slots();
+        var slotsByMark = slots.ToDictionary(slot => slot.Mark, StringComparer.OrdinalIgnoreCase);
+
+        bool IsInsideActiveRange(string mark)
+        {
+            if (!range.Enabled) return true;
+            if (selectedMarks != null && !selectedMarks.Contains(mark)) return false;
+            return range.FloorFilter == 0
+                || (slotsByMark.TryGetValue(mark, out var slot) && slot.Floor == range.FloorFilter);
+        }
+
+        foreach (var slot in slots)
+        {
+            if (!IsInsideActiveRange(slot.Mark)) continue;
+
+            var hasPallet = !string.IsNullOrWhiteSpace(slot.PalletCode);
+            var hasCargo = !string.IsNullOrWhiteSpace(slot.CargoCode);
+            if (!hasPallet && !hasCargo) continue;
+
+            var palletTransit = hasPallet && string.Equals(slot.PalletStatus, "transit", StringComparison.OrdinalIgnoreCase);
+            var cargoTransit = hasCargo && string.Equals(slot.CargoStatus, "transit", StringComparison.OrdinalIgnoreCase);
+            var palletLocked = hasPallet && slot.PalletStatus is "picked" or "fail";
+            var cargoLocked = hasCargo && slot.CargoStatus is "picked" or "fail";
+            var status = palletTransit || palletLocked ? slot.PalletStatus : cargoTransit || cargoLocked ? slot.CargoStatus : null;
+            var detail = ToInventoryDetail(slot, status);
+
+            if (palletTransit || cargoTransit)
+            {
+                dto.TransitItems.Add(detail);
+                continue;
+            }
+            if (string.Equals(slot.SiteType, "Terminal", StringComparison.OrdinalIgnoreCase))
+            {
+                dto.TerminalItems.Add(detail);
+                continue;
+            }
+            if (palletLocked || cargoLocked || !string.IsNullOrWhiteSpace(slot.TaskLockId))
+            {
+                dto.LockedItems.Add(detail);
+                continue;
+            }
+            if (hasPallet && hasCargo) dto.LoadedItems.Add(detail);
+            else if (hasPallet) dto.EmptyItems.Add(detail);
+            else dto.CargoItems.Add(detail);
+        }
+
+        // LOAD_FINISH clears the source row in wcs_slots. The remaining transit
+        // record is persisted in task_records until RCS reports FINISHED/cancelled.
+        var stages = _taskStages.GetAll();
+        var finishedTaskIds = stages
+            .Where(record => record.Stage is "FINISHED" or "CANCELLED")
+            .Select(record => record.TaskId)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var slotTransitCodes = dto.TransitItems
+            .Select(item => item.Code)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        foreach (var transit in stages
+            .Where(record => record.Stage.StartsWith("TRANSIT:", StringComparison.OrdinalIgnoreCase)
+                && !finishedTaskIds.Contains(record.TaskId))
+            .GroupBy(record => record.TaskId, StringComparer.OrdinalIgnoreCase)
+            .Select(group => group.OrderByDescending(record => record.Time).First()))
+        {
+            var startMark = ToMapMark(transit.StartStationCode);
+            var endMark = ToMapMark(transit.EndStationCode);
+            if (!IsInsideActiveRange(startMark) && !IsInsideActiveRange(endMark)) continue;
+            if (string.IsNullOrWhiteSpace(transit.ContainerCode) || !slotTransitCodes.Add(transit.ContainerCode)) continue;
+
+            dto.TransitItems.Add(new InventoryDetailItem
+            {
+                Code = transit.ContainerCode,
+                CargoCode = string.IsNullOrWhiteSpace(transit.CargoCode) ? null : transit.CargoCode,
+                Station = string.IsNullOrWhiteSpace(endMark) ? startMark : $"{startMark} -> {endMark}",
+                TaskId = transit.TaskId,
+                Status = "transit",
+            });
+        }
+
+        dto.Empty = dto.EmptyItems.Count;
+        dto.Loaded = dto.LoadedItems.Count;
+        dto.Cargo = dto.CargoItems.Count;
+        dto.Locked = dto.LockedItems.Count;
+        dto.Transit = dto.TransitItems.Count;
+        dto.Terminal = dto.TerminalItems.Count;
+        return Ok(dto);
+    }
+
+    private static string ToMapMark(string stationCode)
+        => stationCode.Length > 2 && stationCode[^2..] is "_0" or "_1"
+            ? stationCode[..^2]
+            : stationCode;
+
+    private static InventoryDetailItem ToInventoryDetail(WcsSlotRow slot, string? status)
+        => new()
+        {
+            Code = !string.IsNullOrWhiteSpace(slot.PalletCode) ? slot.PalletCode : slot.CargoCode,
+            CargoCode = !string.IsNullOrWhiteSpace(slot.PalletCode) && !string.IsNullOrWhiteSpace(slot.CargoCode) ? slot.CargoCode : null,
+            Station = slot.Mark,
+            Status = status,
+        };
+
     [HttpGet("status")]
     public ActionResult<object> Status()
     {

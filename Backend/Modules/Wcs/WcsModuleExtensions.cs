@@ -6,17 +6,17 @@ using WCSBackend.Modules.Wcs.Proxy.Services;
 namespace WCSBackend.Modules.Wcs;
 
 /// <summary>
-/// Wcs 总模块的依赖注入注册（Wcs 为总目录，下面分 Automation / Proxy / Console / Realtime 子模块）。
-/// 注册顺序注意：HostedService 需要以单例方式同时被控制器注入与宿主启动。
+/// Wcs 鎬绘ā鍧楃殑渚濊禆娉ㄥ叆娉ㄥ唽锛圵cs 涓烘€荤洰褰曪紝涓嬮潰鍒?Automation / Proxy / Console / Realtime 瀛愭ā鍧楋級銆?
+/// 娉ㄥ唽椤哄簭娉ㄦ剰锛欻ostedService 闇€瑕佷互鍗曚緥鏂瑰紡鍚屾椂琚帶鍒跺櫒娉ㄥ叆涓庡涓诲惎鍔ㄣ€?
 /// </summary>
 public static class WcsModuleExtensions
 {
     public static IServiceCollection AddWcsModule(this IServiceCollection services)
     {
-        WcsMapping.Build();   // DTO ↔ 实体全量映射注册（Mapster，启动一次）
-        services.AddHttpClient();   // IHttpClientFactory（GrcsHttpClient 用）
+        WcsMapping.Build();   // DTO 鈫?瀹炰綋鍏ㄩ噺鏄犲皠娉ㄥ唽锛圡apster锛屽惎鍔ㄤ竴娆★級
+        services.AddHttpClient();   // IHttpClientFactory锛圙rcsHttpClient 鐢級
 
-        // ── Automation（自动下发/信号/台账/日志/数据基础设施）──
+        // 鈹€鈹€ Automation锛堣嚜鍔ㄤ笅鍙?淇″彿/鍙拌处/鏃ュ織/鏁版嵁鍩虹璁炬柦锛夆攢鈹€
         services.AddSingleton<AutomationLogService>();
         services.AddSingleton<MapStoreService>();
         services.AddSingleton<RangeConfigService>();
@@ -30,36 +30,37 @@ public static class WcsModuleExtensions
         services.AddSingleton<AutoTemplateStore>();
         services.AddSingleton<MockRuleStore>();
         services.AddSingleton<MockApprovalService>();
+        services.AddSingleton<ModuleExecutionLogStore>();
         services.AddSingleton<GrcsHttpClient>();
-        // WCS 自持库存账本（自动化选池/占用/释放唯一事实源，SQLite 持久化）
+        // WCS 鑷寔搴撳瓨璐︽湰锛堣嚜鍔ㄥ寲閫夋睜/鍗犵敤/閲婃斁鍞竴浜嬪疄婧愶紝SQLite 鎸佷箙鍖栵級
         services.AddSingleton<WcsInventoryStore>();
-        // GRCS 库存查询缓存（按需查询；自动化选池已用 WcsInventoryStore 账本，不再后台轮询）
+        // GRCS 搴撳瓨鏌ヨ缂撳瓨锛堟寜闇€鏌ヨ锛涜嚜鍔ㄥ寲閫夋睜宸茬敤 WcsInventoryStore 璐︽湰锛屼笉鍐嶅悗鍙拌疆璇級
         services.AddSingleton<GrcsInventoryCacheService>();
         services.AddSingleton<ManualInventoryService>();
-        // 轮询/批量互斥闸（多标签页也能保证只有一个在执行）
+        // 杞/鎵归噺浜掓枼闂革紙澶氭爣绛鹃〉涔熻兘淇濊瘉鍙湁涓€涓湪鎵ц锛?
         services.AddSingleton<AutomationGate>();
-        // 纯移动任务循环（后端执行：选点/下发/统计/日志，SignalR 广播 MoveTaskStats）
+        // 绾Щ鍔ㄤ换鍔″惊鐜紙鍚庣鎵ц锛氶€夌偣/涓嬪彂/缁熻/鏃ュ織锛孲ignalR 骞挎挱 MoveTaskStats锛?
         services.AddSingleton<MoveLoopRunner>();
-        // 归巢模式（一次性批量下发：查车/选点/指定车 MOVE_ONLY，SignalR 广播 NestStats）
+        // 褰掑发妯″紡锛堜竴娆℃€ф壒閲忎笅鍙戯細鏌ヨ溅/閫夌偣/鎸囧畾杞?MOVE_ONLY锛孲ignalR 骞挎挱 NestStats锛?
         services.AddSingleton<NestConfigService>();
         services.AddSingleton<NestRunner>();
 
-        // 模块执行记录（内存环形缓冲，供「模块执行记录」面板增量拉取）
-        // 统一模块执行引擎：起点/起点之后在下发时、终点在 FINISHED 后，统一在后端执行
+        // 妯″潡鎵ц璁板綍锛堝唴瀛樼幆褰㈢紦鍐诧紝渚涖€屾ā鍧楁墽琛岃褰曘€嶉潰鏉垮閲忔媺鍙栵級
+        // 缁熶竴妯″潡鎵ц寮曟搸锛氳捣鐐?璧风偣涔嬪悗鍦ㄤ笅鍙戞椂銆佺粓鐐瑰湪 FINISHED 鍚庯紝缁熶竴鍦ㄥ悗绔墽琛?
         services.AddSingleton<TaskLifecycleService>();
         services.AddSingleton<ModuleEffectService>();
         services.AddSingleton<ModuleRunService>();
-        // 任务完成协调器：统一监管 LOAD_FINISH/FINISHED 后的库存、锁与终点模块副作用
+        // 浠诲姟瀹屾垚鍗忚皟鍣細缁熶竴鐩戠 LOAD_FINISH/FINISHED 鍚庣殑搴撳瓨銆侀攣涓庣粓鐐规ā鍧楀壇浣滅敤
         services.AddSingleton<TaskCompletionCoordinator>();
         services.AddHostedService(sp => sp.GetRequiredService<TaskCompletionCoordinator>());
 
-        // 自动化模板执行引擎：单例 + IHostedService 双注册（控制器可注入操纵）
+        // 鑷姩鍖栨ā鏉挎墽琛屽紩鎿庯細鍗曚緥 + IHostedService 鍙屾敞鍐岋紙鎺у埗鍣ㄥ彲娉ㄥ叆鎿嶇旱锛?
         services.AddSingleton<AutoTemplateRunner>();
         services.AddHostedService(sp => sp.GetRequiredService<AutoTemplateRunner>());
-        // 信号自动放行：宿主启动即常驻（后端唯一，取代前端 leader 模式）
+        // 淇″彿鑷姩鏀捐锛氬涓诲惎鍔ㄥ嵆甯搁┗锛堝悗绔敮涓€锛屽彇浠ｅ墠绔?leader 妯″紡锛?
 
-        // ── Console（控制台/阶段/台账/地图）──
-        // 任务阶段事件跨请求共享（GRCS 上报 + 前端轮询），用 Singleton
+        // 鈹€鈹€ Console锛堟帶鍒跺彴/闃舵/鍙拌处/鍦板浘锛夆攢鈹€
+        // 浠诲姟闃舵浜嬩欢璺ㄨ姹傚叡浜紙GRCS 涓婃姤 + 鍓嶇杞锛夛紝鐢?Singleton
         services.AddSingleton<ITaskStageService, TaskStageService>();
 
         return services;

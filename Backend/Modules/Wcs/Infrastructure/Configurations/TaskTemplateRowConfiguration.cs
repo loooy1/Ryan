@@ -22,6 +22,7 @@ public class TaskTemplateRowConfiguration : IEntityTypeConfiguration<TaskTemplat
         builder.Property(x => x.NeedsContainer).HasColumnName("needs_container");
         builder.Property(x => x.ContainerPrefix).HasColumnName("container_prefix");
         builder.Property(x => x.RandomContainer).HasColumnName("random_container");
+        builder.Property(x => x.ContainerMode).HasColumnName("container_mode");
         builder.Property(x => x.Start).HasColumnName("start_json")
             .HasConversion(v => JsonSerializer.Serialize(v), v => ReadPoint(v));
         builder.Property(x => x.End).HasColumnName("end_json")

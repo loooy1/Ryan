@@ -1,6 +1,13 @@
 namespace Contracts.Dtos;
 
 /// <summary>自动化模板步骤类型（线性有序执行）。</summary>
+public static class AutoStartSources
+{
+    public const string SelectedStation = "selected_station";
+    public const string PreviousTaskEnd = "previous_task_end";
+    public const string AutoSelect = "auto_select";
+}
+
 public static class AutoStepKinds
 {
     public const string PickPallet = "PickPallet";   // 随机选托盘（从库存快照）
@@ -23,6 +30,9 @@ public class AutoStepDto
 
     /// <summary>步骤备注（界面展示）。</summary>
     public string Label { get; set; } = "";
+
+    /// <summary>RunTemplate start source. Empty values are interpreted as legacy configuration.</summary>
+    public string StartSource { get; set; } = "";
 
     /// <summary>RunTemplate 专用：容器是否使用前置步骤挑选的托盘/货物号。
     /// true（默认）：容器取自前置「选托盘/选货物」；false：容器按模板 ContainerPrefix 自动生成。

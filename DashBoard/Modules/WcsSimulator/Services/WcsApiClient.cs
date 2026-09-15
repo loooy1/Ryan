@@ -144,6 +144,11 @@ public class WcsApiClient
     /// <summary>读取 WCS 本地储位快照，供手工入库地图渲染库存、锁和选点状态。</summary>
     public Task<List<WcsSlotRow>?> GetWcsSlotsAsync() => GetAsync<List<WcsSlotRow>>("/api/wcs/inventory/slots");
 
+    /// <summary>Reads the WCS inventory-summary endpoint backed only by wcs_slots.</summary>
+    public Task<InventorySummaryDto?> GetInventorySummaryAsync()
+        => GetAsync<InventorySummaryDto>("/api/wcs/auto/inventory-summary");
+
+
     public async Task<(bool Ok, string Json)> SaveSortingAssociationAsync(SortingStationAssociationRequest request)
     {
         if (!ConnectionReady()) return (false, "backend offline");
@@ -256,17 +261,7 @@ public class WcsApiClient
         return await DeleteAsync($"/api/wcs/modules/{Uri.EscapeDataString(id)}");
     }
 
-    /// <summary>清空模块执行记录（后端内存环形缓冲）。</summary>
-    public async Task<bool> ClearModuleExecLogsAsync()
-    {
-        return await DeleteAsync("/api/wcs/modules/logs");
-    }
 
-    /// <summary>重试单条模块执行记录（后端恢复任务上下文重新 POST，MsgTime 用当前时间；新记录经 SignalR 推送）。</summary>
-    public async Task<bool> RetryModuleLogAsync(long id)
-    {
-        return (await PostAsync<object, SaveResponse>($"/api/wcs/modules/logs/{id}/retry", new { })) is { Success: true };
-    }
 
     /// <summary>停止归巢（中断等待与后续下发，已下发的不撤销）。</summary>
     public async Task<bool> StopNestAsync()
