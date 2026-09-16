@@ -1,0 +1,69 @@
+@namespace Dashboard.Modules.WcsSimulator.Pages
+@using Microsoft.AspNetCore.Components.Forms
+@using Contracts.Dtos
+
+<div class="section-card">
+    <div class="section-header collapsible" @onclick="Toggle" title="点击折叠/展开">
+        📂 读取地图
+        <span class="collapse-arrow">@(Collapsed ? "▸ 展开" : "▾ 收起")</span>
+    </div>
+    @if (!Collapsed)
+    {
+        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:10px;">
+            <button class="btn btn-primary btn-sm" @onclick="LoadFromApi" disabled="@Loading">🌐 接口读取</button>
+            <div class="map-file-btn" style="position:relative;display:inline-flex;">
+                <button class="btn btn-outline btn-sm" disabled="@Loading" type="button" style="pointer-events:none;">📁 选择文件</button>
+                <InputFile OnChange="OnFileSelected" accept=".json" disabled="@Loading" style="position:absolute;inset:0;opacity:0;" />
+            </div>
+            @if (Loading) { <span class="badge-info">⏳ 解析中...</span> }
+            @if (!string.IsNullOrEmpty(ErrorMessage)) { <span style="color:#f87171;font-size:0.8rem;">❌ 接口读取失败：@ErrorMessage</span> }
+            <span class="badge-ok" style="white-space:nowrap;opacity:@(Loaded ? "1" : "0");transition:opacity 0.2s;">✅ 地图读取成功</span>
+        </div>
+        @if (StationCount > 0)
+        {
+            <div class="hint-text" style="margin-bottom:4px;">已加载 <b>@StationCount</b> 个站点 / <b>@PathsCount</b> 条连线</div>
+        }
+        <div class="hint-text">接口读取经 WCS 后端 <code>GET /api/wcs/grcs/map</code> 从 GRCS <code>GET /api/Map/GetMap</code> 下载 zip（场景名按「系统设置」）；文件读取选择本地 <code>map.json</code> 直接解析。</div>
+    }
+</div>
+
+
+@if (Stations.Count > 0)
+{
+    <div class="section-card">
+        <div class="section-header collapsible" @onclick="ToggleOverview" title="点击折叠/展开">
+            📊 站点概览
+            <span class="badge-info">@Filtered.Count 条</span>
+            <span class="collapse-arrow">@(OverviewCollapsed ? "▸ 展开" : "▾ 收起")</span>
+        </div>
+        @if (!OverviewCollapsed)
+        {
+            <div class="task-type-grid">
+                @foreach (var (bit, name) in MapStationTypeBits.All)
+                {
+                    <div class="task-type-chip" style="cursor:default;"><span class="chip-title">@name</span><span class="chip-desc">@Stations.Count(s => (s.StationType & bit) != 0) 个</span></div>
+                }
+            </div>
+            <div class="hint-text">总 @Stations.Count 个 · 启用 @Stations.Count(s => s.StaEnable) · 禁用 @Stations.Count(s => !s.StaEnable)</div>
+            <div style="border-top:1px solid #334155;margin:14px 0 10px;"></div>
+            <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;">
+                <button class="chip-btn @(TypeFilter == 0 ? "on" : "")" @onclick="() => SetTypeFilter.InvokeAsync(0)">全部</button>
+                @foreach (var (bit, name) in MapStationTypeBits.All)
+                {
+                    <button class="chip-btn @(TypeFilter == bit ? "on" : "")" @onclick="() => SetTypeFilter.InvokeAsync(bit)">@name</button>
+                }
+            </div>
+            <div class="form-grid3">
+                <div class="form-group"><label>关键词（站点编码 / 库区）</label><input type="text" value="@Search" @oninput="SearchChanged" @onblur="SaveState" placeholder="如 0100001427 或 storageArea"></div>
+                <div class="form-group"><label>状态</label><select value="@EnableFilter" @onchange="EnableFilterChanged"><option value="">全部</option><option value="true">仅启用</option><option value="false">仅禁用</option></select></div>
+            </div>
+            <div style="overflow-x:auto;margin-top:12px;"><table class="data-table"><thead><tr><th>站点编码 (mark)</th><th>类型</th><th>库区</th><th>楼层</th><th>坐标 (X,Y)</th><th>负载状态</th><th>启用</th><th>可转向</th><th>可避让</th><th>可停靠</th><th></th></tr></thead><tbody>
+            @foreach (var s in Filtered)
+            {
+                <tr style="color:@(s.StaEnable ? "" : "#64748b");"><td style="font-family:Consolas,monospace;">@s.Mark</td><td>@string.Join(" + ", MapStationTypeBits.DecodeNames(s.StationType))</td><td>@string.Join(", ", s.CargoAreas)</td><td>@s.Floor</td><td style="font-family:Consolas,monospace;">@s.X, @s.Y</td><td>@LoadStateText(s.SupportLoadState)</td><td>@(s.StaEnable ? "✅" : "🚫")</td><td>@(s.AllowTurn ? "✓" : "-")</td><td>@(s.AllowAvoid ? "✓" : "-")</td><td>@(s.AllowStop ? "✓" : "-")</td><td><button class="btn btn-outline btn-xs" @onclick="() => CopyMark.InvokeAsync(s.Mark)" title="复制站点编码">📋</button></td></tr>
+            }
+            </tbody></table></div>
+            @if (Filtered.Count == 0) { <div class="hint-text" style="margin-top:10px;">没有匹配的站点</div> }
+        }
+    </div>
+}

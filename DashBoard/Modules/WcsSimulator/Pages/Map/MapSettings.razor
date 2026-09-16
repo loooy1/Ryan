@@ -1,0 +1,22 @@
+@namespace Dashboard.Modules.WcsSimulator.Pages
+
+<div class="section-card">
+    <div class="section-header collapsible" @onclick="Host.ToggleSettings" title="点击折叠/展开">
+        ⚙️ 系统设置
+        <span class="addr-badge">GRCS @Host._grcsBaseUrl</span>
+        <span class="addr-badge">场景 @Host._warehouse</span>
+        <span class="collapse-arrow">@(Host.IsSectionCollapsed("mr_settings") ? "▸ 展开" : "▾ 收起")</span>
+    </div>
+    @if (!Host.IsSectionCollapsed("mr_settings"))
+    {
+        <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;">
+            <div class="form-group" style="flex:1;min-width:120px;max-width:200px;"><label>场景名称</label><input type="text" @bind="Host._warehouse" @bind:event="oninput" placeholder="Show"></div>
+            <div class="form-group" style="flex:1;min-width:140px;max-width:220px;"><label>GRCS 地址</label><input type="text" @bind="Host._grcsBaseUrl" @bind:event="oninput" placeholder="http://localhost:8224"></div>
+            <div class="form-group" style="flex:1;min-width:140px;max-width:220px;"><label>WCS 后端地址</label><input type="text" @bind="Host._wcsBaseUrl" @bind:event="oninput" placeholder="http://localhost:8230"></div>
+            <button class="btn btn-primary" @onclick="Host.SaveWarehouse" style="white-space:nowrap;padding:10px 12px;font-size:0.85rem;border:1px solid transparent;background-clip:padding-box;">💾 保存</button>
+            <span class="badge-ok" style="white-space:nowrap;opacity:@(Host._warehouseSaved ? "1" : "0");transition:opacity 0.2s;margin-bottom:5px;">✅ 已保存</span>
+        </div>
+        <div class="hint-text" style="margin-top:6px;">保存后所有页面立即按新地址/场景生效（1s 内同步）；不保存则用默认值。</div>
+    }
+</div>
+

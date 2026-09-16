@@ -11,65 +11,67 @@ namespace Dashboard.Modules.WcsSimulator.Pages;
 
 public partial class MapReader
 {
-    private string _warehouse = "Show";                  // 场景名称（持久化到浏览器）
-    private string _grcsBaseUrl = "http://localhost:8224"; // GRCS 地址（持久化，所有模块共用）
-    private string _wcsBaseUrl = "http://localhost:8230";  // WCS 后端地址（持久化，所有模块共用）
-    private bool _warehouseSaved;                        // 保存成功提示
-    private bool _mapLoaded;                              // 地图读取成功提示
-    private string _mapError = "";                        // 接口读取失败提示
-    private List<MapStationLite> _stations = [];       // 全部站点列表（精简数据，可持久化）
-    private int _pathsCount;                            // 连线数量
-    private bool _loading;                              // 解析中标志
-    private readonly List<MapStationLite> _createdMapStations = [];
-    private readonly HashSet<string> _selectedCreatedMarks = new(StringComparer.OrdinalIgnoreCase);
-    private MapStationLite? _selectedCreatedStation;
-    private MapStationLite? _alignmentAnchor;
-    private string _selectedCreatedCargoAreas = "";
-    private string _mapBuilderTool = "select";
-    private int _nextCreatedStationIndex = 1;
-    private bool _matrixDialogOpen;
-    private int _matrixStationType = MapStationTypeBits.StorageLocation;
-    private double _matrixOriginX;
-    private double _matrixOriginY;
-    private int _matrixRows = 3;
-    private int _matrixColumns = 3;
-    private double _matrixHorizontalSpacing = 1000;
-    private double _matrixVerticalSpacing = 1000;
-    private string _matrixDirection = "down";
-    private DotNetObjectReference<MapReader>? _mapEditorRef;
-    private bool _mapEditorDirty = true;
+    internal bool IsSectionCollapsed(string key) => IsCollapsed(key);
 
-    private void SetMapBuilderTool(string tool)
+    internal string _warehouse = "Show";                  // 场景名称（持久化到浏览器）
+    internal string _grcsBaseUrl = "http://localhost:8224"; // GRCS 地址（持久化，所有模块共用）
+    internal string _wcsBaseUrl = "http://localhost:8230";  // WCS 后端地址（持久化，所有模块共用）
+    internal bool _warehouseSaved;                        // 保存成功提示
+    internal bool _mapLoaded;                              // 地图读取成功提示
+    internal string _mapError = "";                        // 接口读取失败提示
+    internal List<MapStationLite> _stations = [];       // 全部站点列表（精简数据，可持久化）
+    internal int _pathsCount;                            // 连线数量
+    internal bool _loading;                              // 解析中标志
+    internal readonly List<MapStationLite> _createdMapStations = [];
+    internal readonly HashSet<string> _selectedCreatedMarks = new(StringComparer.OrdinalIgnoreCase);
+    internal MapStationLite? _selectedCreatedStation;
+    internal MapStationLite? _alignmentAnchor;
+    internal string _selectedCreatedCargoAreas = "";
+    internal string _mapBuilderTool = "select";
+    internal int _nextCreatedStationIndex = 1;
+    internal bool _matrixDialogOpen;
+    internal int _matrixStationType = MapStationTypeBits.StorageLocation;
+    internal double _matrixOriginX;
+    internal double _matrixOriginY;
+    internal int _matrixRows = 3;
+    internal int _matrixColumns = 3;
+    internal double _matrixHorizontalSpacing = 1000;
+    internal double _matrixVerticalSpacing = 1000;
+    internal string _matrixDirection = "down";
+    internal DotNetObjectReference<MapReader>? _mapEditorRef;
+    internal bool _mapEditorDirty = true;
+
+    internal void SetMapBuilderTool(string tool)
     {
         _mapBuilderTool = tool;
         if (tool is not "align-x" and not "align-y") _alignmentAnchor = null;
     }
-    private void MarkMapEditorDirty() => _mapEditorDirty = true;
-    private void SaveCreatedMapPlaceholder() => ShowFeedback("ℹ️ 当前仅完成界面，保存到库存地图功能暂未实现");
-    private string NextCreatedStationMark()
+    internal void MarkMapEditorDirty() => _mapEditorDirty = true;
+    internal void SaveCreatedMapPlaceholder() => ShowFeedback("ℹ️ 当前仅完成界面，保存到库存地图功能暂未实现");
+    internal string NextCreatedStationMark()
     {
         while (_createdMapStations.Any(s => s.Mark.Equals($"S{_nextCreatedStationIndex:000}", StringComparison.OrdinalIgnoreCase)))
             _nextCreatedStationIndex++;
         return $"S{_nextCreatedStationIndex++:000}";
     }
-    private object BuildMapEditorPayload() => new
+    internal object BuildMapEditorPayload() => new
     {
         Stations = _createdMapStations.Select(s => new { s.Mark, s.StationType, s.X, s.Y, s.StaEnable }),
         SelectedMark = _selectedCreatedStation?.Mark,
         SelectedMarks = _selectedCreatedMarks,
         AnchorMark = _alignmentAnchor?.Mark,
     };
-    private void OpenMatrixDialog()
+    internal void OpenMatrixDialog()
     {
         _mapBuilderTool = "matrix";
         _matrixDialogOpen = true;
     }
-    private void CloseMatrixDialog()
+    internal void CloseMatrixDialog()
     {
         _matrixDialogOpen = false;
         if (_mapBuilderTool == "matrix") _mapBuilderTool = "select";
     }
-    private void CreateMatrixStations()
+    internal void CreateMatrixStations()
     {
         var rows = Math.Clamp(_matrixRows, 1, 200);
         var columns = Math.Clamp(_matrixColumns, 1, 200);
@@ -103,9 +105,9 @@ public partial class MapReader
         CloseMatrixDialog();
         _mapEditorDirty = true;
     }
-    private Task ZoomMapIn() => Js.InvokeVoidAsync("grcsMapEditorZoomHost", "map-create-canvas-host", 1.2).AsTask();
-    private Task ZoomMapOut() => Js.InvokeVoidAsync("grcsMapEditorZoomHost", "map-create-canvas-host", 1 / 1.2).AsTask();
-    private Task ResetMapZoom() => Js.InvokeVoidAsync("grcsMapEditorResetHost", "map-create-canvas-host").AsTask();
+    internal Task ZoomMapIn() => Js.InvokeVoidAsync("grcsMapEditorZoomHost", "map-create-canvas-host", 1.2).AsTask();
+    internal Task ZoomMapOut() => Js.InvokeVoidAsync("grcsMapEditorZoomHost", "map-create-canvas-host", 1 / 1.2).AsTask();
+    internal Task ResetMapZoom() => Js.InvokeVoidAsync("grcsMapEditorResetHost", "map-create-canvas-host").AsTask();
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
@@ -194,39 +196,39 @@ public partial class MapReader
         return Task.CompletedTask;
     }
 
-    private static bool IsCreationTool(string tool) => tool is "storage" or "transfer" or "people" or "sorting";
-    private static int CreationToolType(string tool) => tool switch
+    internal static bool IsCreationTool(string tool) => tool is "storage" or "transfer" or "people" or "sorting";
+    internal static int CreationToolType(string tool) => tool switch
     {
         "transfer" => MapStationTypeBits.TransferPoint,
         "people" => MapStationTypeBits.PeopleStation,
         "sorting" => MapStationTypeBits.PickingStation,
         _ => MapStationTypeBits.StorageLocation,
     };
-    private List<MapStationLite> SelectedCreatedStations => _createdMapStations.Where(s => _selectedCreatedMarks.Contains(s.Mark)).ToList();
-    private static string MixedText<T>(IEnumerable<MapStationLite> stations, Func<MapStationLite, T> selector)
+    internal List<MapStationLite> SelectedCreatedStations => _createdMapStations.Where(s => _selectedCreatedMarks.Contains(s.Mark)).ToList();
+    internal static string MixedText<T>(IEnumerable<MapStationLite> stations, Func<MapStationLite, T> selector)
     {
         var values = stations.Select(selector).Distinct().ToList();
         return values.Count == 1 ? values[0]?.ToString() ?? "" : "";
     }
-    private string BatchXText => MixedText(SelectedCreatedStations, s => s.X);
-    private string BatchYText => MixedText(SelectedCreatedStations, s => s.Y);
-    private string BatchFloorText => MixedText(SelectedCreatedStations, s => s.Floor);
-    private string BatchCargoAreasText => MixedText(SelectedCreatedStations, s => string.Join(", ", s.CargoAreas));
-    private string BatchEnabledText => MixedText(SelectedCreatedStations, s => s.StaEnable ? "true" : "false");
-    private void ApplyBatch(Action<MapStationLite> apply) { foreach (var station in SelectedCreatedStations) apply(station); _mapEditorDirty = true; }
-    private void OnBatchXInput(ChangeEventArgs e) { if (double.TryParse(e.Value?.ToString(), out var v)) ApplyBatch(s => s.X = v); }
-    private void OnBatchYInput(ChangeEventArgs e) { if (double.TryParse(e.Value?.ToString(), out var v)) ApplyBatch(s => s.Y = v); }
-    private void OnBatchFloorInput(ChangeEventArgs e) { if (int.TryParse(e.Value?.ToString(), out var v)) ApplyBatch(s => s.Floor = v); }
-    private void OnBatchCargoAreasInput(ChangeEventArgs e)
+    internal string BatchXText => MixedText(SelectedCreatedStations, s => s.X);
+    internal string BatchYText => MixedText(SelectedCreatedStations, s => s.Y);
+    internal string BatchFloorText => MixedText(SelectedCreatedStations, s => s.Floor);
+    internal string BatchCargoAreasText => MixedText(SelectedCreatedStations, s => string.Join(", ", s.CargoAreas));
+    internal string BatchEnabledText => MixedText(SelectedCreatedStations, s => s.StaEnable ? "true" : "false");
+    internal void ApplyBatch(Action<MapStationLite> apply) { foreach (var station in SelectedCreatedStations) apply(station); _mapEditorDirty = true; }
+    internal void OnBatchXInput(ChangeEventArgs e) { if (double.TryParse(e.Value?.ToString(), out var v)) ApplyBatch(s => s.X = v); }
+    internal void OnBatchYInput(ChangeEventArgs e) { if (double.TryParse(e.Value?.ToString(), out var v)) ApplyBatch(s => s.Y = v); }
+    internal void OnBatchFloorInput(ChangeEventArgs e) { if (int.TryParse(e.Value?.ToString(), out var v)) ApplyBatch(s => s.Floor = v); }
+    internal void OnBatchCargoAreasInput(ChangeEventArgs e)
     {
         var areas = (e.Value?.ToString() ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
         ApplyBatch(s => s.CargoAreas = [.. areas]);
     }
-    private void OnBatchEnabledChanged(ChangeEventArgs e) { if (bool.TryParse(e.Value?.ToString(), out var v)) ApplyBatch(s => s.StaEnable = v); }
+    internal void OnBatchEnabledChanged(ChangeEventArgs e) { if (bool.TryParse(e.Value?.ToString(), out var v)) ApplyBatch(s => s.StaEnable = v); }
 
     public void Dispose() => _mapEditorRef?.Dispose();
 
-    private void SelectCreatedStation(MapStationLite station)
+    internal void SelectCreatedStation(MapStationLite station)
     {
         if (_mapBuilderTool is "align-x" or "align-y")
         {
@@ -247,7 +249,7 @@ public partial class MapReader
         _mapEditorDirty = true;
     }
 
-    private void OnSelectedCreatedCargoAreasInput(ChangeEventArgs e)
+    internal void OnSelectedCreatedCargoAreasInput(ChangeEventArgs e)
     {
         _selectedCreatedCargoAreas = e.Value?.ToString() ?? "";
         if (_selectedCreatedStation != null)
@@ -258,7 +260,7 @@ public partial class MapReader
         }
     }
 
-    private void DeleteSelectedCreatedStation()
+    internal void DeleteSelectedCreatedStation()
     {
         if (_selectedCreatedStation == null) return;
         _createdMapStations.Remove(_selectedCreatedStation);
@@ -269,7 +271,7 @@ public partial class MapReader
         _mapEditorDirty = true;
     }
 
-    private void DeleteSelectedCreatedStations()
+    internal void DeleteSelectedCreatedStations()
     {
         if (_selectedCreatedMarks.Count == 0) return;
         _createdMapStations.RemoveAll(s => _selectedCreatedMarks.Contains(s.Mark));
@@ -280,7 +282,7 @@ public partial class MapReader
         _mapEditorDirty = true;
     }
 
-    private void ClearCreatedMap()
+    internal void ClearCreatedMap()
     {
         _createdMapStations.Clear();
         _nextCreatedStationIndex = 1;
@@ -291,18 +293,18 @@ public partial class MapReader
         _mapEditorDirty = true;
     }
 
-    private sealed class CanvasPoint
+    internal sealed class CanvasPoint
     {
         public double X { get; set; }
         public double Y { get; set; }
     }
     // ── 筛选状态（随缓存一起保存恢复）──
-    private int _typeFilter;                            // 类型筛选（0=全部）
-    private string _search = "";                        // 关键词
-    private string _enableFilter = "";                  // 启用状态筛选（空=全部）
+    internal int _typeFilter;                            // 类型筛选（0=全部）
+    internal string _search = "";                        // 关键词
+    internal string _enableFilter = "";                  // 启用状态筛选（空=全部）
 
     /// <summary>筛选后的站点。</summary>
-    private List<MapStationLite> _filtered => _stations.Where(s =>
+    internal List<MapStationLite> _filtered => _stations.Where(s =>
         (_typeFilter == 0 || (s.StationType & _typeFilter) != 0)
         && (_enableFilter == "" || s.StaEnable.ToString().ToLower() == _enableFilter)
         && (_search == ""
@@ -310,14 +312,14 @@ public partial class MapReader
             || s.CargoAreas.Any(a => a.Contains(_search, StringComparison.OrdinalIgnoreCase)))
     ).ToList();
 
-    private static readonly JsonSerializerOptions JsonOpts = new() { PropertyNameCaseInsensitive = true };
+    internal static readonly JsonSerializerOptions JsonOpts = new() { PropertyNameCaseInsensitive = true };
 
     // ── 卡片折叠状态（持久化到 localStorage 键 grcs_mr_collapsed，切走再回来保持；
     //    基类 PageStateBase 提供，本页默认全折叠、不恢复上次展开状态）──
     protected override string CollapsedStoreKey => "grcs_mr_collapsed";
-    private Task ToggleFile() => Toggle("mr_file");
-    private Task ToggleSettings() => Toggle("mr_settings");
-    private Task ToggleOverview() => Toggle("mr_overview");
+    internal Task ToggleFile() => Toggle("mr_file");
+    internal Task ToggleSettings() => Toggle("mr_settings");
+    internal Task ToggleOverview() => Toggle("mr_overview");
     /// <summary>
     /// 初始化：从内存缓存恢复上次的地图数据（grcs_map_stations）与界面状态
     /// （同步读取，无 JS 边界）；恢复场景名与两个后端地址（共享键
@@ -374,7 +376,7 @@ public partial class MapReader
     /// 解析成功后写入 localStorage 缓存；失败清空站点并展示错误。
     /// WCS/GRCS 后端未连接时由 WcsApiClient 统一弹窗告警。
     /// </summary>
-    private async Task LoadFromApi()
+    internal async Task LoadFromApi()
     {
         _loading = true;
         try
@@ -408,7 +410,7 @@ public partial class MapReader
     }
 
     /// <summary>读取用户本地选择的 map.json 文件（上限 100MB）并解析，成功同样写入缓存。</summary>
-    private async Task OnFileSelected(InputFileChangeEventArgs e)
+    internal async Task OnFileSelected(InputFileChangeEventArgs e)
     {
         var file = e.File;
         if (file == null) return;
@@ -436,7 +438,7 @@ public partial class MapReader
     /// 解析 map.json（MapParseService 纯转换），重置筛选条件，
     /// 并立即调用 SaveState 写入 localStorage 缓存供其他页面复用。
     /// </summary>
-    private async Task ParseMapContent(string content)
+    internal async Task ParseMapContent(string content)
     {
         var (stations, pathsCount) = MapParseService.Parse(content);
         _stations = stations;
@@ -448,7 +450,7 @@ public partial class MapReader
         await SaveState();
     }
 
-    private async Task ShowMapLoaded()
+    internal async Task ShowMapLoaded()
     {
         _mapLoaded = true;
         StateHasChanged();
@@ -461,7 +463,7 @@ public partial class MapReader
     /// 保存当前界面状态：本地 localStorage（本页与其余读旧键的页面立即用）+ 上传到后端
     /// （/api/wcs/map/upload，Skill E：自动化/其他标签页/换浏览器共用后端这一份）。
     /// </summary>
-    private async Task SaveState()
+    internal async Task SaveState()
     {
         var cache = new MapStationCache
         {
@@ -488,25 +490,25 @@ public partial class MapReader
         }
     }
 
-    private void SetTypeFilter(int bit)
+    internal void SetTypeFilter(int bit)
     {
         _typeFilter = bit;
         _ = SaveState();
     }
 
-    private void OnSearchInput(ChangeEventArgs e)
+    internal void OnSearchInput(ChangeEventArgs e)
     {
         _search = e.Value?.ToString() ?? "";
     }
 
-    private void OnEnableFilterChange(ChangeEventArgs e)
+    internal void OnEnableFilterChange(ChangeEventArgs e)
     {
         _enableFilter = e.Value?.ToString() ?? "";
         _ = SaveState();
     }
 
     /// <summary>负载状态位 → 中文（1=仅带载 2=仅空载 其他=全部）。</summary>
-    private static string LoadStateText(int state) => state switch
+    internal static string LoadStateText(int state) => state switch
     {
         1 => "仅带载",
         2 => "仅空载",
@@ -516,7 +518,7 @@ public partial class MapReader
     /// <summary>保存系统设置（场景名 + GRCS 地址 + WCS 后端地址）：
     /// 写入后端 /api/wcs/auto/settings（SQLite，全站 GRCS 调用与场景名的唯一数据源）
     /// + 共享 localStorage 键兜底；保存后重读一次刷新显示。</summary>
-    private async Task SaveWarehouse()
+    internal async Task SaveWarehouse()
     {
         await WcsApi.PutAsync<object, object>("/api/wcs/auto/settings", new { grcsBaseUrl = _grcsBaseUrl, sceneName = _warehouse });
         await LocalStore.SetAsync(Js, "grcs_warehouse", _warehouse);
@@ -540,16 +542,19 @@ public partial class MapReader
     }
 
     /// <summary>GRCS / WCS 两个后端地址写入各自的共享 localStorage 键。</summary>
-    private async Task SaveAddresses()
+    internal async Task SaveAddresses()
     {
         await LocalStore.SetAsync(Js, "grcs_grcs_url", _grcsBaseUrl);
         await LocalStore.SetAsync(Js, "grcs_wcs_url", _wcsBaseUrl);
     }
 
     /// <summary>复制站点编码到剪贴板（调用 wwwroot 里注册的 grcsCopyText JS 函数）。</summary>
-    private async Task CopyMark(string? mark)
+    internal async Task CopyMark(string? mark)
     {
         if (string.IsNullOrEmpty(mark)) return;
         await Js.InvokeVoidAsync("grcsCopyText", mark);
     }
 }
+
+
+

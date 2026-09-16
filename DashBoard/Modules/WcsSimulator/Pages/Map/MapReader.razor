@@ -79,44 +79,6 @@
     @@media (max-width: 620px) { .map-builder-layout { grid-template-columns:1fr; } .map-builder-tools { display:flex; align-items:center; gap:8px; flex-wrap:wrap; } .map-builder-caption, .map-builder-divider, .map-builder-count { margin:0; } .map-tool { width:auto; margin:0; } .map-create-canvas-host { height:500px; min-height:0; } .map-builder-stagebar { flex-wrap:wrap; min-height:86px; } .map-builder-legend { position:static; transform:none; order:4; width:100%; justify-content:center; flex-wrap:wrap; white-space:normal; } .map-builder-zoom { margin-left:auto; } }
 </style>
 
-@* ════════════════════════════════════════════════
-   读取地图：接口读取 / 文件读取
-   ── 说明 ── 接口读取经 WCS 后端代理下载 zip（场景名取后端设置，见下方「系统设置」）；
-   两种方式最终都走 ParseMapContent 解析 map.json；
-   解析成功后立即写入 localStorage 缓存，其他页面无需再读文件
-   ════════════════════════════════════════════════ *@
-<div class="section-card">
-    <div class="section-header collapsible" @onclick="ToggleFile" title="点击折叠/展开">
-        📂 读取地图
-        <span class="collapse-arrow">@(IsCollapsed("mr_file") ? "▸ 展开" : "▾ 收起")</span>
-    </div>
-    @if (!IsCollapsed("mr_file"))
-    {
-    <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:10px;">
-        <button class="btn btn-primary btn-sm" @onclick="LoadFromApi" disabled="@_loading">🌐 接口读取</button>
-        <div class="map-file-btn" style="position:relative;display:inline-flex;">
-            <button class="btn btn-outline btn-sm" disabled="@_loading" type="button" style="pointer-events:none;">📁 选择文件</button>
-            <InputFile OnChange="OnFileSelected" accept=".json" disabled="@_loading"
-                       style="position:absolute;inset:0;opacity:0;" />
-        </div>
-        @if (_loading) { <span class="badge-info">⏳ 解析中...</span> }
-        @if (_mapError != "")
-        {
-            <span style="color:#f87171;font-size:0.8rem;">❌ 接口读取失败：@_mapError</span>
-        }
-        <span class="badge-ok" style="white-space:nowrap;opacity:@(_mapLoaded ? "1" : "0");transition:opacity 0.2s;">✅ 地图读取成功</span>
-    </div>
-    @if (_stations.Count > 0)
-    {
-        <div class="hint-text" style="margin-bottom:4px;">
-            已加载 <b>@_stations.Count</b> 个站点 / <b>@_pathsCount</b> 条连线
-        </div>
-    }
-    <div class="hint-text">
-        接口读取经 WCS 后端 <code>GET /api/wcs/grcs/map</code> 从 GRCS <code>GET /api/Map/GetMap</code> 下载 zip（场景名按「系统设置」）；文件读取选择本地 <code>map.json</code> 直接解析。
-    </div>
-    }
-</div>
 
 @* ════════════════════════════════════════════════
    系统设置：GRCS 地址 + 场景名称 + WCS 后端地址（全局唯一配置入口）
@@ -125,222 +87,31 @@
    都以后端这份设置为准；未保存用默认值（http://localhost:8224 / Show）。
    保存后重读一次刷新显示。WCS 后端地址为本页自身的访问地址（localStorage）。
    ════════════════════════════════════════════════ *@
-<div class="section-card">
-    <div class="section-header collapsible" @onclick="ToggleSettings" title="点击折叠/展开">
-        ⚙️ 系统设置
-        <span class="addr-badge">GRCS @_grcsBaseUrl</span>
-        <span class="addr-badge">场景 @_warehouse</span>
-        <span class="collapse-arrow">@(IsCollapsed("mr_settings") ? "▸ 展开" : "▾ 收起")</span>
-    </div>
-    @if (!IsCollapsed("mr_settings"))
-    {
-    <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;">
-        <div class="form-group" style="flex:1;min-width:120px;max-width:200px;">
-            <label>场景名称</label>
-            <input type="text" @bind="_warehouse" @bind:event="oninput" placeholder="Show">
-        </div>
-        <div class="form-group" style="flex:1;min-width:140px;max-width:220px;">
-            <label>GRCS 地址</label>
-            <input type="text" @bind="_grcsBaseUrl" @bind:event="oninput" placeholder="http://localhost:8224">
-        </div>
-        <div class="form-group" style="flex:1;min-width:140px;max-width:220px;">
-            <label>WCS 后端地址</label>
-            <input type="text" @bind="_wcsBaseUrl" @bind:event="oninput" placeholder="http://localhost:8230">
-        </div>
-        <button class="btn btn-primary" @onclick="SaveWarehouse" style="white-space:nowrap;padding:10px 12px;font-size:0.85rem;border:1px solid transparent;background-clip:padding-box;">💾 保存</button>
-        <span class="badge-ok" style="white-space:nowrap;opacity:@(_warehouseSaved ? "1" : "0");transition:opacity 0.2s;margin-bottom:5px;">✅ 已保存</span>
-    </div>
-    <div class="hint-text" style="margin-top:6px;">
-        保存后所有页面立即按新地址/场景生效（1s 内同步）；不保存则用默认值。
-    </div>
-    }
-</div>
-
-@* ── 可视化创建地图：从空白画布点击放置储位，当前仅保存在内存 ── *@
-<div class="section-card map-builder-card">
-    <div class="section-header">
-        🗺️ 创建地图
-        <span class="badge-info">可视化编辑</span>
-        <span class="hint-text" style="margin:0;">从空白画布创建 · 支持单点与点阵 · 不持久化</span>
-        <button class="btn btn-outline btn-sm map-save-btn" style="margin-left:auto;" @onclick="SaveCreatedMapPlaceholder"><MudIcon Icon="@Icons.Material.Filled.Save" Size="Size.Small" /> 保存到库存地图</button>
-    </div>
-    <div class="map-builder-layout">
-        <aside class="map-builder-tools">
-            <div class="map-builder-caption">工具</div>
-            <button class="map-tool @( _mapBuilderTool == "select" ? "active" : "")" @onclick='() => SetMapBuilderTool("select")'>↖ <span>选择</span></button>
-            <button class="map-tool @( _mapBuilderTool == "storage" ? "active" : "")" @onclick='() => SetMapBuilderTool("storage")'><MudIcon Icon="@Icons.Material.Filled.Storage" Size="Size.Small" /> <span>储位</span></button>
-            <button class="map-tool @( _mapBuilderTool == "transfer" ? "active" : "")" @onclick='() => SetMapBuilderTool("transfer")'><MudIcon Icon="@Icons.Material.Filled.SwapHoriz" Size="Size.Small" /> <span>接驳位</span></button>
-            <button class="map-tool @( _mapBuilderTool == "people" ? "active" : "")" @onclick='() => SetMapBuilderTool("people")'><MudIcon Icon="@Icons.Material.Filled.Person" Size="Size.Small" /> <span>人工分拣台</span></button>
-            <button class="map-tool @( _mapBuilderTool == "sorting" ? "active" : "")" @onclick='() => SetMapBuilderTool("sorting")'><MudIcon Icon="@Icons.Material.Filled.Sort" Size="Size.Small" /> <span>分拣台</span></button>
-            <button class="map-tool @( _mapBuilderTool == "matrix" ? "active" : "")" @onclick="OpenMatrixDialog"><MudIcon Icon="@Icons.Material.Filled.GridOn" Size="Size.Small" /> <span>点阵</span></button>
-            <button class="map-tool align-tool @( _mapBuilderTool == "align-x" ? "active" : "")" @onclick='() => SetMapBuilderTool("align-x")'>↔ <span>X 对齐</span></button>
-            <button class="map-tool align-tool @( _mapBuilderTool == "align-y" ? "active" : "")" @onclick='() => SetMapBuilderTool("align-y")'>↕ <span>Y 对齐</span></button>
-            @if (_mapBuilderTool is "align-x" or "align-y")
-            {
-                <div class="map-align-hint">① 点击基准储位<br />② 依次点击要对齐的储位<br />基准：<b>@(_alignmentAnchor?.Mark ?? "未选择")</b></div>
-            }
-            <div class="map-builder-divider"></div>
-            <button class="btn btn-outline btn-sm" @onclick="ClearCreatedMap" disabled="@(_createdMapStations.Count == 0)">清空画布</button>
-            <div class="map-builder-count">地图元素 <b>@_createdMapStations.Count</b><small>已选 @_selectedCreatedMarks.Count</small></div>
-        </aside>
-        <div class="map-builder-stage">
-            <div class="map-builder-stagebar"><strong>空白地图画布</strong><span class="map-builder-hint">@(_mapBuilderTool switch { "storage" => "点击画布放置储位", "transfer" => "点击画布放置接驳位", "people" => "点击画布放置人工分拣台", "sorting" => "点击画布放置分拣台", _ => "拖拽框选 · 点击元素查看属性" })</span><div class="map-builder-legend" aria-label="地图图标说明"><span class="map-legend-title">图例</span><span class="map-legend-item map-legend-storage"><span class="map-legend-icon-box"><MudIcon Icon="@Icons.Material.Filled.Storage" /></span>储位</span><span class="map-legend-item map-legend-transfer"><span class="map-legend-icon-box"><MudIcon Icon="@Icons.Material.Filled.SwapHoriz" /></span>接驳位</span><span class="map-legend-item map-legend-people"><span class="map-legend-icon-box"><MudIcon Icon="@Icons.Material.Filled.Person" /></span>人工分拣台</span><span class="map-legend-item map-legend-sorting"><span class="map-legend-icon-box"><MudIcon Icon="@Icons.Material.Filled.Sort" /></span>分拣台</span></div><div class="map-builder-zoom"><button class="map-zoom-btn" title="缩小" @onclick="ZoomMapOut">−</button><button class="map-zoom-btn" title="重置视图" @onclick="ResetMapZoom">⌂</button><button class="map-zoom-btn" title="放大" @onclick="ZoomMapIn">＋</button></div></div>
-            <div id="map-create-canvas-host" class="map-create-canvas-host">
-                <canvas id="map-create-canvas" class="map-create-canvas" aria-label="地图创建画布"></canvas>
-                <svg id="map-create-overlay" class="map-create-overlay" aria-hidden="true"></svg>
-            </div>
-        </div>
-        <aside class="map-builder-properties">
-            <div class="map-builder-caption">属性</div>
-            @if (_selectedCreatedMarks.Count > 1)
-            {
-                <div class="map-selected-title"><MudIcon Icon="@Icons.Material.Filled.SelectAll" Size="Size.Small" /> 批量编辑（@_selectedCreatedMarks.Count 个）</div>
-                <div class="map-property-empty" style="text-align:left;margin-bottom:10px;">公共值显示当前值，不一致的属性留空；输入后将应用到全部选中元素。</div>
-                <div class="form-group"><label>X 坐标</label><input type="number" step="0.1" value="@BatchXText" @oninput="OnBatchXInput" placeholder="多个值" /></div>
-                <div class="form-group"><label>Y 坐标</label><input type="number" step="0.1" value="@BatchYText" @oninput="OnBatchYInput" placeholder="多个值" /></div>
-                <div class="form-group"><label>楼层</label><input type="number" value="@BatchFloorText" @oninput="OnBatchFloorInput" placeholder="多个值" /></div>
-                <div class="form-group"><label>库区</label><input type="text" value="@BatchCargoAreasText" @oninput="OnBatchCargoAreasInput" placeholder="多个值" /></div>
-                <div class="form-group"><label>状态</label><select value="@BatchEnabledText" @onchange="OnBatchEnabledChanged"><option value="">多个值</option><option value="true">启用</option><option value="false">禁用</option></select></div>
-                <button class="btn btn-danger btn-sm" @onclick="DeleteSelectedCreatedStations">删除选中</button>
-            }
-            else if (_selectedCreatedStation == null)
-            {
-                <div class="map-property-empty">选择一个储位后，在这里编辑属性。</div>
-            }
-            else
-            {
-                <div class="map-selected-title">📍 储位属性</div>
-                <div class="form-group"><label>编码</label><input type="text" @bind="_selectedCreatedStation.Mark" @bind:after="MarkMapEditorDirty" /></div>
-                <div class="form-group"><label>库区</label><input type="text" value="@_selectedCreatedCargoAreas" @oninput="OnSelectedCreatedCargoAreasInput" placeholder="可选" /></div>
-                <div class="form-grid2">
-                    <div class="form-group"><label>X</label><input type="number" step="0.1" @bind="_selectedCreatedStation.X" @bind:after="MarkMapEditorDirty" /></div>
-                    <div class="form-group"><label>Y</label><input type="number" step="0.1" @bind="_selectedCreatedStation.Y" @bind:after="MarkMapEditorDirty" /></div>
-                    <div class="form-group"><label>楼层</label><input type="number" @bind="_selectedCreatedStation.Floor" @bind:after="MarkMapEditorDirty" /></div>
-                    <div class="form-group"><label>状态</label><select @bind="_selectedCreatedStation.StaEnable" @bind:after="MarkMapEditorDirty"><option value="true">启用</option><option value="false">禁用</option></select></div>
-                </div>
-                <button class="btn btn-danger btn-sm" @onclick="DeleteSelectedCreatedStation">删除储位</button>
-            }
-        </aside>
-    </div>
-</div>
-
-@if (_matrixDialogOpen)
-{
-    <div class="matrix-overlay" @onclick="CloseMatrixDialog">
-        <div class="matrix-dialog" @onclick:stopPropagation="true">
-            <div class="matrix-dialog-head"><div><div class="matrix-dialog-title">添加点阵</div><div class="matrix-dialog-sub">按基准坐标批量生成地图元素，生成后仍可逐个编辑</div></div><button class="matrix-dialog-close" @onclick="CloseMatrixDialog">✕</button></div>
-            <div class="matrix-form-grid">
-                <div class="form-group full"><label>码点类型 <span style="color:#f87171">*</span></label><select @bind="_matrixStationType"><option value="@MapStationTypeBits.StorageLocation">储位</option><option value="@MapStationTypeBits.TransferPoint">接驳位</option><option value="@MapStationTypeBits.Charging">充电点</option><option value="@MapStationTypeBits.Parking">停车位</option></select></div>
-                <div class="form-group full"><label>基准点坐标 <span style="color:#f87171">*</span></label><div class="matrix-coordinate"><input type="number" step="0.1" @bind="_matrixOriginX" placeholder="X" /><input type="number" step="0.1" @bind="_matrixOriginY" placeholder="Y" /></div></div>
-                <div class="form-group"><label>行数 <span style="color:#f87171">*</span></label><input type="number" min="1" max="200" @bind="_matrixRows" /></div>
-                <div class="form-group"><label>列数 <span style="color:#f87171">*</span></label><input type="number" min="1" max="200" @bind="_matrixColumns" /></div>
-                <div class="form-group"><label>水平距离</label><input type="number" min="0" step="0.1" @bind="_matrixHorizontalSpacing" /></div>
-                <div class="form-group"><label>垂直距离</label><input type="number" min="0" step="0.1" @bind="_matrixVerticalSpacing" /></div>
-                <div class="form-group full"><label>矩阵方向</label><select @bind="_matrixDirection"><option value="down">向下</option><option value="up">向上</option><option value="left">向左</option><option value="right">向右</option></select></div>
-            </div>
-            <div class="matrix-preview">将生成 <b style="color:#67e8f9">@(_matrixRows * _matrixColumns)</b> 个点位 · 坐标系：X 向右，Y 向上</div>
-            <div class="matrix-dialog-actions"><button class="btn btn-outline" @onclick="CloseMatrixDialog">取消</button><button class="btn btn-primary" @onclick="CreateMatrixStations">确定生成</button></div>
-        </div>
-    </div>
-}
-
-@if (_stations.Count > 0)
-{
-    @* ════════════════════════════════════════════════
-       站点概览：类型统计 + 筛选 + 站点列表（合并原「筛选站点」「站点列表」两张卡）
-       ── 说明 ── MapStationTypeBits.All 是站点类型位掩码注册表，
-       一个站点可同时属于多种类型（StationType 位掩码按位判断）；
-       筛选条件随站点缓存一起保存（MapReaderFilterState），刷新页面后恢复上次的筛选视图
-       ════════════════════════════════════════════════ *@
-    <div class="section-card">
-        <div class="section-header collapsible" @onclick="ToggleOverview" title="点击折叠/展开">
-            📊 站点概览
-            <span class="badge-info">@_filtered.Count 条</span>
-            <span class="collapse-arrow">@(IsCollapsed("mr_overview") ? "▸ 展开" : "▾ 收起")</span>
-        </div>
-        @if (!IsCollapsed("mr_overview"))
-        {
-        <div class="task-type-grid">
-            @foreach (var (bit, name) in MapStationTypeBits.All)
-            {
-                <div class="task-type-chip" style="cursor:default;">
-                    <span class="chip-title">@name</span>
-                    <span class="chip-desc">@(_stations.Count(s => (s.StationType & bit) != 0)) 个</span>
-                </div>
-            }
-        </div>
-        <div class="hint-text">
-            总 @_stations.Count 个 · 启用 @(_stations.Count(s => s.StaEnable)) · 禁用 @(_stations.Count(s => !s.StaEnable))
-        </div>
-
-        @* 筛选：类型 + 关键词 + 启用状态 *@
-        <div style="border-top:1px solid #334155;margin:14px 0 10px;"></div>
-        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;">
-            <button class="chip-btn @(_typeFilter == 0 ? "on" : "")" @onclick="() => SetTypeFilter(0)">全部</button>
-            @foreach (var (bit, name) in MapStationTypeBits.All)
-            {
-                <button class="chip-btn @(_typeFilter == bit ? "on" : "")" @onclick="() => SetTypeFilter(bit)">@name</button>
-            }
-        </div>
-
-        <div class="form-grid3">
-            <div class="form-group">
-                <label>关键词（站点编码 / 库区）</label>
-                <input type="text" value="@_search" @oninput="OnSearchInput" @onblur="SaveState" placeholder="如 0100001427 或 storageArea">
-            </div>
-            <div class="form-group">
-                <label>状态</label>
-                <select value="@_enableFilter" @onchange="OnEnableFilterChange">
-                    <option value="">全部</option>
-                    <option value="true">仅启用</option>
-                    <option value="false">仅禁用</option>
-                </select>
-            </div>
-        </div>
-
-        @* 站点列表表格：只读展示精简字段，每行可把站点编码复制到剪贴板 *@
-        <div style="overflow-x:auto;margin-top:12px;">
-            <table class="data-table">
-                <thead>
-                    <tr>
-                        <th>站点编码 (mark)</th>
-                        <th>类型</th>
-                        <th>库区</th>
-                        <th>楼层</th>
-                        <th>坐标 (X,Y)</th>
-                        <th>负载状态</th>
-                        <th>启用</th>
-                        <th>可转向</th>
-                        <th>可避让</th>
-                        <th>可停靠</th>
-                        <th></th>
-                    </tr>
-                </thead>
-                <tbody>
-                    @foreach (var s in _filtered)
-                    {
-                        <tr style="color:@(s.StaEnable ? "" : "#64748b");">
-                            <td style="font-family:Consolas,monospace;">@s.Mark</td>
-                            <td>@string.Join(" + ", MapStationTypeBits.DecodeNames(s.StationType))</td>
-                            <td>@string.Join(", ", s.CargoAreas)</td>
-                            <td>@s.Floor</td>
-                            <td style="font-family:Consolas,monospace;">@s.X, @s.Y</td>
-                            <td>@LoadStateText(s.SupportLoadState)</td>
-                            <td>@(s.StaEnable ? "✅" : "🚫")</td>
-                            <td>@(s.AllowTurn ? "✓" : "-")</td>
-                            <td>@(s.AllowAvoid ? "✓" : "-")</td>
-                            <td>@(s.AllowStop ? "✓" : "-")</td>
-                            <td><button class="btn btn-outline btn-xs" @onclick="() => CopyMark(s.Mark)" title="复制站点编码">📋</button></td>
-                        </tr>
-                    }
-                </tbody>
-            </table>
-        </div>
-        @if (_filtered.Count == 0)
-        {
-            <div class="hint-text" style="margin-top:10px;">没有匹配的站点</div>
-        }
-        }
-    </div>
-}
+<CascadingValue Value="this">
+    <MapLoad
+        Collapsed='@IsCollapsed("mr_file")'
+        OverviewCollapsed='@IsCollapsed("mr_overview")'
+        Toggle="ToggleFile"
+        Loading="@_loading"
+        LoadFromApi="LoadFromApi"
+        OnFileSelected="OnFileSelected"
+        ErrorMessage="@_mapError"
+        Loaded="@_mapLoaded"
+        StationCount="@_stations.Count"
+        PathsCount="@_pathsCount"
+        ToggleOverview="ToggleOverview"
+        Stations="@_stations"
+        Filtered="@_filtered"
+        TypeFilter="@_typeFilter"
+        Search="@_search"
+        EnableFilter="@_enableFilter"
+        SetTypeFilter="SetTypeFilter"
+        SearchChanged="OnSearchInput"
+        EnableFilterChanged="OnEnableFilterChange"
+        SaveState="SaveState"
+        CopyMark="CopyMark"
+        LoadStateText="LoadStateText" />
+    <MapSettings />
+    <MapCreation />
+</CascadingValue>
 

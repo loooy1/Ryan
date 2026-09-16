@@ -140,7 +140,7 @@
                 ctx.font = '10px Consolas, monospace'; ctx.textAlign = 'left'; ctx.fillStyle = '#67e8f9'; if (ax > 0 && ax < w) ctx.fillText('X 0', ax + 5, Math.max(14, ay - 6)); if (ay > 0 && ay < h) ctx.fillText('Y 0', 6, ay - 6);
                 const selectedMarks = new Set(config.SelectedMarks || (config.SelectedMark ? [config.SelectedMark] : []));
                 for (const s of (config.Stations || [])) { const p = toScreen(point(s)); if (p.x < -30 || p.x > w+30 || p.y < -30 || p.y > h+30) continue; const selected = selectedMarks.has(s.Mark), anchor = s.Mark === config.AnchorMark; const color = selected ? '#fbbf24' : ((s.StationType & 4) ? '#22d3ee' : '#a78bfa');
-                    ctx.save(); ctx.translate(p.x,p.y); ctx.fillStyle = selected ? '#164e63' : '#0e293b'; ctx.strokeStyle = color; ctx.lineWidth = selected ? 2.5 : 1.2; ctx.beginPath(); ctx.roundRect(-18,-14,36,28,6); ctx.fill(); ctx.stroke(); ctx.save(); ctx.translate(-12,-12); ctx.fillStyle = color; ctx.fill(iconFor(s)); ctx.restore(); ctx.restore();
+                    ctx.save(); ctx.translate(p.x,p.y); ctx.fillStyle = selected ? '#164e63' : '#0e293b'; ctx.strokeStyle = color; ctx.lineWidth = selected ? 2.5 : 1.2; ctx.beginPath(); ctx.roundRect(-14,-14,28,28,6); ctx.fill(); ctx.stroke(); ctx.save(); ctx.translate(-12,-12); ctx.fillStyle = color; ctx.fill(iconFor(s)); ctx.restore(); ctx.restore();
                     if (selected || hover === s) { ctx.fillStyle='#e2e8f0'; ctx.font='11px Consolas, monospace'; ctx.textAlign='center'; ctx.fillText(s.Mark,p.x,p.y-22); }
                     if (anchor) { ctx.save(); ctx.strokeStyle='#a78bfa'; ctx.setLineDash([4,3]); ctx.lineWidth=2; ctx.beginPath(); ctx.arc(p.x,p.y,25,0,Math.PI*2); ctx.stroke(); ctx.restore(); }
                 }
@@ -183,3 +183,7 @@
     <script src="_content/MudBlazor/MudBlazor.min.js"></script>
 </body>
 </html>
+
+
+
+
