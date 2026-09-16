@@ -26,7 +26,138 @@
         // C# 侧用 LocalStoreService 预加载小 key 进内存、大台账/地图走后端 SQLite，
         // 全部通过本文件暴露的 window.grcs* 函数读写 localStorage。
         // ────────────────────────────────────────────────────────────────
-        window.grcsCopyText = (text) => navigator.clipboard.writeText(text);
+        window.grcsCopyText = async (text) => {
+            const value = text ?? '';
+            if (navigator.clipboard?.writeText && window.isSecureContext) {
+                await navigator.clipboard.writeText(value);
+                return;
+            }
+
+            // 局域网 HTTP 部署时 Clipboard API 可能不可用，退回到兼容复制方式。
+            const textarea = document.createElement('textarea');
+            textarea.value = value;
+            textarea.setAttribute('readonly', '');
+            textarea.style.cssText = 'position:fixed;opacity:0;pointer-events:none;';
+            document.body.appendChild(textarea);
+            textarea.select();
+            const copied = document.execCommand('copy');
+            textarea.remove();
+            if (!copied) throw new Error('复制到剪贴板失败');
+        };
+
+        // 将浏览器点击坐标换算为地图编辑器 SVG viewBox 坐标。
+        window.grcsMapEditorPoint = (svgId, clientX, clientY) => {
+            const svg = document.getElementById(svgId);
+            if (!svg) return { x: 600, y: 350 };
+            const rect = svg.getBoundingClientRect();
+            const vb = (svg.getAttribute('viewBox') || '0 0 1200 700').split(/\s+/).map(Number);
+            return {
+                x: vb[0] + (clientX - rect.left) / rect.width * vb[2],
+                y: vb[1] + (clientY - rect.top) / rect.height * vb[3]
+            };
+        };
+
+        // 创建地图画布：与库存地图一致支持滚轮缩放、右键/中键平移，按钮可复位。
+        window.grcsMapEditorZoom = (svgId, factor) => {
+            const svg = document.getElementById(svgId);
+            if (!svg) return;
+            const vb = (svg.getAttribute('viewBox') || '0 0 1200 700').split(/\s+/).map(Number);
+            const cx = vb[0] + vb[2] / 2, cy = vb[1] + vb[3] / 2;
+            const w = Math.min(10000, Math.max(120, vb[2] / factor));
+            const h = Math.min(6000, Math.max(70, vb[3] / factor));
+            svg.setAttribute('viewBox', `${cx - w / 2} ${cy - h / 2} ${w} ${h}`);
+        };
+        window.grcsMapEditorReset = (svgId) => {
+            const svg = document.getElementById(svgId);
+            if (svg) svg.setAttribute('viewBox', '0 0 1200 700');
+        };
+        window.grcsMapEditorInit = (svgId) => {
+            const svg = document.getElementById(svgId);
+            if (!svg || svg.__grcsMapEditorReady) return;
+            svg.__grcsMapEditorReady = true;
+            let pan = null;
+            svg.addEventListener('wheel', (e) => {
+                e.preventDefault();
+                const rect = svg.getBoundingClientRect();
+                const vb = (svg.getAttribute('viewBox') || '0 0 1200 700').split(/\s+/).map(Number);
+                const mx = vb[0] + (e.clientX - rect.left) / rect.width * vb[2];
+                const my = vb[1] + (e.clientY - rect.top) / rect.height * vb[3];
+                const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
+                const nw = Math.min(10000, Math.max(120, vb[2] / factor));
+                const nh = Math.min(6000, Math.max(70, vb[3] / factor));
+                const nx = mx - (e.clientX - rect.left) / rect.width * nw;
+                const ny = my - (e.clientY - rect.top) / rect.height * nh;
+                svg.setAttribute('viewBox', `${nx} ${ny} ${nw} ${nh}`);
+            }, { passive: false });
+            svg.addEventListener('pointerdown', (e) => {
+                if (e.button !== 1 && e.button !== 2) return;
+                e.preventDefault();
+                const rect = svg.getBoundingClientRect();
+                const vb = (svg.getAttribute('viewBox') || '0 0 1200 700').split(/\s+/).map(Number);
+                pan = { x: e.clientX, y: e.clientY, vb, rect };
+                svg.setPointerCapture?.(e.pointerId);
+                svg.style.cursor = 'grabbing';
+            });
+            svg.addEventListener('pointermove', (e) => {
+                if (!pan) return;
+                const dx = (e.clientX - pan.x) / pan.rect.width * pan.vb[2];
+                const dy = (e.clientY - pan.y) / pan.rect.height * pan.vb[3];
+                svg.setAttribute('viewBox', `${pan.vb[0] - dx} ${pan.vb[1] - dy} ${pan.vb[2]} ${pan.vb[3]}`);
+            });
+            const endPan = () => { pan = null; svg.style.cursor = 'crosshair'; };
+            svg.addEventListener('pointerup', endPan);
+            svg.addEventListener('pointercancel', endPan);
+        };
+
+        // 大量点位编辑器：Canvas 主渲染，SVG 仅绘制选中/对齐辅助层。
+        window.grcsMapEditorMount = (hostId, dotNetRef, configJson) => {
+            const host = document.getElementById(hostId);
+            if (!host) return;
+            if (typeof host.__grcsMapDispose === 'function') host.__grcsMapDispose();
+            const canvas = host.querySelector('canvas'), overlay = host.querySelector('svg');
+            const ctx = canvas.getContext('2d');
+            let config = JSON.parse(configJson || '{}'), view = { x: 0, y: 0, w: 1200, h: 700 }, drag = null, hover = null;
+            const iconPaths = {
+                storage: new Path2D('M20 2H4c-1.1 0-2 .9-2 2v3c0 .55.22 1.05.59 1.41C2.22 8.78 2 9.28 2 9.83V13c0 .55.22 1.05.59 1.41C2.22 14.78 2 15.28 2 15.83V20c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2v-4.17c0-.55-.22-1.05-.59-1.41.37-.36.59-.86.59-1.41V9.83c0-.55-.22-1.05-.59-1.41.37-.37.59-.86.59-1.41V4c0-1.1-.9-2-2-2zm0 18H4v-4h16v4zm0-6H4v-4h16v4zm0-6H4V4h16v4z'),
+                transfer: new Path2D('M16 3h5v5h-2V6.41l-5.29 5.3-1.42-1.42L17.59 5H16V3zM8 21H3v-5h2v1.59l5.29-5.3 1.42 1.42L6.41 19H8v2z'),
+                people: new Path2D('M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z'),
+                sorting: new Path2D('M3 18h6v-2H3v2zm0-5h12v-2H3v2zm0-7v2h18V6H3z')
+            };
+            const iconFor = (s) => (s.StationType & 8) ? iconPaths.transfer : (s.StationType & 128) ? iconPaths.people : (s.StationType & 64) ? iconPaths.sorting : iconPaths.storage;
+            const resize = () => { const r = host.getBoundingClientRect(); canvas.width = Math.max(1, r.width * devicePixelRatio); canvas.height = Math.max(1, r.height * devicePixelRatio); draw(); };
+            const screen = (x, y) => ({ x: view.x + x / host.clientWidth * view.w, y: view.y + y / host.clientHeight * view.h });
+            const point = (s) => ({ x: s.X, y: s.Y });
+            const toScreen = (p) => ({ x: (p.x - view.x) / view.w * host.clientWidth, y: ((700 - p.y) - view.y) / view.h * host.clientHeight });
+            const hit = (x, y) => { let best = null, dBest = 18; for (const s of (config.Stations || [])) { const p = toScreen(point(s)), d = Math.hypot(p.x - x, p.y - y); if (d < dBest) { best = s; dBest = d; } } return best; };
+            const nice = (rough) => { const p = Math.pow(10, Math.floor(Math.log10(Math.max(rough, 1e-6)))); const n = rough / p; return (n < 1.5 ? 1 : n < 3.5 ? 2 : n < 7.5 ? 5 : 10) * p; };
+            function draw() {
+                const w = host.clientWidth, h = host.clientHeight, dpr = devicePixelRatio || 1; if (!w || !h) return;
+                ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, w, h); ctx.fillStyle = '#08111f'; ctx.fillRect(0, 0, w, h);
+                const step = nice(view.w / 12); ctx.strokeStyle = 'rgba(51,65,85,.42)'; ctx.lineWidth = 1; ctx.beginPath();
+                for (let x = Math.floor(view.x / step) * step; x <= view.x + view.w; x += step) { const sx = (x - view.x) / view.w * w; ctx.moveTo(Math.round(sx)+.5, 0); ctx.lineTo(Math.round(sx)+.5, h); }
+                for (let y = Math.floor(view.y / step) * step; y <= view.y + view.h; y += step) { const sy = (y - view.y) / view.h * h; ctx.moveTo(0, Math.round(sy)+.5); ctx.lineTo(w, Math.round(sy)+.5); } ctx.stroke();
+                const ax = (0 - view.x) / view.w * w, ay = (700 - view.y) / view.h * h; ctx.strokeStyle = 'rgba(34,211,238,.45)'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(ax,0); ctx.lineTo(ax,h); ctx.moveTo(0,ay); ctx.lineTo(w,ay); ctx.stroke();
+                ctx.font = '10px Consolas, monospace'; ctx.textAlign = 'left'; ctx.fillStyle = '#67e8f9'; if (ax > 0 && ax < w) ctx.fillText('X 0', ax + 5, Math.max(14, ay - 6)); if (ay > 0 && ay < h) ctx.fillText('Y 0', 6, ay - 6);
+                const selectedMarks = new Set(config.SelectedMarks || (config.SelectedMark ? [config.SelectedMark] : []));
+                for (const s of (config.Stations || [])) { const p = toScreen(point(s)); if (p.x < -30 || p.x > w+30 || p.y < -30 || p.y > h+30) continue; const selected = selectedMarks.has(s.Mark), anchor = s.Mark === config.AnchorMark; const color = selected ? '#fbbf24' : ((s.StationType & 4) ? '#22d3ee' : '#a78bfa');
+                    ctx.save(); ctx.translate(p.x,p.y); ctx.fillStyle = selected ? '#164e63' : '#0e293b'; ctx.strokeStyle = color; ctx.lineWidth = selected ? 2.5 : 1.2; ctx.beginPath(); ctx.roundRect(-18,-14,36,28,6); ctx.fill(); ctx.stroke(); ctx.save(); ctx.translate(-12,-12); ctx.fillStyle = color; ctx.fill(iconFor(s)); ctx.restore(); ctx.restore();
+                    if (selected || hover === s) { ctx.fillStyle='#e2e8f0'; ctx.font='11px Consolas, monospace'; ctx.textAlign='center'; ctx.fillText(s.Mark,p.x,p.y-22); }
+                    if (anchor) { ctx.save(); ctx.strokeStyle='#a78bfa'; ctx.setLineDash([4,3]); ctx.lineWidth=2; ctx.beginPath(); ctx.arc(p.x,p.y,25,0,Math.PI*2); ctx.stroke(); ctx.restore(); }
+                }
+                if (drag && !drag.pan && drag.moved) { const x=Math.min(drag.x,drag.cx), y=Math.min(drag.y,drag.cy), bw=Math.abs(drag.cx-drag.x), bh=Math.abs(drag.cy-drag.y); ctx.fillStyle='rgba(34,211,238,.10)';ctx.fillRect(x,y,bw,bh);ctx.strokeStyle='#22d3ee';ctx.setLineDash([6,4]);ctx.strokeRect(x,y,bw,bh);ctx.setLineDash([]); }
+                overlay.setAttribute('viewBox', `0 0 ${w} ${h}`); overlay.innerHTML = '';
+                if (config.AnchorMark && config.SelectedMark) { const a=(config.Stations||[]).find(s=>s.Mark===config.AnchorMark), b=(config.Stations||[]).find(s=>s.Mark===config.SelectedMark); if(a&&b&&a.Mark!==b.Mark){ const p=toScreen(point(a)),q=toScreen(point(b)); const line=document.createElementNS('http://www.w3.org/2000/svg','line'); line.setAttribute('x1',p.x);line.setAttribute('y1',q.y);line.setAttribute('x2',q.x);line.setAttribute('y2',q.y);line.setAttribute('stroke','#a78bfa');line.setAttribute('stroke-dasharray','5 4');line.setAttribute('stroke-width','2');overlay.appendChild(line); } }
+            }
+            const update = (json) => { try { config = JSON.parse(json || '{}'); draw(); } catch(e){} };
+            const onDown = (e) => { if (e.button===1 || e.button===2) { drag={pan:true,x:e.clientX,y:e.clientY,v:{...view}}; canvas.setPointerCapture?.(e.pointerId); e.preventDefault(); } else if(e.button===0) { const r=canvas.getBoundingClientRect(); drag={x:e.clientX-r.left,y:e.clientY-r.top,cx:e.clientX-r.left,cy:e.clientY-r.top,moved:false}; } };
+            const onMove = (e) => { const r=canvas.getBoundingClientRect(), x=e.clientX-r.left,y=e.clientY-r.top; if(drag?.pan){ view.x=drag.v.x-(e.clientX-drag.x)/r.width*drag.v.w; view.y=drag.v.y-(e.clientY-drag.y)/r.height*drag.v.h; draw(); return; } if(drag){ drag.cx=x;drag.cy=y;drag.moved=Math.hypot(e.clientX-drag.x,e.clientY-drag.y)>4; draw(); } const h=hit(x,y); if(h!==hover){hover=h;draw();} };
+            const onUp = async (e) => { if(!drag)return; const d=drag;drag=null; if(d.pan)return; const r=canvas.getBoundingClientRect(), ex=e.clientX-r.left,ey=e.clientY-r.top; if(d.moved){ const x0=Math.min(d.x,ex),x1=Math.max(d.x,ex),y0=Math.min(d.y,ey),y1=Math.max(d.y,ey); const marks=(config.Stations||[]).filter(s=>{const p=toScreen(point(s));return p.x>=x0&&p.x<=x1&&p.y>=y0&&p.y<=y1;}).map(s=>s.Mark); await dotNetRef.invokeMethodAsync('OnMapEditorBoxSelected',marks); return; } const p=screen(ex,ey), h=hit(ex,ey); if(h) await dotNetRef.invokeMethodAsync('OnMapEditorStationClicked',h.Mark); else await dotNetRef.invokeMethodAsync('OnMapEditorCanvasPoint',p.x,700-p.y); };
+            const onWheel = (e) => { e.preventDefault(); const r=canvas.getBoundingClientRect(), mx=e.clientX-r.left,my=e.clientY-r.top, before=screen(mx,my), f=e.deltaY<0?1.15:1/1.15; const nw=Math.min(1000000000,Math.max(120,view.w/f)),nh=Math.min(600000000,Math.max(70,view.h/f)); view.x=before.x-mx/r.width*nw; view.y=before.y-my/r.height*nh; view.w=nw;view.h=nh;draw(); };
+            const onContext=(e)=>e.preventDefault(); canvas.addEventListener('pointerdown',onDown);canvas.addEventListener('pointermove',onMove);canvas.addEventListener('pointerup',onUp);canvas.addEventListener('pointercancel',onUp);canvas.addEventListener('wheel',onWheel,{passive:false});canvas.addEventListener('contextmenu',onContext); const ro=new ResizeObserver(resize);ro.observe(host); host.__grcsMapUpdate=update;host.__grcsMapZoom=(f)=>{const nw=Math.min(1000000000,Math.max(120,view.w/f)),nh=Math.min(600000000,Math.max(70,view.h/f));view.x+=(view.w-nw)/2;view.y+=(view.h-nh)/2;view.w=nw;view.h=nh;draw();};host.__grcsMapReset=()=>{view={x:0,y:0,w:1200,h:700};draw();};host.__grcsMapDispose=()=>{ro.disconnect();delete host.__grcsMapUpdate;delete host.__grcsMapZoom;delete host.__grcsMapReset;}; resize();
+        };
+        window.grcsMapEditorUpdate = (hostId, json) => { const h=document.getElementById(hostId); if(h?.__grcsMapUpdate) h.__grcsMapUpdate(json); };
+        window.grcsMapEditorZoomHost = (hostId, factor) => { const h=document.getElementById(hostId); if(h?.__grcsMapZoom) h.__grcsMapZoom(factor); };
+        window.grcsMapEditorResetHost = (hostId) => { const h=document.getElementById(hostId); if(h?.__grcsMapReset) h.__grcsMapReset(); };
 
         // generic localStorage helpers
         window.grcsStoreSave = (key, json) => localStorage.setItem(key, json);

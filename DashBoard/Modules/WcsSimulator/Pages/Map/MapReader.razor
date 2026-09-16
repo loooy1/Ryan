@@ -1,0 +1,346 @@
+@namespace Dashboard.Modules.WcsSimulator.Pages
+@page "/wcs-simulator/map-reader"
+@inject WcsApiClient WcsApi
+@inherits Dashboard.Modules.WcsSimulator.Components.PageStateBase
+@using System.Text.Json
+@using System.IO.Compression
+@using Dashboard.Modules.WcsSimulator.Models
+@using Microsoft.JSInterop
+@implements IDisposable
+
+@* ════════════════════════════════════════════════
+   页面职责：WCS 模拟器的「地图信息」页 —— 地图数据的中转站
+   ① 接口读取：GET /api/Map/GetMap?sceneName=&getTypes=feMap 下载 zip，
+      解压出 map.json 解析；文件读取：直接选择本地 map.json
+   ② 解析后把全量 MapFileData 精简为 MapStationLite 列表，连同筛选状态
+      一起写入 localStorage 键 grcs_map_stations（MapStationCache），
+      供任务下发/车辆移动/自动化任务等页面恢复复用，无需重复读文件
+   ── 交互服务 ──
+   HttpClient：直连 GRCS 下载地图 zip
+   LocalStoreService：站点缓存与共享地址（场景名/GRCS/WCS 地址）的持久化
+   ════════════════════════════════════════════════ *@
+<PageTitle>地图信息</PageTitle>
+
+<style>
+    .map-builder-layout { display:grid; grid-template-columns:132px minmax(0,1fr) 248px; gap:14px; min-height:680px; }
+    .map-builder-tools, .map-builder-properties { border:1px solid #263650; border-radius:14px; background:linear-gradient(180deg,#111d32,#0c1526); padding:14px; box-shadow:0 12px 28px rgba(0,0,0,.16); }
+    .map-builder-caption { color:#64748b; font-size:.68rem; text-transform:uppercase; letter-spacing:.14em; margin-bottom:11px; font-weight:700; }
+    .map-tool { display:flex; align-items:center; gap:9px; width:100%; margin-bottom:8px; padding:11px 10px; border:1px solid #334155; border-radius:10px; background:#16243a; color:#cbd5e1; cursor:pointer; transition:.16s ease; font-size:.78rem; }
+    .map-tool:first-letter { color:#67e8f9; font-size:1.1rem; }
+    .map-tool:hover, .map-tool.active { border-color:#22d3ee; background:linear-gradient(135deg,#164e63,#172554); color:#ecfeff; box-shadow:0 0 0 1px #22d3ee22,0 8px 18px #02061755; }
+    .map-tool.align-tool { color:#c4b5fd; }
+    .map-tool.align-tool.active { border-color:#a78bfa; background:linear-gradient(135deg,#312e81,#1e1b4b); color:#ede9fe; }
+    .map-builder-divider { height:1px; background:#263650; margin:16px 0; }
+    .map-builder-count { color:#94a3b8; font-size:.75rem; margin-top:16px; padding:10px; border:1px solid #263650; border-radius:10px; background:#0b1425; }
+    .map-builder-count b { display:block; color:#67e8f9; font-size:1.45rem; line-height:1.15; }
+    .map-builder-count small { color:#64748b; font-size:.68rem; }
+    .map-builder-stage { min-width:0; border:1px solid #263650; border-radius:14px; background:#08111f; overflow:hidden; box-shadow:0 16px 32px rgba(0,0,0,.2); }
+    .map-builder-stagebar { position:relative; display:flex; align-items:center; justify-content:space-between; gap:10px; min-height:48px; padding:10px 15px; border-bottom:1px solid #263650; background:#101c30; color:#e2e8f0; font-size:.82rem; }
+    .map-builder-stagebar strong { color:#f8fafc; font-size:.86rem; }
+    .map-builder-hint { color:#67e8f9; font-size:.7rem; }
+    .map-builder-legend { position:absolute; left:50%; top:50%; transform:translate(-50%,-50%); display:flex; align-items:center; gap:7px; color:#94a3b8; font-size:.74rem; white-space:nowrap; pointer-events:none; }
+    .map-legend-title { color:#94a3b8; font-size:.72rem; font-weight:700; margin-right:2px; }
+    .map-legend-item { display:inline-flex; align-items:center; gap:5px; color:#e2e8f0; }
+    .map-legend-icon-box { display:inline-flex; align-items:center; justify-content:center; width:28px; height:26px; border:1px solid #3b506f; border-radius:7px; background:#16243a; box-shadow:0 2px 8px rgba(0,0,0,.16); }
+    .map-legend-item .mud-icon-root { width:20px; height:20px; font-size:20px; }
+    .map-legend-storage .mud-icon-root { color:#22d3ee; }
+    .map-legend-transfer .mud-icon-root { color:#4ade80; }
+    .map-legend-people .mud-icon-root { color:#f472b6; }
+    .map-legend-sorting .mud-icon-root { color:#a78bfa; }
+    .map-align-hint { margin-top:10px; padding:9px; border:1px solid #4c1d95; border-radius:9px; background:#2e106522; color:#c4b5fd; font-size:.7rem; line-height:1.45; }
+    .map-builder-zoom { display:flex; align-items:center; gap:4px; margin-left:auto; }
+    .map-zoom-btn { width:28px; height:26px; padding:0; border:1px solid #3b506f; border-radius:7px; background:#16243a; color:#cbd5e1; cursor:pointer; font-size:1rem; line-height:1; }
+    .map-zoom-btn:hover { border-color:#22d3ee; color:#ecfeff; background:#164e63; }
+    .map-create-canvas-host { position:relative; width:100%; height:min(720px,72vh); min-height:600px; overflow:hidden; background:#08111f; }
+    .map-create-canvas { display:block; width:100%; height:100%; cursor:crosshair; background:#08111f; }
+    .map-create-overlay { position:absolute; inset:0; width:100%; height:100%; pointer-events:none; overflow:visible; }
+    .map-property-empty { color:#64748b; font-size:.78rem; line-height:1.65; padding:12px 4px; text-align:center; border:1px dashed #334155; border-radius:10px; }
+    .map-selected-title { color:#67e8f9; font-weight:700; margin-bottom:14px; padding-bottom:10px; border-bottom:1px solid #263650; }
+    .map-builder-properties input, .map-builder-properties select { background:#0b1425; border-color:#334155; }
+    .map-builder-properties .form-group { gap:5px; margin-bottom:10px; }
+    .map-builder-properties label { color:#94a3b8; font-size:.7rem; }
+    .map-save-btn { border-color:#22c55e !important; color:#4ade80 !important; background:rgba(34,197,94,.08) !important; }
+    .map-save-btn:hover { border-color:#4ade80 !important; color:#dcfce7 !important; background:rgba(34,197,94,.2) !important; box-shadow:0 0 0 1px rgba(74,222,128,.25),0 6px 16px rgba(22,101,52,.25); }
+    .matrix-overlay { position:fixed; inset:0; z-index:900; display:flex; align-items:center; justify-content:center; padding:20px; background:rgba(2,6,23,.72); backdrop-filter:blur(4px); }
+    .matrix-dialog { width:min(560px,96vw); border:1px solid #334155; border-top:2px solid #22d3ee; border-radius:14px; background:linear-gradient(155deg,#111d32,#0b1425); box-shadow:0 24px 70px rgba(0,0,0,.55); padding:20px; }
+    .matrix-dialog-head { display:flex; align-items:flex-start; justify-content:space-between; gap:12px; padding-bottom:14px; border-bottom:1px solid #263650; margin-bottom:16px; }
+    .matrix-dialog-title { color:#f8fafc; font-size:1rem; font-weight:700; }
+    .matrix-dialog-sub { color:#64748b; font-size:.7rem; margin-top:4px; }
+    .matrix-dialog-close { border:1px solid #334155; border-radius:8px; background:transparent; color:#94a3b8; width:28px; height:28px; cursor:pointer; }
+    .matrix-dialog-close:hover { color:#f87171; border-color:#f87171; }
+    .matrix-form-grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+    .matrix-form-grid .form-group { margin:0; }
+    .matrix-form-grid .form-group.full { grid-column:1/-1; }
+    .matrix-form-grid input, .matrix-form-grid select { background:#0b1425; border-color:#334155; }
+    .matrix-coordinate { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+    .matrix-dialog-actions { display:flex; justify-content:flex-end; gap:8px; margin-top:20px; padding-top:14px; border-top:1px solid #263650; }
+    .matrix-preview { margin-top:14px; padding:9px 11px; border-radius:9px; background:#0b1425; color:#94a3b8; font-size:.72rem; }
+    @@media (max-width: 900px) { .map-builder-layout { grid-template-columns:90px minmax(0,1fr); } .map-builder-properties { grid-column:1/-1; } }
+    @@media (max-width: 620px) { .map-builder-layout { grid-template-columns:1fr; } .map-builder-tools { display:flex; align-items:center; gap:8px; flex-wrap:wrap; } .map-builder-caption, .map-builder-divider, .map-builder-count { margin:0; } .map-tool { width:auto; margin:0; } .map-create-canvas-host { height:500px; min-height:0; } .map-builder-stagebar { flex-wrap:wrap; min-height:86px; } .map-builder-legend { position:static; transform:none; order:4; width:100%; justify-content:center; flex-wrap:wrap; white-space:normal; } .map-builder-zoom { margin-left:auto; } }
+</style>
+
+@* ════════════════════════════════════════════════
+   读取地图：接口读取 / 文件读取
+   ── 说明 ── 接口读取经 WCS 后端代理下载 zip（场景名取后端设置，见下方「系统设置」）；
+   两种方式最终都走 ParseMapContent 解析 map.json；
+   解析成功后立即写入 localStorage 缓存，其他页面无需再读文件
+   ════════════════════════════════════════════════ *@
+<div class="section-card">
+    <div class="section-header collapsible" @onclick="ToggleFile" title="点击折叠/展开">
+        📂 读取地图
+        <span class="collapse-arrow">@(IsCollapsed("mr_file") ? "▸ 展开" : "▾ 收起")</span>
+    </div>
+    @if (!IsCollapsed("mr_file"))
+    {
+    <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:10px;">
+        <button class="btn btn-primary btn-sm" @onclick="LoadFromApi" disabled="@_loading">🌐 接口读取</button>
+        <div class="map-file-btn" style="position:relative;display:inline-flex;">
+            <button class="btn btn-outline btn-sm" disabled="@_loading" type="button" style="pointer-events:none;">📁 选择文件</button>
+            <InputFile OnChange="OnFileSelected" accept=".json" disabled="@_loading"
+                       style="position:absolute;inset:0;opacity:0;" />
+        </div>
+        @if (_loading) { <span class="badge-info">⏳ 解析中...</span> }
+        @if (_mapError != "")
+        {
+            <span style="color:#f87171;font-size:0.8rem;">❌ 接口读取失败：@_mapError</span>
+        }
+        <span class="badge-ok" style="white-space:nowrap;opacity:@(_mapLoaded ? "1" : "0");transition:opacity 0.2s;">✅ 地图读取成功</span>
+    </div>
+    @if (_stations.Count > 0)
+    {
+        <div class="hint-text" style="margin-bottom:4px;">
+            已加载 <b>@_stations.Count</b> 个站点 / <b>@_pathsCount</b> 条连线
+        </div>
+    }
+    <div class="hint-text">
+        接口读取经 WCS 后端 <code>GET /api/wcs/grcs/map</code> 从 GRCS <code>GET /api/Map/GetMap</code> 下载 zip（场景名按「系统设置」）；文件读取选择本地 <code>map.json</code> 直接解析。
+    </div>
+    }
+</div>
+
+@* ════════════════════════════════════════════════
+   系统设置：GRCS 地址 + 场景名称 + WCS 后端地址（全局唯一配置入口）
+   ── 说明 ── 保存后写入后端（/api/wcs/auto/settings，SQLite 持久化），
+   所有页面（任务下发/车辆移动/库存/信号/自动化）的 GRCS 调用与场景名
+   都以后端这份设置为准；未保存用默认值（http://localhost:8224 / Show）。
+   保存后重读一次刷新显示。WCS 后端地址为本页自身的访问地址（localStorage）。
+   ════════════════════════════════════════════════ *@
+<div class="section-card">
+    <div class="section-header collapsible" @onclick="ToggleSettings" title="点击折叠/展开">
+        ⚙️ 系统设置
+        <span class="addr-badge">GRCS @_grcsBaseUrl</span>
+        <span class="addr-badge">场景 @_warehouse</span>
+        <span class="collapse-arrow">@(IsCollapsed("mr_settings") ? "▸ 展开" : "▾ 收起")</span>
+    </div>
+    @if (!IsCollapsed("mr_settings"))
+    {
+    <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;">
+        <div class="form-group" style="flex:1;min-width:120px;max-width:200px;">
+            <label>场景名称</label>
+            <input type="text" @bind="_warehouse" @bind:event="oninput" placeholder="Show">
+        </div>
+        <div class="form-group" style="flex:1;min-width:140px;max-width:220px;">
+            <label>GRCS 地址</label>
+            <input type="text" @bind="_grcsBaseUrl" @bind:event="oninput" placeholder="http://localhost:8224">
+        </div>
+        <div class="form-group" style="flex:1;min-width:140px;max-width:220px;">
+            <label>WCS 后端地址</label>
+            <input type="text" @bind="_wcsBaseUrl" @bind:event="oninput" placeholder="http://localhost:8230">
+        </div>
+        <button class="btn btn-primary" @onclick="SaveWarehouse" style="white-space:nowrap;padding:10px 12px;font-size:0.85rem;border:1px solid transparent;background-clip:padding-box;">💾 保存</button>
+        <span class="badge-ok" style="white-space:nowrap;opacity:@(_warehouseSaved ? "1" : "0");transition:opacity 0.2s;margin-bottom:5px;">✅ 已保存</span>
+    </div>
+    <div class="hint-text" style="margin-top:6px;">
+        保存后所有页面立即按新地址/场景生效（1s 内同步）；不保存则用默认值。
+    </div>
+    }
+</div>
+
+@* ── 可视化创建地图：从空白画布点击放置储位，当前仅保存在内存 ── *@
+<div class="section-card map-builder-card">
+    <div class="section-header">
+        🗺️ 创建地图
+        <span class="badge-info">可视化编辑</span>
+        <span class="hint-text" style="margin:0;">从空白画布创建 · 支持单点与点阵 · 不持久化</span>
+        <button class="btn btn-outline btn-sm map-save-btn" style="margin-left:auto;" @onclick="SaveCreatedMapPlaceholder"><MudIcon Icon="@Icons.Material.Filled.Save" Size="Size.Small" /> 保存到库存地图</button>
+    </div>
+    <div class="map-builder-layout">
+        <aside class="map-builder-tools">
+            <div class="map-builder-caption">工具</div>
+            <button class="map-tool @( _mapBuilderTool == "select" ? "active" : "")" @onclick='() => SetMapBuilderTool("select")'>↖ <span>选择</span></button>
+            <button class="map-tool @( _mapBuilderTool == "storage" ? "active" : "")" @onclick='() => SetMapBuilderTool("storage")'><MudIcon Icon="@Icons.Material.Filled.Storage" Size="Size.Small" /> <span>储位</span></button>
+            <button class="map-tool @( _mapBuilderTool == "transfer" ? "active" : "")" @onclick='() => SetMapBuilderTool("transfer")'><MudIcon Icon="@Icons.Material.Filled.SwapHoriz" Size="Size.Small" /> <span>接驳位</span></button>
+            <button class="map-tool @( _mapBuilderTool == "people" ? "active" : "")" @onclick='() => SetMapBuilderTool("people")'><MudIcon Icon="@Icons.Material.Filled.Person" Size="Size.Small" /> <span>人工分拣台</span></button>
+            <button class="map-tool @( _mapBuilderTool == "sorting" ? "active" : "")" @onclick='() => SetMapBuilderTool("sorting")'><MudIcon Icon="@Icons.Material.Filled.Sort" Size="Size.Small" /> <span>分拣台</span></button>
+            <button class="map-tool @( _mapBuilderTool == "matrix" ? "active" : "")" @onclick="OpenMatrixDialog"><MudIcon Icon="@Icons.Material.Filled.GridOn" Size="Size.Small" /> <span>点阵</span></button>
+            <button class="map-tool align-tool @( _mapBuilderTool == "align-x" ? "active" : "")" @onclick='() => SetMapBuilderTool("align-x")'>↔ <span>X 对齐</span></button>
+            <button class="map-tool align-tool @( _mapBuilderTool == "align-y" ? "active" : "")" @onclick='() => SetMapBuilderTool("align-y")'>↕ <span>Y 对齐</span></button>
+            @if (_mapBuilderTool is "align-x" or "align-y")
+            {
+                <div class="map-align-hint">① 点击基准储位<br />② 依次点击要对齐的储位<br />基准：<b>@(_alignmentAnchor?.Mark ?? "未选择")</b></div>
+            }
+            <div class="map-builder-divider"></div>
+            <button class="btn btn-outline btn-sm" @onclick="ClearCreatedMap" disabled="@(_createdMapStations.Count == 0)">清空画布</button>
+            <div class="map-builder-count">地图元素 <b>@_createdMapStations.Count</b><small>已选 @_selectedCreatedMarks.Count</small></div>
+        </aside>
+        <div class="map-builder-stage">
+            <div class="map-builder-stagebar"><strong>空白地图画布</strong><span class="map-builder-hint">@(_mapBuilderTool switch { "storage" => "点击画布放置储位", "transfer" => "点击画布放置接驳位", "people" => "点击画布放置人工分拣台", "sorting" => "点击画布放置分拣台", _ => "拖拽框选 · 点击元素查看属性" })</span><div class="map-builder-legend" aria-label="地图图标说明"><span class="map-legend-title">图例</span><span class="map-legend-item map-legend-storage"><span class="map-legend-icon-box"><MudIcon Icon="@Icons.Material.Filled.Storage" /></span>储位</span><span class="map-legend-item map-legend-transfer"><span class="map-legend-icon-box"><MudIcon Icon="@Icons.Material.Filled.SwapHoriz" /></span>接驳位</span><span class="map-legend-item map-legend-people"><span class="map-legend-icon-box"><MudIcon Icon="@Icons.Material.Filled.Person" /></span>人工分拣台</span><span class="map-legend-item map-legend-sorting"><span class="map-legend-icon-box"><MudIcon Icon="@Icons.Material.Filled.Sort" /></span>分拣台</span></div><div class="map-builder-zoom"><button class="map-zoom-btn" title="缩小" @onclick="ZoomMapOut">−</button><button class="map-zoom-btn" title="重置视图" @onclick="ResetMapZoom">⌂</button><button class="map-zoom-btn" title="放大" @onclick="ZoomMapIn">＋</button></div></div>
+            <div id="map-create-canvas-host" class="map-create-canvas-host">
+                <canvas id="map-create-canvas" class="map-create-canvas" aria-label="地图创建画布"></canvas>
+                <svg id="map-create-overlay" class="map-create-overlay" aria-hidden="true"></svg>
+            </div>
+        </div>
+        <aside class="map-builder-properties">
+            <div class="map-builder-caption">属性</div>
+            @if (_selectedCreatedMarks.Count > 1)
+            {
+                <div class="map-selected-title"><MudIcon Icon="@Icons.Material.Filled.SelectAll" Size="Size.Small" /> 批量编辑（@_selectedCreatedMarks.Count 个）</div>
+                <div class="map-property-empty" style="text-align:left;margin-bottom:10px;">公共值显示当前值，不一致的属性留空；输入后将应用到全部选中元素。</div>
+                <div class="form-group"><label>X 坐标</label><input type="number" step="0.1" value="@BatchXText" @oninput="OnBatchXInput" placeholder="多个值" /></div>
+                <div class="form-group"><label>Y 坐标</label><input type="number" step="0.1" value="@BatchYText" @oninput="OnBatchYInput" placeholder="多个值" /></div>
+                <div class="form-group"><label>楼层</label><input type="number" value="@BatchFloorText" @oninput="OnBatchFloorInput" placeholder="多个值" /></div>
+                <div class="form-group"><label>库区</label><input type="text" value="@BatchCargoAreasText" @oninput="OnBatchCargoAreasInput" placeholder="多个值" /></div>
+                <div class="form-group"><label>状态</label><select value="@BatchEnabledText" @onchange="OnBatchEnabledChanged"><option value="">多个值</option><option value="true">启用</option><option value="false">禁用</option></select></div>
+                <button class="btn btn-danger btn-sm" @onclick="DeleteSelectedCreatedStations">删除选中</button>
+            }
+            else if (_selectedCreatedStation == null)
+            {
+                <div class="map-property-empty">选择一个储位后，在这里编辑属性。</div>
+            }
+            else
+            {
+                <div class="map-selected-title">📍 储位属性</div>
+                <div class="form-group"><label>编码</label><input type="text" @bind="_selectedCreatedStation.Mark" @bind:after="MarkMapEditorDirty" /></div>
+                <div class="form-group"><label>库区</label><input type="text" value="@_selectedCreatedCargoAreas" @oninput="OnSelectedCreatedCargoAreasInput" placeholder="可选" /></div>
+                <div class="form-grid2">
+                    <div class="form-group"><label>X</label><input type="number" step="0.1" @bind="_selectedCreatedStation.X" @bind:after="MarkMapEditorDirty" /></div>
+                    <div class="form-group"><label>Y</label><input type="number" step="0.1" @bind="_selectedCreatedStation.Y" @bind:after="MarkMapEditorDirty" /></div>
+                    <div class="form-group"><label>楼层</label><input type="number" @bind="_selectedCreatedStation.Floor" @bind:after="MarkMapEditorDirty" /></div>
+                    <div class="form-group"><label>状态</label><select @bind="_selectedCreatedStation.StaEnable" @bind:after="MarkMapEditorDirty"><option value="true">启用</option><option value="false">禁用</option></select></div>
+                </div>
+                <button class="btn btn-danger btn-sm" @onclick="DeleteSelectedCreatedStation">删除储位</button>
+            }
+        </aside>
+    </div>
+</div>
+
+@if (_matrixDialogOpen)
+{
+    <div class="matrix-overlay" @onclick="CloseMatrixDialog">
+        <div class="matrix-dialog" @onclick:stopPropagation="true">
+            <div class="matrix-dialog-head"><div><div class="matrix-dialog-title">添加点阵</div><div class="matrix-dialog-sub">按基准坐标批量生成地图元素，生成后仍可逐个编辑</div></div><button class="matrix-dialog-close" @onclick="CloseMatrixDialog">✕</button></div>
+            <div class="matrix-form-grid">
+                <div class="form-group full"><label>码点类型 <span style="color:#f87171">*</span></label><select @bind="_matrixStationType"><option value="@MapStationTypeBits.StorageLocation">储位</option><option value="@MapStationTypeBits.TransferPoint">接驳位</option><option value="@MapStationTypeBits.Charging">充电点</option><option value="@MapStationTypeBits.Parking">停车位</option></select></div>
+                <div class="form-group full"><label>基准点坐标 <span style="color:#f87171">*</span></label><div class="matrix-coordinate"><input type="number" step="0.1" @bind="_matrixOriginX" placeholder="X" /><input type="number" step="0.1" @bind="_matrixOriginY" placeholder="Y" /></div></div>
+                <div class="form-group"><label>行数 <span style="color:#f87171">*</span></label><input type="number" min="1" max="200" @bind="_matrixRows" /></div>
+                <div class="form-group"><label>列数 <span style="color:#f87171">*</span></label><input type="number" min="1" max="200" @bind="_matrixColumns" /></div>
+                <div class="form-group"><label>水平距离</label><input type="number" min="0" step="0.1" @bind="_matrixHorizontalSpacing" /></div>
+                <div class="form-group"><label>垂直距离</label><input type="number" min="0" step="0.1" @bind="_matrixVerticalSpacing" /></div>
+                <div class="form-group full"><label>矩阵方向</label><select @bind="_matrixDirection"><option value="down">向下</option><option value="up">向上</option><option value="left">向左</option><option value="right">向右</option></select></div>
+            </div>
+            <div class="matrix-preview">将生成 <b style="color:#67e8f9">@(_matrixRows * _matrixColumns)</b> 个点位 · 坐标系：X 向右，Y 向上</div>
+            <div class="matrix-dialog-actions"><button class="btn btn-outline" @onclick="CloseMatrixDialog">取消</button><button class="btn btn-primary" @onclick="CreateMatrixStations">确定生成</button></div>
+        </div>
+    </div>
+}
+
+@if (_stations.Count > 0)
+{
+    @* ════════════════════════════════════════════════
+       站点概览：类型统计 + 筛选 + 站点列表（合并原「筛选站点」「站点列表」两张卡）
+       ── 说明 ── MapStationTypeBits.All 是站点类型位掩码注册表，
+       一个站点可同时属于多种类型（StationType 位掩码按位判断）；
+       筛选条件随站点缓存一起保存（MapReaderFilterState），刷新页面后恢复上次的筛选视图
+       ════════════════════════════════════════════════ *@
+    <div class="section-card">
+        <div class="section-header collapsible" @onclick="ToggleOverview" title="点击折叠/展开">
+            📊 站点概览
+            <span class="badge-info">@_filtered.Count 条</span>
+            <span class="collapse-arrow">@(IsCollapsed("mr_overview") ? "▸ 展开" : "▾ 收起")</span>
+        </div>
+        @if (!IsCollapsed("mr_overview"))
+        {
+        <div class="task-type-grid">
+            @foreach (var (bit, name) in MapStationTypeBits.All)
+            {
+                <div class="task-type-chip" style="cursor:default;">
+                    <span class="chip-title">@name</span>
+                    <span class="chip-desc">@(_stations.Count(s => (s.StationType & bit) != 0)) 个</span>
+                </div>
+            }
+        </div>
+        <div class="hint-text">
+            总 @_stations.Count 个 · 启用 @(_stations.Count(s => s.StaEnable)) · 禁用 @(_stations.Count(s => !s.StaEnable))
+        </div>
+
+        @* 筛选：类型 + 关键词 + 启用状态 *@
+        <div style="border-top:1px solid #334155;margin:14px 0 10px;"></div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;">
+            <button class="chip-btn @(_typeFilter == 0 ? "on" : "")" @onclick="() => SetTypeFilter(0)">全部</button>
+            @foreach (var (bit, name) in MapStationTypeBits.All)
+            {
+                <button class="chip-btn @(_typeFilter == bit ? "on" : "")" @onclick="() => SetTypeFilter(bit)">@name</button>
+            }
+        </div>
+
+        <div class="form-grid3">
+            <div class="form-group">
+                <label>关键词（站点编码 / 库区）</label>
+                <input type="text" value="@_search" @oninput="OnSearchInput" @onblur="SaveState" placeholder="如 0100001427 或 storageArea">
+            </div>
+            <div class="form-group">
+                <label>状态</label>
+                <select value="@_enableFilter" @onchange="OnEnableFilterChange">
+                    <option value="">全部</option>
+                    <option value="true">仅启用</option>
+                    <option value="false">仅禁用</option>
+                </select>
+            </div>
+        </div>
+
+        @* 站点列表表格：只读展示精简字段，每行可把站点编码复制到剪贴板 *@
+        <div style="overflow-x:auto;margin-top:12px;">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>站点编码 (mark)</th>
+                        <th>类型</th>
+                        <th>库区</th>
+                        <th>楼层</th>
+                        <th>坐标 (X,Y)</th>
+                        <th>负载状态</th>
+                        <th>启用</th>
+                        <th>可转向</th>
+                        <th>可避让</th>
+                        <th>可停靠</th>
+                        <th></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var s in _filtered)
+                    {
+                        <tr style="color:@(s.StaEnable ? "" : "#64748b");">
+                            <td style="font-family:Consolas,monospace;">@s.Mark</td>
+                            <td>@string.Join(" + ", MapStationTypeBits.DecodeNames(s.StationType))</td>
+                            <td>@string.Join(", ", s.CargoAreas)</td>
+                            <td>@s.Floor</td>
+                            <td style="font-family:Consolas,monospace;">@s.X, @s.Y</td>
+                            <td>@LoadStateText(s.SupportLoadState)</td>
+                            <td>@(s.StaEnable ? "✅" : "🚫")</td>
+                            <td>@(s.AllowTurn ? "✓" : "-")</td>
+                            <td>@(s.AllowAvoid ? "✓" : "-")</td>
+                            <td>@(s.AllowStop ? "✓" : "-")</td>
+                            <td><button class="btn btn-outline btn-xs" @onclick="() => CopyMark(s.Mark)" title="复制站点编码">📋</button></td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+        @if (_filtered.Count == 0)
+        {
+            <div class="hint-text" style="margin-top:10px;">没有匹配的站点</div>
+        }
+        }
+    </div>
+}
+

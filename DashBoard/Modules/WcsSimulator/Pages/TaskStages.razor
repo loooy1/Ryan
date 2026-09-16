@@ -543,10 +543,10 @@
 
     private static string InventoryEffectLabel(string effect) => effect.ToLowerInvariant() switch
     {
-        "cargo_arrival" => "库存效果：货物到达",
-        "cargo_removal" => "库存效果：货物移除",
-        "create_return_task" => "库存效果：创建回库任务",
-        _ => "库存效果：" + effect
+        "cargo_arrival" => "执行后：货物到达",
+        "cargo_removal" => "执行后：货物移除",
+        "create_return_task" => "执行后：创建回库任务",
+        _ => "执行后：" + effect
     };
 
     private static string StageStatusLabel(string status) => status.ToLowerInvariant() switch

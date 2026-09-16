@@ -43,32 +43,43 @@ public class WcsApiClient
         _alert = alert;
     }
 
-    /// <summary>WCS 后端连接前置检查：未连接时弹告警并返回 false（调用方短路返回失败值）。</summary>
+    /// <summary>WCS 后端连接前置检查：同一次连续离线只弹一次，恢复后才允许再次提示。</summary>
     private bool ConnectionReady()
     {
-        if (_health.WcsOnline == false && !SuppressAlerts)
+        ResetOfflineAlertFlagsWhenRecovered();
+        if (_health.WcsOnline == false)
         {
-            _alert.Show($"无法连接 WCS 后端（{BaseUrl}）\n请确认后端服务已启动，或检查「地址设置」中的连接地址。");
+            ShowWcsOfflineAlertOnce();
             return false;
         }
         return true;
     }
 
-    /// <summary>请求异常兜底：仅在后端从"在线"变为"离线"时弹一次，避免反复刷屏。</summary>
+    private void ResetOfflineAlertFlagsWhenRecovered()
+    {
+        if (_health.WcsOnline == true) _notifiedOffline = false;
+        if (_health.GrcsOnline == true) _notifiedGrcsOffline = false;
+    }
+
+    private void ShowWcsOfflineAlertOnce()
+    {
+        if (SuppressAlerts || _notifiedOffline) return;
+        _notifiedOffline = true;
+        _alert.Show($"无法连接 WCS 后端（{BaseUrl}）\n请确认后端服务已启动，或检查「地址设置」中的连接地址。");
+    }
+
+    private void ShowGrcsOfflineAlertOnce(string hint)
+    {
+        if (SuppressAlerts || _notifiedGrcsOffline) return;
+        _notifiedGrcsOffline = true;
+        _alert.Show($"无法连接 GRCS 后端（{GrcsBaseUrl}）\n{hint}");
+    }
+
+    /// <summary>请求异常兜底：离线期间只弹一次，恢复在线后自动重置提示资格。</summary>
     private void NotifyIfUnreachable()
     {
-        if (_health.WcsOnline != true && _notifiedOffline == false)
-        {
-            if (!SuppressAlerts)
-            {
-                _notifiedOffline = true;
-                _alert.Show($"无法连接 WCS 后端（{BaseUrl}）\n请确认后端服务已启动，或检查「地址设置」中的连接地址。");
-            }
-        }
-        else if (_health.WcsOnline == true)
-        {
-            _notifiedOffline = false; // 恢复在线后可再次提醒
-        }
+        ResetOfflineAlertFlagsWhenRecovered();
+        if (_health.WcsOnline != true) ShowWcsOfflineAlertOnce();
     }
 
     public string BaseUrl
@@ -275,10 +286,9 @@ public class WcsApiClient
         if (!ConnectionReady()) return null;
         if (_health.GrcsOnline == false)
         {
-            if (_notifiedGrcsOffline == false && !SuppressAlerts) { _notifiedGrcsOffline = true; _alert.Show($"无法连接 GRCS 后端（{GrcsBaseUrl}）\n归巢需要 GRCS 车辆状态，请确认 GRCS 服务已启动。"); }
+            ShowGrcsOfflineAlertOnce("归巢需要 GRCS 车辆状态，请确认 GRCS 服务已启动。");
             return null;
         }
-        else { _notifiedGrcsOffline = false; }
         return await PostAsync<object, NestRunResult>("/api/wcs/auto/nest/run", new { vehicles });
     }
 
@@ -288,10 +298,9 @@ public class WcsApiClient
         if (!ConnectionReady()) return [];
         if (_health.GrcsOnline == false)
         {
-            if (_notifiedGrcsOffline == false && !SuppressAlerts) { _notifiedGrcsOffline = true; _alert.Show($"无法连接 GRCS 后端（{GrcsBaseUrl}）\n车辆数据经 WCS 后端代理获取，请确认 GRCS 服务已启动。"); }
+            ShowGrcsOfflineAlertOnce("车辆数据经 WCS 后端代理获取，请确认 GRCS 服务已启动。");
             return [];
         }
-        else { _notifiedGrcsOffline = false; }
         try
         {
             var json = await GetAsync<JsonElement>("/api/wcs/auto/vehicles");
@@ -316,9 +325,9 @@ public class WcsApiClient
     private bool GrcsReady()
     {
         if (!ConnectionReady()) return false;
-        if (_health.GrcsOnline == false && !SuppressAlerts)
+        if (_health.GrcsOnline == false)
         {
-            _alert.Show($"无法连接 GRCS 后端（{GrcsBaseUrl}）\n数据经 WCS 后端代理获取，请确认 GRCS 服务已启动。");
+            ShowGrcsOfflineAlertOnce("数据经 WCS 后端代理获取，请确认 GRCS 服务已启动。");
             return false;
         }
         return true;
@@ -329,10 +338,9 @@ public class WcsApiClient
     {
         if (_health.GrcsOnline != false
             && (json.Contains("积极拒绝") || json.Contains("无法连接") || json.Contains("超时")
-                || json.Contains("Connection refused") || json.Contains("refused to connect"))
-            && !SuppressAlerts)
+                || json.Contains("Connection refused") || json.Contains("refused to connect")))
         {
-            _alert.Show($"无法连接 GRCS 后端（{GrcsBaseUrl}）\n数据经 WCS 后端代理获取，请确认 GRCS 服务已启动。");
+            ShowGrcsOfflineAlertOnce("数据经 WCS 后端代理获取，请确认 GRCS 服务已启动。");
         }
     }
 

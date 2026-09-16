@@ -32,6 +32,20 @@
     .form-section-title { margin: 14px 0 8px; padding: 5px 10px; background: linear-gradient(90deg, rgba(59,130,246,.12), transparent); border-left: 3px solid #3b82f6; border-radius: 4px; color: #93c5fd; font-weight: 600; font-size: 0.8rem; letter-spacing: .5px; }
     .mod-card { transition: transform .15s, box-shadow .15s; }
     .mod-card:hover { transform: translateY(-2px); box-shadow: 0 4px 14px rgba(0,0,0,.35); }
+    .exec-log-card { border: 1px solid #1e293b; border-radius: 10px; background: linear-gradient(135deg, #0f172a, #111c31); overflow: hidden; }
+    .exec-log-summary { width: 100%; border: 0; background: transparent; padding: 12px 14px; text-align: left; color: inherit; cursor: pointer; }
+    .exec-log-summary:hover { background: rgba(30, 41, 59, .55); }
+    .exec-log-summary:focus-visible, .exec-copy-btn:focus-visible { outline: 2px solid #38bdf8; outline-offset: -2px; }
+    .exec-log-detail { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; padding: 12px 14px 14px; border-top: 1px solid #1e293b; }
+    .exec-detail-section { min-width: 0; border: 1px solid #24334c; border-radius: 8px; background: rgba(2, 6, 23, .5); overflow: hidden; }
+    .exec-detail-section-wide { grid-column: 1 / -1; }
+    .exec-detail-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 10px; border-bottom: 1px solid #24334c; background: rgba(30, 41, 59, .5); }
+    .exec-detail-title { color: #93c5fd; font-size: .8rem; font-weight: 600; }
+    .exec-copy-btn { border: 1px solid #334155; border-radius: 6px; background: #172554; color: #bfdbfe; padding: 4px 8px; font-size: .75rem; line-height: 1.2; cursor: pointer; white-space: nowrap; }
+    .exec-copy-btn:hover { border-color: #38bdf8; background: #1d4ed8; color: #fff; }
+    .exec-copy-btn.copied { border-color: #22c55e; background: #14532d; color: #dcfce7; }
+    .exec-detail-content { margin: 0; max-height: 260px; overflow: auto; padding: 10px; white-space: pre-wrap; word-break: break-word; color: #cbd5e1; font: .78rem/1.55 Consolas, "Cascadia Code", monospace; }
+    @@media (max-width: 760px) { .exec-log-detail { grid-template-columns: 1fr; } .exec-detail-section-wide { grid-column: auto; } }
 </style>
 
 <div class="hint-text" style="margin:0 0 12px;">
@@ -325,7 +339,7 @@
                             }
                         </div>
                         <div class="form-group">
-                            <label>库存效果 <span class="hint-inline">模块请求成功后执行</span></label>
+                            <label>执行后 <span class="hint-inline">模块请求成功后执行，可更新货物或创建回库任务</span></label>
                             <select @bind="m.InventoryEffect">
                                 <option value="">无</option>
                                 <option value="cargo_arrival">货物到达：写入当前任务的货物</option>
@@ -576,7 +590,8 @@
                     <div style="display:flex;flex-direction:column;gap:8px;">
                         @foreach (var e in _filteredExecLog)
                         {
-                            <button type="button" @onclick="() => ToggleExecLog(e.Id)" style="border:1px solid #1e293b;border-radius:8px;background:#0f172a;padding:10px 12px;text-align:left;color:inherit;cursor:pointer;width:100%;">
+                            <div class="exec-log-card">
+                                <button type="button" class="exec-log-summary" @onclick="() => ToggleExecLog(e.Id)" aria-expanded="@IsExecLogExpanded(e.Id)">
                                 <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
                                     <span class="badge @(e.Ok ? "badge-ok" : "badge-warn")">@(e.Ok ? "\u6210\u529f" : "\u5931\u8d25") HTTP @e.HttpCode</span>
                                     <span style="color:#cbd5e1;font-family:Consolas,monospace;font-size:0.8rem;">@e.Time</span>
@@ -586,17 +601,33 @@
                                     <span style="color:#64748b;font-size:0.8rem;flex:1;min-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="@e.Detail">@e.Detail</span>
                                     <span style="color:#94a3b8;font-size:.75rem;">@(IsExecLogExpanded(e.Id) ? "\u6536\u8d77\u8be6\u60c5" : "\u67e5\u770b\u8be6\u60c5")</span>
                                 </div>
+                                </button>
                                 @if (IsExecLogExpanded(e.Id))
                                 {
-                                    <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:10px;padding-top:10px;border-top:1px solid #1e293b;">
-                                        <div><div class="hint-text">@("\u4efb\u52a1\u4e0a\u4e0b\u6587")</div><pre style="margin:4px 0 0;white-space:pre-wrap;word-break:break-word;color:#cbd5e1;">@DetailSection(e, "context")</pre></div>
-                                        <div><div class="hint-text">@("\u6267\u884c\u524d")</div><pre style="margin:4px 0 0;white-space:pre-wrap;word-break:break-word;color:#cbd5e1;">@DetailSection(e, "before")</pre></div>
-                                        <div><div class="hint-text">@("\u5b9e\u9645\u8bf7\u6c42")</div><pre style="margin:4px 0 0;white-space:pre-wrap;word-break:break-word;color:#cbd5e1;">@DetailSection(e, "request")</pre></div>
-                                        <div><div class="hint-text">@("\u5b9e\u9645\u54cd\u5e94")</div><pre style="margin:4px 0 0;white-space:pre-wrap;word-break:break-word;color:#cbd5e1;">@DetailSection(e, "response")</pre></div>
-                                        <div style="grid-column:1/-1;"><div class="hint-text">@("\u6267\u884c\u540e")</div><pre style="margin:4px 0 0;white-space:pre-wrap;word-break:break-word;color:#cbd5e1;">@DetailSection(e, "after")</pre></div>
+                                    <div class="exec-log-detail">
+                                        <div class="exec-detail-section">
+                                            <div class="exec-detail-head"><span class="exec-detail-title">任务上下文</span><button type="button" class="exec-copy-btn @CopyButtonClass(e.Id, 'c')" @onclick="() => CopyExecSection(e, 'c')">@CopyButtonText(e.Id, 'c')</button></div>
+                                            <pre class="exec-detail-content">@DetailSection(e, "context")</pre>
+                                        </div>
+                                        <div class="exec-detail-section">
+                                            <div class="exec-detail-head"><span class="exec-detail-title">执行前</span><button type="button" class="exec-copy-btn @CopyButtonClass(e.Id, 'b')" @onclick="() => CopyExecSection(e, 'b')">@CopyButtonText(e.Id, 'b')</button></div>
+                                            <pre class="exec-detail-content">@DetailSection(e, "before")</pre>
+                                        </div>
+                                        <div class="exec-detail-section">
+                                            <div class="exec-detail-head"><span class="exec-detail-title">实际请求</span><button type="button" class="exec-copy-btn @CopyButtonClass(e.Id, 'q')" @onclick="() => CopyExecSection(e, 'q')">@CopyButtonText(e.Id, 'q')</button></div>
+                                            <pre class="exec-detail-content">@DetailSection(e, "request")</pre>
+                                        </div>
+                                        <div class="exec-detail-section">
+                                            <div class="exec-detail-head"><span class="exec-detail-title">实际响应</span><button type="button" class="exec-copy-btn @CopyButtonClass(e.Id, 'r')" @onclick="() => CopyExecSection(e, 'r')">@CopyButtonText(e.Id, 'r')</button></div>
+                                            <pre class="exec-detail-content">@DetailSection(e, "response")</pre>
+                                        </div>
+                                        <div class="exec-detail-section exec-detail-section-wide">
+                                            <div class="exec-detail-head"><span class="exec-detail-title">执行后</span><button type="button" class="exec-copy-btn @CopyButtonClass(e.Id, 'a')" @onclick="() => CopyExecSection(e, 'a')">@CopyButtonText(e.Id, 'a')</button></div>
+                                            <pre class="exec-detail-content">@DetailSection(e, "after")</pre>
+                                        </div>
                                     </div>
                                 }
-                            </button>
+                            </div>
                         }
                     </div>
                 }
@@ -1069,12 +1100,38 @@
     }
 
     private readonly HashSet<long> _expandedExecLog = [];
+    private string? _copiedExecSection;
 
     private bool IsExecLogExpanded(long id) => _expandedExecLog.Contains(id);
+    private bool IsCopied(long id, char sectionKey) => _copiedExecSection == $"{id}:{sectionKey}";
+    private string CopyButtonClass(long id, char sectionKey) => IsCopied(id, sectionKey) ? "copied" : "";
+    private string CopyButtonText(long id, char sectionKey) => IsCopied(id, sectionKey) ? "✓ 已复制" : "复制";
 
     private void ToggleExecLog(long id)
     {
         if (!_expandedExecLog.Add(id)) _expandedExecLog.Remove(id);
+    }
+
+    private async Task CopyExecSection(ModuleExecLogEntry entry, char sectionKey)
+    {
+        var section = sectionKey switch
+        {
+            'c' => "context",
+            'b' => "before",
+            'q' => "request",
+            'r' => "response",
+            'a' => "after",
+            _ => "context"
+        };
+        await Js.InvokeVoidAsync("grcsCopyText", DetailSection(entry, section));
+        _copiedExecSection = $"{entry.Id}:{sectionKey}";
+        StateHasChanged();
+        await Task.Delay(1600);
+        if (_copiedExecSection == $"{entry.Id}:{sectionKey}")
+        {
+            _copiedExecSection = null;
+            StateHasChanged();
+        }
     }
 
     private static string DetailSection(ModuleExecLogEntry entry, string section)
@@ -1083,10 +1140,67 @@
         {
             using var document = System.Text.Json.JsonDocument.Parse(entry.DetailJson);
             if (document.RootElement.TryGetProperty(section, out var value))
-                return System.Text.Json.JsonSerializer.Serialize(value, new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
+                return FormatExecDetail(value);
         }
         catch { }
         return entry.Detail;
+    }
+
+    /// <summary>
+    /// WCS 中转响应里的 body 可能是 RCS 返回的 JSON 字符串。
+    /// 将该字符串还原为嵌套 JSON，避免界面显示 \u0022 等转义字符。
+    /// </summary>
+    private static string FormatExecDetail(System.Text.Json.JsonElement value)
+    {
+        try
+        {
+            var node = System.Text.Json.Nodes.JsonNode.Parse(value.GetRawText());
+            NormalizeEmbeddedBody(node);
+            return node?.ToJsonString(new System.Text.Json.JsonSerializerOptions { WriteIndented = true }) ?? "null";
+        }
+        catch
+        {
+            return System.Text.Json.JsonSerializer.Serialize(value, new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
+        }
+    }
+
+    private static void NormalizeEmbeddedBody(System.Text.Json.Nodes.JsonNode? node)
+    {
+        switch (node)
+        {
+            case System.Text.Json.Nodes.JsonObject obj:
+                foreach (var property in obj.ToList())
+                {
+                    if (property.Key.Equals("body", StringComparison.OrdinalIgnoreCase)
+                        && property.Value is System.Text.Json.Nodes.JsonValue bodyValue
+                        && bodyValue.TryGetValue<string>(out var bodyText)
+                        && TryParseJson(bodyText, out var parsedBody))
+                    {
+                        obj[property.Key] = parsedBody;
+                    }
+
+                    NormalizeEmbeddedBody(obj[property.Key]);
+                }
+                break;
+            case System.Text.Json.Nodes.JsonArray array:
+                foreach (var item in array)
+                    NormalizeEmbeddedBody(item);
+                break;
+        }
+    }
+
+    private static bool TryParseJson(string text, out System.Text.Json.Nodes.JsonNode? node)
+    {
+        try
+        {
+            node = System.Text.Json.Nodes.JsonNode.Parse(text);
+            return node is not null;
+        }
+        catch
+        {
+            node = null;
+            return false;
+        }
     }
 
     public void Dispose()
