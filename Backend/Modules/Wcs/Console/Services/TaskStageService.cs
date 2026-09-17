@@ -24,6 +24,7 @@ public interface ITaskStageService
     void ClearAll();
     HashSet<string> FinishedTaskIds { get; }
     event Action<string>? TaskFinished;
+    event Action<string>? TaskStarted;
     event Action<string>? TaskLoadFinished;
     Task WaitFinishedAsync(string taskId, TimeSpan? timeout = null);
     /// <summary>等待 WCS 收尾完成。数据库中的 WCS_COMPLETED / WCS_FINALIZATION_FAILED 是唯一判断依据。</summary>
@@ -65,6 +66,7 @@ public class TaskStageService : ITaskStageService
     }
 
     public event Action<string>? TaskFinished;
+    public event Action<string>? TaskStarted;
     public event Action<string>? TaskLoadFinished;
 
     public void RecordCreated(List<TaskLedgerEntry> entries)
@@ -175,6 +177,7 @@ public class TaskStageService : ITaskStageService
 
         var transition = _lifecycle.ApplyStage(change.TaskId, change.Stage);
         TaskCompletionSource<bool>? finishedWaiter = null;
+        var raiseStarted = transition.Changed && transition.Current == WcsTaskState.Running;
         var raiseFinished = transition.Changed && transition.Current == WcsTaskState.Finished;
         var raiseLoadFinished = transition.Changed && transition.Current == WcsTaskState.LoadFinished;
         if (raiseFinished)
@@ -187,6 +190,7 @@ public class TaskStageService : ITaskStageService
         }
 
         _ = _hub.Clients.All.SendAsync("EventAdded", record);
+        if (raiseStarted) TaskStarted?.Invoke(change.TaskId);
         finishedWaiter?.TrySetResult(true);
         if (raiseLoadFinished) TaskLoadFinished?.Invoke(change.TaskId);
         if (raiseFinished) TaskFinished?.Invoke(change.TaskId);

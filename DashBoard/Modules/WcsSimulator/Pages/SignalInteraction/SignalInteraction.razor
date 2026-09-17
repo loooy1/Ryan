@@ -362,7 +362,6 @@
                                         <option value="Fixed">固定值</option>
                                         <option value="StartPoint">起点值</option>
                                         <option value="EndPoint">终点值</option>
-                                        <option value="TaskContainer">任务容器</option>
                                         <option value="TaskPallet">任务托盘号</option>
                                         <option value="TaskCargo">任务货物号</option>
                                         <option value="TaskWarehouse">任务仓库</option>
@@ -840,7 +839,7 @@
         if (_moduleDraft is null) return;
         var ps = _moduleDraft.Params;
         if (!ps.Any(p => p.Name == "StationCode")) ps.Add(new WorkParamDto { Name = "StationCode", Source = WorkValueSourceDto.StartPoint });
-        if (!ps.Any(p => p.Name == "ContainerCode")) ps.Add(new WorkParamDto { Name = "ContainerCode", Source = WorkValueSourceDto.TaskContainer });
+        if (!ps.Any(p => p.Name == "ContainerCode")) ps.Add(new WorkParamDto { Name = "ContainerCode", Source = WorkValueSourceDto.TaskPallet });
         if (!ps.Any(p => p.Name == "MsgTime")) ps.Add(new WorkParamDto { Name = "MsgTime", Source = WorkValueSourceDto.Now });
         if (!ps.Any(p => p.Name == "Warehouse")) ps.Add(new WorkParamDto { Name = "Warehouse", Source = WorkValueSourceDto.TaskWarehouse });
     }
@@ -852,7 +851,7 @@
         _moduleDraft.InventoryEffect = "create_return_task";
         UpsertModuleParam("TaskId", WorkValueSourceDto.ModuleContext, "returnTaskId");
         UpsertModuleParam("StationCode", WorkValueSourceDto.ModuleContext, "returnDestination");
-        UpsertModuleParam("ContainerCode", WorkValueSourceDto.TaskContainer);
+        UpsertModuleParam("ContainerCode", WorkValueSourceDto.TaskPallet);
         UpsertModuleParam("RemoveContainer", WorkValueSourceDto.JsonLiteral, "false");
         UpsertModuleParam("AreaCode", WorkValueSourceDto.Fixed, "");
         UpsertModuleParam("MsgTime", WorkValueSourceDto.Now);

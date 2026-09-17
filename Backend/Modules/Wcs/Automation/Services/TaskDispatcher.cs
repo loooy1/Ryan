@@ -40,7 +40,7 @@ public class TaskDispatcher
         var tpl = _taskTemplates.GetAll().FirstOrDefault(t => string.Equals(t.Value, step.TemplateValue, StringComparison.OrdinalIgnoreCase));
         if (tpl == null)
         {
-            Fail(roundId, tplLabel: step.TemplateValue, stepNo, "task template is missing");
+            Fail(roundId, tplLabel: step.TemplateValue, stepNo, "任务模板不存在");
             return null;
         }
 
@@ -73,7 +73,7 @@ public class TaskDispatcher
                 var startStation = stations.FirstOrDefault(s => string.Equals(s.Mark, startMark, StringComparison.OrdinalIgnoreCase));
                 if (startStation == null || (startStation.StationType & startBits) == 0)
                 {
-                    Fail(roundId, tpl.Label, stepNo, $"start station type does not match: {startMark}");
+                    Fail(roundId, tpl.Label, stepNo, $"起点站点类型不匹配：{startMark}");
                     return null;
                 }
             }
@@ -81,7 +81,7 @@ public class TaskDispatcher
             destination = ChooseDestination(tpl, stations, occupied, startMark);
             if (destination == null)
             {
-                Fail(roundId, tpl.Label, stepNo, "no destination station is available");
+                Fail(roundId, tpl.Label, stepNo, "没有可用的目标站点");
                 return null;
             }
 
@@ -95,7 +95,7 @@ public class TaskDispatcher
                 var allowChainStart = startSource != AutoStartSources.AutoSelect;
                 if (!_invStore.TryLockStorageForTask(taskId, startMark, allowChainStart))
                 {
-                    Fail(roundId, tpl.Label, stepNo, $"start storage is unavailable: {startMark}");
+                    Fail(roundId, tpl.Label, stepNo, $"起始储位不可用：{startMark}");
                     return null;
                 }
                 startStorageTaskLockMark = startMark;
@@ -105,7 +105,7 @@ public class TaskDispatcher
             if (destinationIsStorage && !_invStore.TryLockDestinationForTask(taskId, destination.Mark))
             {
                 ClearLocks(taskId, startStorageTaskLockMark, destination.Mark, destinationIsStorage);
-                Fail(roundId, tpl.Label, stepNo, $"destination storage is unavailable: {destination.Mark}");
+                Fail(roundId, tpl.Label, stepNo, $"目标储位不可用：{destination.Mark}");
                 return null;
             }
 
@@ -117,7 +117,7 @@ public class TaskDispatcher
                 if (!_invStore.TryPrepareTaskStartContainer(startMark, generated, out var inserted, out var prepareError))
                 {
                     ClearLocks(taskId, startStorageTaskLockMark, destination.Mark, destinationIsStorage);
-                    Fail(roundId, tpl.Label, stepNo, $"start container preparation failed: {prepareError}");
+                    Fail(roundId, tpl.Label, stepNo, $"起点容器准备失败：{prepareError}");
                     return null;
                 }
                 if (inserted) preparedInsertedCode = generated;
@@ -133,7 +133,7 @@ public class TaskDispatcher
                 {
                     if (preparedInsertedCode != null) _invStore.RollbackPreparedTaskStartContainer(startMark, preparedInsertedCode);
                     ClearLocks(taskId, startStorageTaskLockMark, destination.Mark, destinationIsStorage);
-                    Fail(roundId, tpl.Label, stepNo, $"start station has no movable inventory: {startMark}");
+                    Fail(roundId, tpl.Label, stepNo, $"起点站点没有可移动库存：{startMark}");
                     return null;
                 }
             }
@@ -185,7 +185,7 @@ public class TaskDispatcher
                 if (preparedInsertedCode != null) _invStore.RollbackPreparedTaskStartContainer(startMark!, preparedInsertedCode);
                 _invStore.RecyclePicked(taskUnits.Where(code => !string.Equals(code, preparedInsertedCode, StringComparison.OrdinalIgnoreCase)));
             }
-            Fail(roundId, tpl.Label, stepNo, $"dispatch failed: HTTP {result.code} {result.json[..Math.Min(result.json.Length, 200)]}");
+            Fail(roundId, tpl.Label, stepNo, $"任务下发失败：HTTP {result.code} {result.json[..Math.Min(result.json.Length, 200)]}");
             return null;
         }
 
@@ -201,14 +201,14 @@ public class TaskDispatcher
             {
                 if (!await _stage.WaitWcsCompletedAsync(taskId!))
                 {
-                    Fail(roundId, tpl.Label, stepNo, $"WCS completion failed: {taskId}");
+                    Fail(roundId, tpl.Label, stepNo, BuildCompletionFailureMessage(taskId!, tpl.Label));
                     return null;
                 }
             }
         }
         catch (Exception ex)
         {
-            Fail(roundId, tpl.Label, stepNo, $"completion wait failed: {ex.Message}");
+            Fail(roundId, tpl.Label, stepNo, $"等待 WCS 完成失败：{ex.Message}");
             return null;
         }
         return taskId;
@@ -219,14 +219,14 @@ public class TaskDispatcher
         if (source == AutoStartSources.SelectedStation)
         {
             if (!string.IsNullOrWhiteSpace(ctx.SelectedStartMark)) return ctx.SelectedStartMark;
-            Fail(roundId, tpl.Label, stepNo, "selected-start source has no selected station");
+            Fail(roundId, tpl.Label, stepNo, "已选起点模式没有选择站点");
             return null;
         }
         if (source == AutoStartSources.PreviousTaskEnd)
         {
             if (string.IsNullOrWhiteSpace(ctx.LastTaskId))
             {
-                Fail(roundId, tpl.Label, stepNo, "previous-task-end source has no previous task");
+                Fail(roundId, tpl.Label, stepNo, "上一任务终点模式没有上一任务");
                 return null;
             }
             var completed = _stage.GetAll().LastOrDefault(record =>
@@ -234,37 +234,26 @@ public class TaskDispatcher
                 && record.Stage == "WCS_COMPLETED" && record.IsSuccess);
             if (completed == null)
             {
-                Fail(roundId, tpl.Label, stepNo, "previous task has not reached WCS_COMPLETED");
+                Fail(roundId, tpl.Label, stepNo, "上一任务尚未完成 WCS 收尾");
                 return null;
             }
             return ToMapMark(completed.EndStationCode);
         }
 
-        var bits = tpl.Start?.StationTypeBits ?? 0;
-        if (bits == 0)
-        {
-            Fail(roundId, tpl.Label, stepNo, "automatic start selection requires a start type");
-            return null;
-        }
-        var availableStorage = _invStore.GetStartAvailableStorageMarks();
-        var pool = stations.Where(station => (station.StationType & bits) != 0
-            && ((station.StationType & MapStationTypeBits.StorageLocation) == 0 || availableStorage.Contains(station.Mark))).ToList();
-        if (pool.Count == 0)
-        {
-            Fail(roundId, tpl.Label, stepNo, "no matching start station is available");
-            return null;
-        }
-        return pool[Random.Shared.Next(pool.Count)].Mark;
+        Fail(roundId, tpl.Label, stepNo, "起点来源必须选择“所选库存位置”或“上一步任务终点”");
+        return null;
     }
 
     private static string ResolveStartSource(AutoStepDto step, ExecCtx ctx)
     {
-        if (step.StartSource is AutoStartSources.SelectedStation or AutoStartSources.PreviousTaskEnd or AutoStartSources.AutoSelect)
+        if (step.StartSource is AutoStartSources.SelectedStation or AutoStartSources.PreviousTaskEnd)
             return step.StartSource;
         // Existing saved templates remain usable until they are opened and saved in the new editor.
         if (step.UsePickedStart)
             return string.IsNullOrWhiteSpace(ctx.LastTaskId) ? AutoStartSources.SelectedStation : AutoStartSources.PreviousTaskEnd;
-        return AutoStartSources.AutoSelect;
+        return string.IsNullOrWhiteSpace(ctx.SelectedStartMark)
+            ? (string.IsNullOrWhiteSpace(ctx.LastTaskId) ? AutoStartSources.SelectedStation : AutoStartSources.PreviousTaskEnd)
+            : AutoStartSources.SelectedStation;
     }
 
     private static string NormalizeContainerMode(string? mode, bool needsContainer)
@@ -284,6 +273,53 @@ public class TaskDispatcher
     {
         _log.Add(roundId, $"\u6b65\u9aa4 {stepNo} \u6a21\u677f[{tplLabel}] {message}", "#f87171");
         _log.AddOrUpdate("[\u6a21\u677f\u6b65\u9aa4\u5931\u8d25]", $"\u6a21\u677f\u300c{tplLabel}\u300d\uff1a{message}", "#f87171");
+    }
+
+    private string BuildCompletionFailureMessage(string taskId, string templateLabel)
+    {
+        var events = _stage.GetAll()
+            .Where(record => string.Equals(record.TaskId, taskId, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
+        var reason = events.LastOrDefault(record =>
+            record.Stage.StartsWith("WCS_FINALIZATION_REASON:", StringComparison.OrdinalIgnoreCase))?.Stage;
+        if (!string.IsNullOrWhiteSpace(reason))
+        {
+            var detail = reason["WCS_FINALIZATION_REASON:".Length..].Trim();
+            return $"WCS收尾失败：{TranslateCompletionReason(detail)}，任务号：{taskId}";
+        }
+
+        if (events.Any(record => record.Stage == "SORTING_SLOT_ASSIGN_FAILED"))
+            return $"分拣失败：没有可用的分拣台，请先关联分拣台，任务号：{taskId}";
+
+        var inventoryFailure = events.LastOrDefault(record =>
+            record.Stage.StartsWith("INVENTORY_RELEASE_FAILED:", StringComparison.OrdinalIgnoreCase))?.Stage;
+        if (!string.IsNullOrWhiteSpace(inventoryFailure))
+        {
+            var detail = inventoryFailure["INVENTORY_RELEASE_FAILED:".Length..].Trim();
+            return $"库存收尾失败：{TranslateCompletionReason(detail)}，任务号：{taskId}";
+        }
+
+        var effectFailure = events.LastOrDefault(record =>
+            record.Stage.StartsWith("EFFECT_CONFIGURATION:", StringComparison.OrdinalIgnoreCase)
+            || record.Stage.StartsWith("PRE_EFFECT:", StringComparison.OrdinalIgnoreCase)
+            || record.Stage.StartsWith("POST_EFFECT:", StringComparison.OrdinalIgnoreCase))?.Stage;
+        if (!string.IsNullOrWhiteSpace(effectFailure))
+            return $"{templateLabel}执行后的库存效果处理失败，任务号：{taskId}";
+
+        return $"WCS收尾失败：WCS未能确认任务成功完成，任务号：{taskId}";
+    }
+
+    private static string TranslateCompletionReason(string reason)
+    {
+        if (string.IsNullOrWhiteSpace(reason)) return "未提供具体原因";
+        return reason switch
+        {
+            "终点库存收尾失败" => "终点库存处理失败",
+            "终点后模块或库存效果失败" => "终点后的模块或库存效果处理失败",
+            "NO_TRANSIT" => "找不到运输中的库存记录",
+            _ => reason
+        };
     }
 
     private static MapStationLite? ChooseDestination(TaskTemplateDto tpl, List<MapStationLite> stations, HashSet<string> occupied, string? excludeMark)

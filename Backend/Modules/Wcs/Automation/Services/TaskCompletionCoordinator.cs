@@ -8,7 +8,7 @@ using WCSBackend.Modules.Wcs.Infrastructure;
 namespace WCSBackend.Modules.Wcs.Automation.Services;
 
 /// <summary>
-/// 统一监管任务阶段副作用：LOAD_FINISH 推进库存，FINISHED 释放自动化任务资源，
+/// 统一监管任务阶段副作用：回库任务 START/LOAD_FINISH 推进库存，FINISHED 释放自动化任务资源，
 /// 非自动化任务在 FINISHED 后执行终点模块。队列为进程内队列，当前不承担重启恢复。
 /// </summary>
 public sealed class TaskCompletionCoordinator : BackgroundService
@@ -96,6 +96,7 @@ public sealed class TaskCompletionCoordinator : BackgroundService
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         _stage.TaskLoadFinished += OnLoadFinished;
+        _stage.TaskStarted += OnStarted;
         _stage.TaskFinished += OnFinished;
         try
         {
@@ -108,6 +109,7 @@ public sealed class TaskCompletionCoordinator : BackgroundService
         finally
         {
             _stage.TaskLoadFinished -= OnLoadFinished;
+            _stage.TaskStarted -= OnStarted;
             _stage.TaskFinished -= OnFinished;
         }
     }
@@ -120,6 +122,9 @@ public sealed class TaskCompletionCoordinator : BackgroundService
             {
                 switch (work.Kind)
                 {
+                    case WorkKind.ReturnStarted:
+                        _inventory.OnTaskLoadFinished(work.TaskId);
+                        break;
                     case WorkKind.LoadFinished:
                         _inventory.OnTaskLoadFinished(work.TaskId);
                         break;
@@ -137,6 +142,14 @@ public sealed class TaskCompletionCoordinator : BackgroundService
 
     private void OnLoadFinished(string taskId)
         => _lifecycleChannel.Writer.TryWrite(new WorkItem(WorkKind.LoadFinished, taskId));
+
+    private void OnStarted(string taskId)
+    {
+        var created = _stage.GetAll().LastOrDefault(record =>
+            record.IsCreated && string.Equals(record.TaskId, taskId, StringComparison.OrdinalIgnoreCase));
+        if (created != null && string.Equals(created.TaskType, "RCS_RETURN", StringComparison.OrdinalIgnoreCase))
+            _lifecycleChannel.Writer.TryWrite(new WorkItem(WorkKind.ReturnStarted, taskId));
+    }
 
     private void OnFinished(string taskId)
         => QueueCompletion(taskId);
@@ -206,7 +219,19 @@ public sealed class TaskCompletionCoordinator : BackgroundService
                 return;
             }
 
+            // 分拣任务的库存收尾已经完成，但其执行后动作可能创建了一个
+            // RCS 回库任务。此时先进入等待状态，等回库任务完成后再补写
+            // 分拣任务的最终 WCS_COMPLETED。
+            var returnTaskId = FindReturnTaskId(taskId);
+            if (!string.IsNullOrWhiteSpace(returnTaskId))
+            {
+                _stage.TryRecordSystemEvent(taskId, "WCS_WAITING_RETURN", true, 0);
+                _logger.LogInformation("WCS 分拣任务等待回库：{TaskId} -> {ReturnTaskId}", taskId, returnTaskId);
+                return;
+            }
+
             _stage.TryRecordSystemEvent(taskId, "WCS_COMPLETED", true, 0);
+            CompleteParentAfterReturn(taskId, true, "");
             _logger.LogInformation("WCS 任务完成：{TaskId} -> {Destination}", taskId,
                 sorting.IsSortingParent && sorting.Success ? sorting.DestinationMark : reservation.DestinationMark);
         }
@@ -250,8 +275,51 @@ public sealed class TaskCompletionCoordinator : BackgroundService
 
     private void FinalizationFailed(string taskId, string reason)
     {
+        if (!string.IsNullOrWhiteSpace(reason))
+            _stage.TryRecordSystemEvent(taskId, $"WCS_FINALIZATION_REASON:{reason}", false, 0);
         _stage.TryRecordSystemEvent(taskId, "WCS_FINALIZATION_FAILED", false, 0);
+        CompleteParentAfterReturn(taskId, false, reason);
         _logger.LogWarning("WCS 任务收尾失败：{TaskId} {Reason}", taskId, reason);
+    }
+
+    private string? FindReturnTaskId(string taskId)
+    {
+        var parent = _stage.GetAll().LastOrDefault(record =>
+            record.IsCreated
+            && string.Equals(record.TaskId, taskId, StringComparison.OrdinalIgnoreCase)
+            && string.Equals(record.TaskType, "SORTING", StringComparison.OrdinalIgnoreCase));
+        if (parent == null) return null;
+
+        var returnTaskId = taskId + "_R";
+        return _stage.GetAll().Any(record => record.IsCreated
+            && string.Equals(record.TaskId, returnTaskId, StringComparison.OrdinalIgnoreCase))
+            ? returnTaskId : null;
+    }
+
+    private void CompleteParentAfterReturn(string taskId, bool success, string reason)
+    {
+        if (!taskId.EndsWith("_R", StringComparison.OrdinalIgnoreCase)) return;
+        var parentId = taskId[..^2];
+        var parent = _stage.GetAll().LastOrDefault(record =>
+            record.IsCreated
+            && string.Equals(record.TaskId, parentId, StringComparison.OrdinalIgnoreCase)
+            && string.Equals(record.TaskType, "SORTING", StringComparison.OrdinalIgnoreCase));
+        if (parent == null) return;
+
+        var parentEvents = _stage.GetAll()
+            .Where(record => string.Equals(record.TaskId, parentId, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        if (!parentEvents.Any(record => record.Stage == "WCS_WAITING_RETURN")) return;
+        if (parentEvents.Any(record => record.Stage == "WCS_COMPLETED" || record.Stage == "WCS_FINALIZATION_FAILED")) return;
+
+        if (success)
+            _stage.TryRecordSystemEvent(parentId, "WCS_COMPLETED", true, 0);
+        else
+        {
+            var detail = string.IsNullOrWhiteSpace(reason) ? "回库任务收尾失败" : $"回库任务失败：{reason}";
+            _stage.TryRecordSystemEvent(parentId, $"WCS_FINALIZATION_REASON:{detail}", false, 0);
+            _stage.TryRecordSystemEvent(parentId, "WCS_FINALIZATION_FAILED", false, 0);
+        }
     }
 
     private void ResumeUnfinishedFinalizations()
@@ -269,5 +337,5 @@ public sealed class TaskCompletionCoordinator : BackgroundService
 
     private sealed record Reservation(string? StartStorageTaskLockMark, string DestinationMark, bool Active);
     private readonly record struct WorkItem(WorkKind Kind, string TaskId);
-    private enum WorkKind { LoadFinished, CompleteReservation }
+    private enum WorkKind { ReturnStarted, LoadFinished, CompleteReservation }
 }

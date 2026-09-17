@@ -649,6 +649,7 @@ input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 18px;
 }
 .stage-dot.dot-start { background: #38bdf8; box-shadow: 0 0 6px #38bdf880; }
 .stage-dot.dot-load { background: #a78bfa; box-shadow: 0 0 6px #a78bfa80; }
+.stage-dot.dot-module { background: #fbbf24; box-shadow: 0 0 6px #fbbf2480; }
 .stage-dot.dot-finished { background: #4ade80; box-shadow: 0 0 6px #4ade8080; }
 .stage-dot.dot-other { background: #fbbf24; }
 

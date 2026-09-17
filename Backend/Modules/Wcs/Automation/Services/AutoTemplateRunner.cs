@@ -331,6 +331,20 @@ public class AutoTemplateRunner : IHostedService
 
         var poolLock = new object();
 
+        async Task RefreshInventoryPools()
+        {
+            var snapshot = await _invCoord.SnapshotAsync(roundId);
+            lock (poolLock)
+            {
+                emptyPallets.Clear();
+                emptyPallets.AddRange(snapshot.Empty);
+                loadedPallets.Clear();
+                loadedPallets.AddRange(snapshot.Loaded);
+                cargos.Clear();
+                cargos.AddRange(snapshot.Cargo);
+            }
+        }
+
         async Task RunOne(AutoTemplateDto tpl, int k, string childId, TaskDispatcher.ExecCtx? chainCtx = null)
         {
             var name = tpl.Name;
@@ -360,6 +374,9 @@ public class AutoTemplateRunner : IHostedService
                         _log.Add(childId, $"▶ 步骤 {stepNo}：{desc}", "#38bdf8");
                         if (step.Kind == AutoStepKinds.PickPallet)
                         {
+                            // 每个选库存步骤使用最新的 WCS 储位状态，避免前面任务
+                            // 完成后新产生的库存仍被旧快照隐藏。
+                            await RefreshInventoryPools();
                             InvItem? pick;
                             lock (poolLock)
                             {
@@ -382,6 +399,7 @@ public class AutoTemplateRunner : IHostedService
                         }
                         else if (step.Kind == AutoStepKinds.PickCargo)
                         {
+                            await RefreshInventoryPools();
                             InvItem? pick;
                             lock (poolLock)
                             {
@@ -398,6 +416,7 @@ public class AutoTemplateRunner : IHostedService
                         }
                         else if (step.Kind == AutoStepKinds.PickLoadedPallet)
                         {
+                            await RefreshInventoryPools();
                             InvItem? pick;
                             lock (poolLock)
                             {

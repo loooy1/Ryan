@@ -224,7 +224,7 @@ public class ModuleRunService
 
             if (!ok)
             {
-                try { _effects.HandleFailed(ctx, module.PreExecutionEffect); }
+                try { _effects.HandleFailed(ctx, module.PreExecutionEffect, code); }
                 catch (Exception ex) { effectException ??= ex.Message; }
                 allOk = false;
             }

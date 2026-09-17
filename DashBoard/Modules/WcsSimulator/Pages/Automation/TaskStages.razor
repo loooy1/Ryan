@@ -375,6 +375,7 @@
             if (evts.Any(x => x.Stage is "CANCELLED" or "DISPATCH_FAILED")) return "失败";
             if (evts.Any(x => x.Stage == "WCS_FINALIZATION_FAILED")) return "收尾失败";
             if (evts.Any(x => x.Stage == "WCS_COMPLETED" && x.StageStatus == TaskStageStatuses.Success)) return "WCS任务完成";
+            if (evts.Any(x => x.Stage == "WCS_WAITING_RETURN")) return "等待回库";
             if (evts.Any(x => x.Stage == "FINISHED")) return "WCS收尾中";
             if (evts.Any(x => x.Stage == "START" || x.Stage == "LOAD_FINISH"
                 || x.Stage.StartsWith("TRANSIT:", StringComparison.OrdinalIgnoreCase)
@@ -528,11 +529,16 @@
         if (string.Equals(stage, "FINISHED", comparison)) return "RCS任务完成";
         if (string.Equals(stage, "WCS_FINALIZING", comparison)) return "WCS任务收尾中";
         if (string.Equals(stage, "WCS_INVENTORY_FINALIZED", comparison)) return "WCS终点库存收尾完成";
+        if (string.Equals(stage, "WCS_WAITING_RETURN", comparison)) return "等待回库任务完成";
         if (string.Equals(stage, "WCS_COMPLETED", comparison)) return "WCS任务完成";
         if (string.Equals(stage, "WCS_FINALIZATION_FAILED", comparison)) return "WCS任务收尾失败";
+        if (stage.StartsWith("WCS_FINALIZATION_REASON:", comparison)) return "WCS收尾原因：" + stage["WCS_FINALIZATION_REASON:".Length..];
+        if (stage.StartsWith("SORTING_SLOT_ASSIGNED:", comparison)) return "已分配实际分拣台：" + stage["SORTING_SLOT_ASSIGNED:".Length..];
         if (string.Equals(stage, "CANCELLED", comparison)) return "任务取消";
         if (string.Equals(stage, "DISPATCH_FAILED", comparison)) return "下发失败";
         if (string.Equals(stage, "RETURN_TASK_REGISTERED", comparison)) return "RCS回库任务已登记";
+        if (string.Equals(stage, "RETURN_TASK_PREPARED", comparison)) return "回库任务已预登记";
+        if (string.Equals(stage, "DISPATCH_UNKNOWN", comparison)) return "下发结果未知，等待确认";
         if (stage.StartsWith("PRE_EFFECT:", comparison)) return "模块执行前效果：" + stage["PRE_EFFECT:".Length..];
         if (stage.StartsWith("EFFECT_CONFIGURATION:", comparison)) return "模块效果配置错误：" + stage["EFFECT_CONFIGURATION:".Length..];
         if (stage.StartsWith("BEFORE_MODULE:", comparison)) return "起点前模块：" + stage["BEFORE_MODULE:".Length..];
@@ -569,27 +575,34 @@
     private static string StageBadgeClass(string s)
     {
         if (s is "CANCELLED" or "DISPATCH_FAILED" or "WCS_FINALIZATION_FAILED" || s.StartsWith("INVENTORY_RELEASE_FAILED:", StringComparison.OrdinalIgnoreCase) || s.StartsWith("EFFECT_CONFIGURATION:", StringComparison.OrdinalIgnoreCase)) return "badge-danger";
-        if (s == "WCS_COMPLETED" || s == "RETURN_TASK_REGISTERED") return "badge-ok";
-        if (s == "FINISHED" || s == "WCS_FINALIZING" || s == "WCS_INVENTORY_FINALIZED") return "badge-selected";
-        if (s == "LOAD_FINISH" || s.StartsWith("TRANSIT:", StringComparison.OrdinalIgnoreCase)) return "badge-selected";
-        if (s == "START" || s == "DISPATCHED" || s.StartsWith("BEFORE_MODULE:", StringComparison.OrdinalIgnoreCase)) return "badge-info";
-        if (s.StartsWith("PRE_EFFECT:", StringComparison.OrdinalIgnoreCase)
+        if (s == "DISPATCH_UNKNOWN") return "badge-warn";
+        if (s is "CREATED" or "WCS_FINALIZING" or "WCS_INVENTORY_FINALIZED" or "WCS_WAITING_RETURN" or "WCS_COMPLETED"
+            || s.StartsWith("SORTING_SLOT_ASSIGNED:", StringComparison.OrdinalIgnoreCase)
+            || s.StartsWith("WCS_FINALIZATION_REASON:", StringComparison.OrdinalIgnoreCase)) return "badge-selected";
+        if (s is "START" or "LOAD_FINISH" or "FINISHED" || s.StartsWith("TRANSIT:", StringComparison.OrdinalIgnoreCase)
+            || s == "DISPATCHED") return "badge-info";
+        if (s is "RETURN_TASK_PREPARED" or "RETURN_TASK_REGISTERED"
+            || s.StartsWith("PRE_EFFECT:", StringComparison.OrdinalIgnoreCase)
+            || s.StartsWith("BEFORE_MODULE:", StringComparison.OrdinalIgnoreCase)
             || s.StartsWith("AFTER_START_MODULE:", StringComparison.OrdinalIgnoreCase)
             || s.StartsWith("AFTER_END_MODULE:", StringComparison.OrdinalIgnoreCase)
-            || s.StartsWith("INVENTORY_EFFECT:", StringComparison.OrdinalIgnoreCase)) return "badge-selected";
+            || s.StartsWith("INVENTORY_EFFECT:", StringComparison.OrdinalIgnoreCase)) return "badge-warn";
         return "badge-empty";
     }
 
     private static string StageDotClass(string s)
     {
         if (s is "CANCELLED" or "DISPATCH_FAILED" or "WCS_FINALIZATION_FAILED" || s.StartsWith("INVENTORY_RELEASE_FAILED:", StringComparison.OrdinalIgnoreCase) || s.StartsWith("EFFECT_CONFIGURATION:", StringComparison.OrdinalIgnoreCase)) return "dot-other";
-        if (s == "WCS_COMPLETED" || s == "RETURN_TASK_REGISTERED") return "dot-finished";
-        if (s == "FINISHED" || s == "WCS_FINALIZING" || s == "WCS_INVENTORY_FINALIZED") return "dot-load";
-        if (s == "LOAD_FINISH" || s.StartsWith("TRANSIT:", StringComparison.OrdinalIgnoreCase)
+        if (s is "CREATED" or "WCS_FINALIZING" or "WCS_INVENTORY_FINALIZED" or "WCS_WAITING_RETURN" or "WCS_COMPLETED"
+            || s.StartsWith("SORTING_SLOT_ASSIGNED:", StringComparison.OrdinalIgnoreCase)
+            || s.StartsWith("WCS_FINALIZATION_REASON:", StringComparison.OrdinalIgnoreCase)) return "dot-load";
+        if (s is "START" or "LOAD_FINISH" or "FINISHED" or "DISPATCHED" || s.StartsWith("TRANSIT:", StringComparison.OrdinalIgnoreCase)) return "dot-start";
+        if (s is "RETURN_TASK_PREPARED" or "RETURN_TASK_REGISTERED"
             || s.StartsWith("PRE_EFFECT:", StringComparison.OrdinalIgnoreCase)
+            || s.StartsWith("BEFORE_MODULE:", StringComparison.OrdinalIgnoreCase)
             || s.StartsWith("AFTER_START_MODULE:", StringComparison.OrdinalIgnoreCase)
             || s.StartsWith("AFTER_END_MODULE:", StringComparison.OrdinalIgnoreCase)
-            || s.StartsWith("INVENTORY_EFFECT:", StringComparison.OrdinalIgnoreCase)) return "dot-load";
+            || s.StartsWith("INVENTORY_EFFECT:", StringComparison.OrdinalIgnoreCase)) return "dot-module";
         return "dot-start";
     }
 }

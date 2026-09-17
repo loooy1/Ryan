@@ -216,12 +216,11 @@
                                             <input class="step-label" @bind="step.Label" placeholder="步骤备注(可选)" />
                                             @if (step.Kind == "RunTemplate")
                                             {
-                                                <label class="step-toggle" title="&#x8d77;&#x70b9;&#x4ece;&#x9009;&#x4e2d;&#x7ad9;&#x70b9;&#x3001;&#x524d;&#x7f6e;&#x4efb;&#x52a1;&#x7ec8;&#x70b9;&#x6216;&#x6a21;&#x677f;&#x7c7b;&#x578b;&#x81ea;&#x52a8;&#x9009;&#x70b9;&#x83b7;&#x53d6;&#x3002;">
+                                                <label class="step-toggle" title="&#x8d77;&#x70b9;&#x4f7f;&#x7528;&#x524d;&#x4e00;&#x6b65;&#x9009;&#x4e2d;&#x7684;&#x5e93;&#x5b58;&#x4f4d;&#x7f6e;&#x6216;&#x4e0a;&#x4e00;&#x6761;&#x4efb;&#x52a1;&#x7684;&#x7ec8;&#x70b9;&#x3002;">
                                                     <span class="step-toggle-text">&#x8d77;&#x70b9;&#x6765;&#x6e90;</span>
                                                     <select class="step-sub" style="width:auto;margin-left:6px;" @bind="step.StartSource">
-                                                        <option value="selected_station">&#x9009;&#x4e2d;&#x7ad9;&#x70b9;</option>
-                                                        <option value="previous_task_end">&#x524d;&#x7f6e;&#x4efb;&#x52a1;&#x7ec8;&#x70b9;</option>
-                                                        <option value="auto_select">&#x6309;&#x7c7b;&#x578b;&#x81ea;&#x52a8;&#x9009;&#x70b9;</option>
+                                                        <option value="selected_station">&#x6240;&#x9009;&#x5e93;&#x5b58;&#x4f4d;&#x7f6e;</option>
+                                                        <option value="previous_task_end">&#x4e0a;&#x4e00;&#x6b65;&#x4efb;&#x52a1;&#x7ec8;&#x70b9;</option>
                                                     </select>
                                                 </label>
                                             }
@@ -960,7 +959,9 @@
             {
                 var source = s.StartSource;
                 if (string.IsNullOrWhiteSpace(source))
-                    source = s.UsePickedStart ? (sawTask ? AutoStartSources.PreviousTaskEnd : AutoStartSources.SelectedStation) : AutoStartSources.AutoSelect;
+                    source = s.UsePickedStart ? (sawTask ? AutoStartSources.PreviousTaskEnd : AutoStartSources.SelectedStation) : AutoStartSources.SelectedStation;
+                if (source == AutoStartSources.AutoSelect)
+                    source = sawTask ? AutoStartSources.PreviousTaskEnd : AutoStartSources.SelectedStation;
                 if (s.Kind == AutoStepKinds.RunTemplate) sawTask = true;
                 return new AutoStepDto
                 {

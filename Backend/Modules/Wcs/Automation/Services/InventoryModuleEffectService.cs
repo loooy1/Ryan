@@ -11,11 +11,13 @@ namespace WCSBackend.Modules.Wcs.Automation.Services;
 public sealed class ModuleEffectService
 {
     private readonly WcsInventoryStore _inventory;
+    private readonly MapStoreService _map;
     private readonly ITaskStageService _stages;
 
-    public ModuleEffectService(WcsInventoryStore inventory, ITaskStageService stages)
+    public ModuleEffectService(WcsInventoryStore inventory, MapStoreService map, ITaskStageService stages)
     {
         _inventory = inventory;
+        _map = map;
         _stages = stages;
     }
 
@@ -64,12 +66,19 @@ public sealed class ModuleEffectService
         return true;
     }
 
-    public void HandleFailed(ModuleRunService.ModuleCtx ctx, string? effect)
+    public void HandleFailed(ModuleRunService.ModuleCtx ctx, string? effect, int statusCode = 0)
     {
         var normalized = effect?.Trim().ToLowerInvariant() ?? ModulePreExecutionEffects.None;
         if (normalized != ModulePreExecutionEffects.PrepareReturnTask) return;
 
         var returnTaskId = GetReturnTaskId(ctx);
+        if (statusCode > 0)
+            _stages.TryRecordSystemEvent(returnTaskId, "DISPATCH_FAILED", false, statusCode);
+        else
+            _stages.TryRecordSystemEvent(returnTaskId, "DISPATCH_UNKNOWN", false, 0);
+
+        // 明确失败可以释放目标储位；状态未知时保留锁，避免 RCS 已接收任务而被重复下发。
+        if (statusCode <= 0) return;
         foreach (var slot in _inventory.Slots().Where(slot =>
                      string.Equals(slot.TaskLockId, returnTaskId, StringComparison.OrdinalIgnoreCase)
                      && string.Equals(slot.SelectionStatus, WcsInventoryStore.SelectionTaskEndLocked,
@@ -101,6 +110,9 @@ public sealed class ModuleEffectService
 
         var registered = _stages.GetAll().Any(record => record.IsCreated
             && string.Equals(record.TaskId, returnTaskId, StringComparison.OrdinalIgnoreCase));
+        if (_stages.GetAll().Any(record => string.Equals(record.TaskId, returnTaskId, StringComparison.OrdinalIgnoreCase)
+            && record.Stage == "DISPATCH_UNKNOWN"))
+            return false;
         var locked = _inventory.Slots().Where(slot =>
                 string.Equals(slot.TaskLockId, returnTaskId, StringComparison.OrdinalIgnoreCase)
                 && string.Equals(slot.SelectionStatus, WcsInventoryStore.SelectionTaskEndLocked,
@@ -134,8 +146,30 @@ public sealed class ModuleEffectService
         }
 
         ctx.SetContext("returnTaskId", returnTaskId);
-        ctx.SetContext("returnDestination", destination);
-        ctx.SetContext("returnTaskRegistered", registered ? "true" : "false");
+        // Inventory uses the bare map mark for locking; the module StationCode
+        // must use the dispatch/WCS code with its layer suffix (storage -> _1,
+        // transfer/sorting -> _0).
+        ctx.SetContext("returnDestination", ToWcsStationCode(destination));
+        ctx.SetContext("returnTaskRegistered", "false");
+        if (!registered)
+        {
+            _stages.RecordCreated([
+                new TaskLedgerEntry
+                {
+                    TaskId = returnTaskId,
+                    TaskType = "RCS_RETURN",
+                    ContainerCode = ctx.Pallet,
+                    CargoCode = ctx.Cargo,
+                    StartStationCode = ToMapMark(ctx.End),
+                    EndStationCode = ToMapMark(destination),
+                    Warehouse = ctx.Warehouse,
+                    Time = DateTime.Now.ToString("O"),
+                    Ok = true,
+                    StatusCode = 0,
+                }
+            ]);
+            _stages.TryRecordSystemEvent(returnTaskId, "RETURN_TASK_PREPARED", true, 0);
+        }
         return true;
     }
 
@@ -145,7 +179,12 @@ public sealed class ModuleEffectService
         var destination = ctx.GetContext("returnDestination");
         if (string.IsNullOrWhiteSpace(returnTaskId) || string.IsNullOrWhiteSpace(destination)) return false;
         if (_stages.GetAll().Any(record => record.IsCreated
-            && string.Equals(record.TaskId, returnTaskId, StringComparison.OrdinalIgnoreCase))) return true;
+            && string.Equals(record.TaskId, returnTaskId, StringComparison.OrdinalIgnoreCase)))
+        {
+            _stages.TryRecordSystemEvent(returnTaskId, "RETURN_TASK_REGISTERED", true, 200);
+            ctx.SetContext("returnTaskRegistered", "true");
+            return true;
+        }
 
         _stages.RecordCreated([
             new TaskLedgerEntry
@@ -171,6 +210,22 @@ public sealed class ModuleEffectService
         => ctx.GetContext("returnTaskId") is { Length: > 0 } prepared
             ? prepared
             : ctx.TaskId + "_R";
+
+    private string ToWcsStationCode(string mark)
+    {
+        if (string.IsNullOrWhiteSpace(mark)) return "";
+        var raw = ToMapMark(mark);
+        var station = _map.GetStations().FirstOrDefault(s =>
+            string.Equals(s.Mark, raw, StringComparison.OrdinalIgnoreCase));
+        if (station == null) return mark;
+
+        const int storage = MapStationTypeBits.StorageLocation;
+        const int vehicleLayer = MapStationTypeBits.TransferPoint
+            | MapStationTypeBits.PickingStation | MapStationTypeBits.PeopleStation;
+        if ((station.StationType & storage) != 0) return raw + "_1";
+        if ((station.StationType & vehicleLayer) != 0) return raw + "_0";
+        return raw;
+    }
 
     private static bool HasParameter(FeatureModuleDto module, string name)
         => module.Params.Any(parameter => string.Equals(parameter.Name?.Trim(), name, StringComparison.OrdinalIgnoreCase));

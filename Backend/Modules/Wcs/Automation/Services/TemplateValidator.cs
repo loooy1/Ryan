@@ -61,8 +61,6 @@ public class TemplateValidator
                 if (endBits != 0 && !HasType(endBits))
                     errors.Add($"Template [{template.Name}] step {i + 1} ({taskTemplate.Label}): no destination type exists in the selection range");
                 var startBits = taskTemplate.Start?.StationTypeBits ?? 0;
-                if (startSource == AutoStartSources.AutoSelect && startBits != 0 && !HasType(startBits))
-                    errors.Add($"Template [{template.Name}] step {i + 1} ({taskTemplate.Label}): no start type exists in the selection range");
                 if (startSource == AutoStartSources.PreviousTaskEnd && startBits != 0 && previousTask != null)
                 {
                     var previousEndBits = previousTask.End?.StationTypeBits ?? 0;
@@ -77,11 +75,13 @@ public class TemplateValidator
 
     private static string ResolveStartSource(AutoStepDto step, bool hasPreviousTask)
     {
-        if (step.StartSource is AutoStartSources.SelectedStation or AutoStartSources.PreviousTaskEnd or AutoStartSources.AutoSelect)
+        if (step.StartSource == AutoStartSources.SelectedStation || step.StartSource == AutoStartSources.PreviousTaskEnd)
             return step.StartSource;
+        if (step.StartSource == AutoStartSources.AutoSelect)
+            return hasPreviousTask ? AutoStartSources.PreviousTaskEnd : AutoStartSources.SelectedStation;
         return step.UsePickedStart
             ? (hasPreviousTask ? AutoStartSources.PreviousTaskEnd : AutoStartSources.SelectedStation)
-            : AutoStartSources.AutoSelect;
+            : (hasPreviousTask ? AutoStartSources.PreviousTaskEnd : AutoStartSources.SelectedStation);
     }
 
     public string TaskTemplateLabel(string value)
