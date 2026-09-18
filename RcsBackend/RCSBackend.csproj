@@ -9,6 +9,9 @@
   <ItemGroup>
     <ProjectReference Include="..\Contracts\Contracts.csproj" />
     <ProjectReference Include="..\Shared\Backend.Shared.csproj" />
+    <ProjectReference Include="..\Rcs.Contracts\Rcs.Contracts.csproj" />
+    <ProjectReference Include="..\Rcs.Algorithms\Rcs.Algorithms.csproj" />
+    <ProjectReference Include="..\Rcs.VirtualVehicle\Rcs.VirtualVehicle.csproj" />
   </ItemGroup>
 
   <ItemGroup>

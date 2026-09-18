@@ -31,6 +31,8 @@ public static class WcsModuleExtensions
         services.AddSingleton<MockRuleStore>();
         services.AddSingleton<MockApprovalService>();
         services.AddSingleton<ModuleExecutionLogStore>();
+        services.AddSingleton<Realtime.AutomationRealtimePublisher>();
+        services.AddHostedService(sp => sp.GetRequiredService<Realtime.AutomationRealtimePublisher>());
         services.AddSingleton<GrcsHttpClient>();
         // WCS 鑷寔搴撳瓨璐︽湰锛堣嚜鍔ㄥ寲閫夋睜/鍗犵敤/閲婃斁鍞竴浜嬪疄婧愶紝SQLite 鎸佷箙鍖栵級
         services.AddSingleton<WcsInventoryStore>();

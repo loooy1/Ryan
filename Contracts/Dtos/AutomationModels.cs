@@ -80,11 +80,14 @@ public class RangeConfigDto
     public int FloorFilter { get; set; }
     public List<string> Marks { get; set; } = [];
 
-    /// <summary>按范围限制过滤候选站点池（楼层 + Mark 白名单，AND 关系）。</summary>
+    /// <summary>按范围限制过滤候选站点池（仅启用且非实际分拣台站点；楼层 + Mark 白名单，AND 关系）。</summary>
     public List<MapStationLite> ApplyTo(IEnumerable<MapStationLite> stations)
     {
-        if (!Enabled) return stations.ToList();
-        IEnumerable<MapStationLite> pool = stations;
+        // 实际分拣台由人工分拣台关联后在任务完成时落位，不能作为范围选点。
+        // StaEnable 是任务候选资格，不应由每个调用方自行补过滤。
+        IEnumerable<MapStationLite> pool = stations.Where(s => s.StaEnable
+            && (s.StationType & MapStationTypeBits.PickingStation) == 0);
+        if (!Enabled) return pool.ToList();
         if (FloorFilter != 0) pool = pool.Where(s => s.Floor == FloorFilter);
         if (Marks.Count > 0)
         {

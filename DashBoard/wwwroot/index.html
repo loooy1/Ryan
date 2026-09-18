@@ -161,6 +161,16 @@
 
         // generic localStorage helpers
         window.grcsStoreSave = (key, json) => localStorage.setItem(key, json);
+        window.grcsStoreListen = (dotNetRef) => {
+            window.__grcsStoreListener = dotNetRef;
+            if (window.__grcsStoreListenerInstalled) return;
+            window.__grcsStoreListenerInstalled = true;
+            window.addEventListener('storage', (e) => {
+                if (e.key && window.__grcsStoreListener) {
+                    window.__grcsStoreListener.invokeMethodAsync('OnStorageChanged', e.key, e.newValue).catch(() => {});
+                }
+            });
+        };
         // batch load: pass JSON array of keys → returns JSON object {key: value, ...}
         window.grcsStoreLoadAll = (keysJson) => {
             let keys = [];

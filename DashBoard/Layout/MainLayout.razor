@@ -43,6 +43,12 @@
             <span class="nav-label">WCS模拟器</span>
         </button>
 
+        <button class="nav-btn @(Nav.ActiveFeature == "rcs" ? "active" : "")"
+                @onclick="SelectRcs" title="RCS模拟器">
+            <span class="nav-icon">◇</span>
+            <span class="nav-label">RCS模拟器</span>
+        </button>
+
         @* 以后新增功能在这里加 <button> *@
 
         <div class="sidebar-spacer"></div>
@@ -73,7 +79,10 @@
                         @item.Label
                     </NavLink>
                 }
-                <BackendStatus />
+                @if (Nav.ActiveFeature == "wcs")
+                {
+                    <BackendStatus />
+                }
             </div>
         </nav>
     }
@@ -87,7 +96,10 @@
     </main>
 
     @* 全局连接告警弹窗（WcsApiClient 检测到 WCS/GRCS 后端未连接时由本组件弹出）*@
-    <ConnectionAlert />
+    @if (Nav.ActiveFeature == "wcs")
+    {
+        <ConnectionAlert />
+    }
 </div>
 
 @code {
@@ -95,11 +107,11 @@
     protected override async Task OnInitializedAsync()
     {
         await LocalStore.PreloadAsync(Js);
+        await LocalStore.StartListeningAsync(Js);
 
-        // 常驻轮询：TaskStageHub/AutomationHub 构造即启动，这里确保每个标签页打开任意页面时它们已被创建。
-        // TaskStageHub → SignalR 任务阶段推送；AutomationHub → 自动化/进入申请/信号确认轮询 +
-        // 兼任后端健康探测源（喂 BackendHealthService，连接判定与侧边栏绿点同源）。
-        _ = StageHub.EnsureStartedAsync();
+        // WCS 的常驻推送只在进入 WCS 模块时启动，RCS 页面不创建 WCS 轮询器。
+        if (NavManager.Uri.Contains("/wcs-simulator", StringComparison.OrdinalIgnoreCase))
+            await EnsureWcsServicesAsync();
         // 模块执行已统一迁移到后端（ModuleRunService + FinishedModuleWatcher），前端不再运行执行器。
 
         Nav.StateChanged += OnNavStateChanged;
@@ -109,7 +121,7 @@
     private void OnNavStateChanged() => StateHasChanged();
 
     // ── 第一层 → 第二层：选中 WCS模拟器，直接进入页面导航并跳转默认页 ──
-    private void SelectWcs()
+    private async Task SelectWcs()
     {
         Nav.SelectFeature("wcs", new List<SubNavItem>
         {
@@ -124,7 +136,23 @@
             new("项目记录", "wcs-simulator/project-logs", "📋", true),
         });
         // 直接跳转到该功能的默认页面
+        await EnsureWcsServicesAsync();
         NavManager.NavigateTo("wcs-simulator/dispatch");
+    }
+
+    private async Task EnsureWcsServicesAsync()
+    {
+        _ = StageHub.EnsureStartedAsync();
+        await AutoHub.EnsureStartedAsync();
+    }
+
+    private void SelectRcs()
+    {
+        Nav.SelectFeature("rcs", new List<SubNavItem>
+        {
+            new("RCS 地图", "rcs/map", "🗺️"),
+        });
+        NavManager.NavigateTo("rcs/map");
     }
 
     // 回到主页：清空所有选中状态，侧边栏展开
@@ -138,6 +166,7 @@
     private string GetFeatureTitle() => Nav.ActiveFeature switch
     {
         "wcs" => "WCS模拟器",
+        "rcs" => "RCS模拟器",
         _ => ""
     };
 

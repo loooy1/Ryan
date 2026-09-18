@@ -37,5 +37,7 @@ builder.Services.AddScoped<Dashboard.Modules.WcsSimulator.Services.AutomationHub
 builder.Services.AddScoped<Dashboard.Modules.WcsSimulator.Services.TaskStageHub>();
 // 纯移动任务循环（scoped：跨页面导航存活，离开自动化页任务继续下发）
 builder.Services.AddScoped<Dashboard.Modules.WcsSimulator.Services.MoveLoopService>();
+builder.Services.AddScoped<Dashboard.Modules.RcsSimulator.Services.RcsApiClient>();
+builder.Services.AddScoped<Dashboard.Modules.RcsSimulator.Services.RcsRealtimeHubClient>();
 
 await builder.Build().RunAsync();

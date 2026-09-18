@@ -715,17 +715,13 @@
     private RangeConfigDto _range = new();
     private string _rangeMarksText = "";
     private string _rangeFp = "";
-    // 模板任务实际候选池：与后端 AutoTemplateRunner 口径一致（仅按 Mark 白名单过滤；
-    // 类型位/楼层对模板任务不生效，套用会导致显示与实际不一致）。未启用 = 全部站点。
+    // 模板任务实际候选池：与后端 AutoTemplateRunner 口径一致（楼层 + Mark 白名单）。未启用 = 全部站点。
     private List<MapStationLite> _rangePool
     {
         get
         {
             if (!_range.Enabled) return _mapStations.ToList();
-            var marks = _range.Marks.Where(m => !string.IsNullOrWhiteSpace(m))
-                .Select(m => m.Trim()).ToHashSet(StringComparer.OrdinalIgnoreCase);
-            if (marks.Count == 0) return _mapStations.ToList();
-            return _mapStations.Where(s => marks.Contains(s.Mark)).ToList();
+            return _range.ApplyTo(_mapStations);
         }
     }
     private List<int> _rangeAvailableFloors => _mapStations
@@ -776,17 +772,9 @@
 
     private void OnHubChanged()
     {
-        var r = Hub.Range;
-        var fp = RangeFp(r.Enabled, r.TypeFilter, r.FloorFilter, r.Marks);
-        if (fp != _rangeFp)
-        {
-            _range.Enabled = r.Enabled;
-            _range.TypeFilter = r.TypeFilter;
-            _range.FloorFilter = r.FloorFilter;
-            _range.Marks = r.Marks ?? [];
-            _rangeMarksText = string.Join(", ", _range.Marks);
-            _rangeFp = fp;
-        }
+        // 范围配置不再由自动化状态快照轮询；状态快照中的 Range 可能是旧默认值。
+        // 范围只在首次加载和 ConfigurationChanged("range") 时从后端读取，避免
+        // 点击“开启限制”后被健康检查/SignalR 状态通知覆盖回未启用。
         InvokeAsync(StateHasChanged);
     }
 
@@ -795,13 +783,22 @@
     private async Task OpenStationMapPicker()
     {
         if (_mapStations.Count == 0) { ShowResp("❌ 请先在「地图信息」页加载地图数据", "error"); return; }
+        // 范围可选储位、接驳位和人工分拣台；实际分拣台由人工分拣台关联后自动落位，不能手动加入范围。
         var stations = _mapStations
+            .Where(s => s.StaEnable && (s.StationType & MapStationTypeBits.PickingStation) == 0)
             .Select(s => new StationMapPickerStation { Mark = s.Mark, StationType = s.StationType, X = s.X, Y = s.Y, Floor = s.Floor, StaEnable = s.StaEnable })
             .ToList();
-        var floors = stations.Where(s => s.StaEnable).Select(s => s.Floor).Distinct().OrderBy(f => f).ToList();
+        var floors = stations.Select(s => s.Floor).Distinct().OrderBy(f => f).ToList();
         if (floors.Count == 0) { ShowResp("❌ 没有可用的启用站点", "error"); return; }
         int initialFloor = _range.FloorFilter != 0 && floors.Contains(_range.FloorFilter) ? _range.FloorFilter : floors[0];
-        var config = new StationMapPickerConfig { Floors = floors, InitialFloor = initialFloor, Stations = stations, Preselected = _range.Marks };
+        var allowedMarks = stations.Select(s => s.Mark).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var config = new StationMapPickerConfig
+        {
+            Floors = floors,
+            InitialFloor = initialFloor,
+            Stations = stations,
+            Preselected = _range.Marks.Where(mark => allowedMarks.Contains(mark)).ToList()
+        };
         try
         {
             var result = await Js.InvokeAsync<string?>("grcsStationMapPickerOpen", JsonSerializer.Serialize(config));
@@ -819,6 +816,36 @@
         Hub.Changed -= OnHubChanged;
         MoveLoop.Changed -= OnMoveLoopChanged;
         StageHub.NestStatsChanged -= OnNestStatsChanged;
+        StageHub.ConfigurationChanged -= OnConfigurationChanged;
+    }
+
+    private void OnConfigurationChanged(string key)
+    {
+        if (key == "range" || key == "map")
+            _ = InvokeAsync(ReloadRangeAndMapAsync);
+        else if (key == "settings")
+            _ = InvokeAsync(StateHasChanged);
+    }
+
+    private async Task ReloadRangeAndMapAsync()
+    {
+        try
+        {
+            var range = await WcsApi.GetAsync<RangeConfigDto>("/api/wcs/auto/range");
+            if (range != null)
+            {
+                _range.Enabled = range.Enabled;
+                _range.TypeFilter = range.TypeFilter;
+                _range.FloorFilter = range.FloorFilter;
+                _range.Marks = range.Marks ?? [];
+                _rangeMarksText = string.Join(", ", _range.Marks);
+                _rangeFp = RangeFp(range.Enabled, range.TypeFilter, range.FloorFilter, _range.Marks);
+            }
+            var cache = await WcsApi.GetAsync<MapCacheDto>("/api/wcs/map");
+            if (cache != null) _mapStations = cache.Stations ?? [];
+        }
+        catch { }
+        await InvokeAsync(StateHasChanged);
     }
 
     private void OnMoveLoopChanged() => InvokeAsync(StateHasChanged);
@@ -1184,6 +1211,7 @@
         Hub.Changed += OnHubChanged;
         MoveLoop.Changed += OnMoveLoopChanged;
         StageHub.NestStatsChanged += OnNestStatsChanged;
+        StageHub.ConfigurationChanged += OnConfigurationChanged;
 
         try
         {

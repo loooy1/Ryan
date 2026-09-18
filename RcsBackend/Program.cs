@@ -1,6 +1,5 @@
 using Backend.Shared;
 using RCSBackend.Modules.Rcs;
-using Microsoft.EntityFrameworkCore;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -35,19 +34,12 @@ var app = builder.Build();
 // 全局异常兜底：未捕获异常统一返回 {"error":"..."}
 app.UseGlobalErrorHandler();
 
-// 启动时应用未执行的 EF 迁移（RCS 表自动建表；首个 Add-Migration 前无迁移，CreateDatabase 兜底）
-using (var scope = app.Services.CreateScope())
-{
-    var db = scope.ServiceProvider.GetRequiredService<IDbContextFactory<Backend.Shared.Infrastructure.GrcsDbContext>>().CreateDbContext();
-    db.Database.Migrate();
-    db.Dispose();
-}
-
-// SQLite WAL mode（与 WCS 同一套并发防护）
-SqliteWal.EnsureWal(Path.Combine(app.Environment.ContentRootPath, "rcs.db"));
+// RCS 第一阶段只运行内存矩阵地图和虚拟车，不初始化数据库迁移。
+// 等 RCS 实体落地后，再在这里接入独立迁移流程。
 
 app.UseCors();
 app.MapControllers();
+app.MapHub<RCSBackend.Modules.Rcs.Realtime.RcsRealtimeHub>("/hubs/rcs-realtime");
 
 // 健康检查：/health/ready（SQLite 连通性）
 app.MapGrcsHealthCheck();

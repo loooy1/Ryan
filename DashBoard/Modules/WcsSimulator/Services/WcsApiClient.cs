@@ -2,6 +2,7 @@ using System.Net.Http.Json;
 using System.Text.Json;
 using Contracts.Dtos;
 using Contracts.Entities;
+using Microsoft.JSInterop;
 
 namespace Dashboard.Modules.WcsSimulator.Services;
 
@@ -12,6 +13,7 @@ namespace Dashboard.Modules.WcsSimulator.Services;
 public class WcsApiClient
 {
     private readonly HttpClient _http;
+    private readonly IJSRuntime _js;
     private readonly LocalStoreService _store;
     private readonly BackendHealthService _health;
     private readonly ConnectionAlertService _alert;
@@ -35,9 +37,10 @@ public class WcsApiClient
             => writer.WriteStringValue(value.ToString("yyyy-MM-dd HH:mm:ss"));
     }
 
-    public WcsApiClient(HttpClient http, LocalStoreService store, BackendHealthService health, ConnectionAlertService alert)
+    public WcsApiClient(HttpClient http, LocalStoreService store, BackendHealthService health, ConnectionAlertService alert, IJSRuntime js)
     {
         _http = http;
+        _js = js;
         _store = store;
         _health = health;
         _alert = alert;
@@ -105,6 +108,7 @@ public class WcsApiClient
 
     public async Task<T?> GetAsync<T>(string path)
     {
+        await _store.PreloadAsync(_js);
         if (!ConnectionReady()) return default;
         try
         {
@@ -130,6 +134,7 @@ public class WcsApiClient
 
     public async Task<T?> PostAsync<TReq, T>(string path, TReq body)
     {
+        await _store.PreloadAsync(_js);
         if (!ConnectionReady()) return default;
         try
         {
@@ -189,6 +194,7 @@ public class WcsApiClient
 
     public async Task<string> PostAsync<TReq>(string path, TReq body)
     {
+        await _store.PreloadAsync(_js);
         if (!ConnectionReady()) return JsonSerializer.Serialize(new { error = "backend offline" });
         try
         {
@@ -202,6 +208,7 @@ public class WcsApiClient
 
     public async Task<T?> PutAsync<TReq, T>(string path, TReq body)
     {
+        await _store.PreloadAsync(_js);
         if (!ConnectionReady()) return default;
         try
         {
@@ -227,6 +234,7 @@ public class WcsApiClient
 
     public async Task<bool> DeleteAsync(string path)
     {
+        await _store.PreloadAsync(_js);
         if (!ConnectionReady()) return false;
         try { return (await _http.DeleteAsync(U(path))).IsSuccessStatusCode; }
         catch { NotifyIfUnreachable(); return false; }

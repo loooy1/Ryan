@@ -7,7 +7,7 @@ using Microsoft.AspNetCore.SignalR;
 namespace WCSBackend.Modules.Wcs.Realtime;
 
 /// <summary>
-/// 任务记录实时推送 Hub（/hubs/task-stages）。
+/// WCS 实时数据推送 Hub（/hubs/wcs-realtime）。
 /// 前端订阅本 Hub 接收：
 /// ① 合并表（task_records）实时变更：新记录（创建行或阶段行）到达（TaskStageService.Record / RecordCreated）
 ///    即时广播 EventAdded，删除广播 TaskRemoved，清空广播 EventsReset(空表)；
@@ -23,15 +23,17 @@ public class TaskStageRealtimeHub : Hub
     private readonly NestRunner _nest;
     private readonly MockApprovalService _mockApproval;
     private readonly ModuleExecutionLogStore _moduleLogs;
+    private readonly AutomationRealtimePublisher _automation;
 
     public TaskStageRealtimeHub(ITaskStageService stages, MoveLoopRunner moveLoop, NestRunner nest,
-        MockApprovalService mockApproval, ModuleExecutionLogStore moduleLogs)
+        MockApprovalService mockApproval, ModuleExecutionLogStore moduleLogs, AutomationRealtimePublisher automation)
     {
         _stages = stages;
         _moveLoop = moveLoop;
         _nest = nest;
         _mockApproval = mockApproval;
         _moduleLogs = moduleLogs;
+        _automation = automation;
     }
 
     public override async Task OnConnectedAsync()
@@ -45,6 +47,9 @@ public class TaskStageRealtimeHub : Hub
         // 回放请求信号记录全量（低频变更，全量快照最简可靠）
         await Clients.Caller.SendAsync("MockRequestEvents", _mockApproval.GetEvents());
         await Clients.Caller.SendAsync("ModuleExecLogsReset", new { maxId = 0L, entries = _moduleLogs.GetRecent() });
+        await Clients.Caller.SendAsync("AutomationStatus", _automation.CurrentStatus);
+        await Clients.Caller.SendAsync("AutomationLogs", _automation.CurrentLogs);
+        await Clients.Caller.SendAsync("SignalConfirmState", _automation.CurrentSignals);
         await base.OnConnectedAsync();
     }
 

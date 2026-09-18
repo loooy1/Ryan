@@ -21,7 +21,7 @@ builder.Services.AddGrcsJson();
 // CORS：允许模拟器（浏览器 WASM）调试时直接访问本服务（生产环境用 CORS_ORIGIN 收紧）。
 builder.Services.AddGrcsCors();
 
-// SignalR：任务阶段事件实时推送（前端不再轮询 task-stages）
+// SignalR：WCS 实时事件推送（前端不再轮询任务台账）
 builder.Services.AddSignalR();
 
 // 共享基础设施（SQLite WCS.db + 仓储基座 + WCS 实体配置程序集；迁移在 WCSBackend 程序集）
@@ -49,7 +49,7 @@ SqliteWal.EnsureWal(Path.Combine(app.Environment.ContentRootPath, "WCS.db"));
 
 app.UseCors();
 app.MapControllers();
-app.MapHub<WCSBackend.Modules.Wcs.Realtime.TaskStageRealtimeHub>("/hubs/task-stages");
+app.MapHub<WCSBackend.Modules.Wcs.Realtime.TaskStageRealtimeHub>("/hubs/wcs-realtime");
 
 // 健康检查：/health/ready（SQLite 连通性）
 app.MapGrcsHealthCheck();

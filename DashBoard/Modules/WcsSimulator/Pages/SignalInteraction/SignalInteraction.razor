@@ -886,13 +886,10 @@
     /// <summary>持久化功能模块：后端 SQLite（跨浏览器共享）+ localStorage（离线兜底）。</summary>
     private async Task SaveModules()
     {
-        try
-        {
-            var list = ModuleRegistry.All.ToList();
-            await Api.SaveFeatureModulesAsync(list);
-            await LocalStore.SetAsync(Js, ModuleStorageKey, System.Text.Json.JsonSerializer.Serialize(list));
-        }
-        catch { }
+        var list = ModuleRegistry.All.ToList();
+        try { await Api.SaveFeatureModulesAsync(list); } catch { }
+        try { await LocalStore.SetAsync(Js, ModuleStorageKey,
+            System.Text.Json.JsonSerializer.Serialize(list)); } catch { }
     }
 
     /// <summary>载入功能模块：优先后端 feature_modules 表（跨浏览器共享），后端不可用时回退 localStorage。</summary>
@@ -901,7 +898,7 @@
         try
         {
             var remote = await Api.GetFeatureModulesAsync();
-            if (remote is { Count: > 0 })
+            if (remote != null)
             {
                 ModuleRegistry.SetCustoms(remote);
                 return;
@@ -1046,9 +1043,10 @@
         await LoadModules();
         await LoadMockRules();
 
-        // 长连接推送（SignalR /hubs/task-stages，TaskStageHub 常驻）：请求信号记录/模块执行记录实时到达，零轮询
+        // 长连接推送（SignalR /hubs/wcs-realtime，TaskStageHub 常驻）：请求信号记录/模块执行记录实时到达，零轮询
         StageHub.MockApprovalEventsChanged += OnMockEventsChanged;
         StageHub.ExecLogChanged += OnExecLogChanged;
+        StageHub.ConfigurationChanged += OnConfigurationChanged;
         await StageHub.EnsureStartedAsync();
         _mockApprovals = StageHub.MockApprovalEvents.ToList();
         _execLog = StageHub.ExecLogEntries.ToList();
@@ -1073,6 +1071,14 @@
         _execLog = StageHub.ExecLogEntries.ToList();
         StateHasChanged();
     });
+
+    private void OnConfigurationChanged(string key)
+    {
+        if (key == "feature-modules")
+            _ = InvokeAsync(async () => { await LoadModules(); StateHasChanged(); });
+        else if (key == "task-templates")
+            _ = InvokeAsync(async () => { await LoadMockRules(); StateHasChanged(); });
+    }
 
     // ── 模块执行记录（SignalR 推送，TaskStageHub.ExecLogEntries 为权威缓存）──
     private List<ModuleExecLogEntry> _execLog = [];
@@ -1207,6 +1213,7 @@
     {
         StageHub.MockApprovalEventsChanged -= OnMockEventsChanged;
         StageHub.ExecLogChanged -= OnExecLogChanged;
+        StageHub.ConfigurationChanged -= OnConfigurationChanged;
     }
 }
 

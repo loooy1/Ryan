@@ -7,7 +7,7 @@ namespace Dashboard.Modules.WcsSimulator.Services;
 
 /// <summary>
 /// 任务记录共享服务（scoped = 每个浏览器标签页一个实例）。
-/// 通过 SignalR 长连接（WCS 后端 /hubs/task-stages）实时接收合并表（task_records）全量记录，
+/// 通过 SignalR 长连接（WCS 后端 /hubs/wcs-realtime）实时接收合并表（task_records）全量记录，
 /// 取代旧版的 HTTP 轮询（/api/wcs/task-stages?sinceId=N）与台账 HTTP 拉取。
 ///
 /// ── 数据流 ──
@@ -31,6 +31,7 @@ public class TaskStageHub : IDisposable
     private readonly LocalStoreService _store;
     private readonly object _lock = new();
     private DotNetObjectReference<TaskStageHub>? _ref;
+    private readonly SemaphoreSlim _reconnectGate = new(1, 1);
     private bool _started;
     private List<TaskRecord> _records = [];
     private readonly HashSet<string> _finished = new(StringComparer.OrdinalIgnoreCase);
@@ -90,6 +91,11 @@ public class TaskStageHub : IDisposable
 
     /// <summary>新记录合并/状态变化时触发（订阅者据此刷新 UI / 唤醒等待者）。</summary>
     public event Action? Changed;
+    public event Action? AutomationChanged;
+    public event Action<string>? ConfigurationChanged;
+    public AutoStatusSnapshot AutomationStatus { get; private set; } = new();
+    public IReadOnlyList<LogRoundDto> AutomationLogs { get; private set; } = [];
+    public Dictionary<string, List<WorkflowStateRow>> SignalConfirmState { get; private set; } = [];
 
     // ── 请求信号（Mock 审批事件，后端 MockApprovalService 每次变更广播全量快照）──
     private const int MaxMockEvents = 500;
@@ -120,6 +126,25 @@ public class TaskStageHub : IDisposable
     {
         _js = js;
         _store = store;
+        _store.ValueChanged += OnStoreValueChanged;
+    }
+
+    private void OnStoreValueChanged(string key, string? value)
+    {
+        if (string.Equals(key, WcsUrlKey, StringComparison.OrdinalIgnoreCase) && _started)
+            _ = ReconnectAsync();
+    }
+
+    private async Task ReconnectAsync()
+    {
+        await _reconnectGate.WaitAsync();
+        try
+        {
+            await _js.InvokeVoidAsync("grcsTaskStage.disconnect");
+            await _js.InvokeVoidAsync("grcsTaskStage.connect", ResolveHubUrl());
+        }
+        catch { }
+        finally { _reconnectGate.Release(); }
     }
 
     /// <summary>建立 SignalR 连接（幂等；MainLayout 注入时调用，保证每个标签页常驻）。</summary>
@@ -150,7 +175,7 @@ public class TaskStageHub : IDisposable
     {
         var url = _store[WcsUrlKey];
         var baseUrl = string.IsNullOrEmpty(url) || url == "null" ? DefaultWcsUrl : url;
-        return baseUrl.TrimEnd('/') + "/hubs/task-stages";
+        return baseUrl.TrimEnd('/') + "/hubs/wcs-realtime";
     }
 
     /// <summary>后端广播：单条新记录（创建行或阶段行）。</summary>
@@ -160,6 +185,7 @@ public class TaskStageHub : IDisposable
         if (evt == null || string.IsNullOrEmpty(evt.TaskId)) return;
         lock (_lock)
         {
+            if (evt.Id > 0 && _records.Any(r => r.Id == evt.Id)) return;
             _records.Add(evt);
             if (_records.Count > MaxCache) _records.RemoveRange(0, _records.Count - MaxCache);
             if (string.Equals(evt.Stage, "WCS_COMPLETED", StringComparison.OrdinalIgnoreCase)
@@ -168,6 +194,34 @@ public class TaskStageHub : IDisposable
         }
         Changed?.Invoke();
     }
+
+    [JSInvokable]
+    public void OnAutomationStatus(AutoStatusSnapshot status)
+    {
+        AutomationStatus = status ?? new AutoStatusSnapshot();
+        AutomationChanged?.Invoke();
+        Changed?.Invoke();
+    }
+
+    [JSInvokable]
+    public void OnAutomationLogs(List<LogRoundDto> logs)
+    {
+        AutomationLogs = logs ?? [];
+        AutomationChanged?.Invoke();
+        Changed?.Invoke();
+    }
+
+    [JSInvokable]
+    public void OnSignalConfirmState(Dictionary<string, List<WorkflowStateRow>> state)
+    {
+        SignalConfirmState = state ?? [];
+        AutomationChanged?.Invoke();
+        Changed?.Invoke();
+    }
+
+    [JSInvokable]
+    public void OnConfigurationChanged(string key) => ConfigurationChanged?.Invoke(key ?? "");
+
 
     /// <summary>后端广播：全表快照（连接建立/清空后对账）→ 整表替换。</summary>
     [JSInvokable]
@@ -279,8 +333,10 @@ public class TaskStageHub : IDisposable
 
     public void Dispose()
     {
+        _store.ValueChanged -= OnStoreValueChanged;
         try { _js.InvokeVoidAsync("grcsTaskStage.disconnect"); } catch { }
         _ref?.Dispose();
         _ref = null;
+        _reconnectGate.Dispose();
     }
 }

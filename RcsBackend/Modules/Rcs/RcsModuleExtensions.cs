@@ -1,4 +1,8 @@
 using Microsoft.Extensions.DependencyInjection;
+using Rcs.Algorithms.AStar;
+using RCSBackend.Modules.Rcs.Console;
+using RCSBackend.Modules.Rcs.Infrastructure;
+using RCSBackend.Modules.Rcs.Realtime;
 
 namespace RCSBackend.Modules.Rcs;
 
@@ -14,6 +18,11 @@ public static class RcsModuleExtensions
 {
     public static IServiceCollection AddRcsModule(this IServiceCollection services)
     {
+        services.AddControllers().AddApplicationPart(typeof(RcsSimulationController).Assembly);
+        services.AddSingleton<IAStarPathfinder, AStarPathfinder>();
+        services.AddSingleton<RcsSimulationService>();
+        services.AddSingleton<RcsRealtimePublisher>();
+        services.AddHostedService(sp => sp.GetRequiredService<RcsRealtimePublisher>());
         return services;
     }
 }

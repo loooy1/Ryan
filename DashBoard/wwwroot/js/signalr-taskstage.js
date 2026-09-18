@@ -1,5 +1,5 @@
 // SignalR 任务阶段事件桥（TaskStageHub 的 JS 侧）。
-// 连接 WCS 后端 /hubs/task-stages，把推送事件回调到 .NET（TaskStageHub）。
+// 连接 WCS 后端 /hubs/wcs-realtime，把推送事件回调到 .NET（TaskStageHub）。
 // 依赖 js/signalr.min.js（@microsoft/signalr 浏览器 bundle）。
 window.grcsTaskStage = (() => {
     let connection = null;
@@ -30,6 +30,10 @@ window.grcsTaskStage = (() => {
         // 模块执行记录全量回放（连接建立/清空已处理后）与增量单条（后端 ModuleExecLogStore 广播）
         connection.on('ModuleExecLogsReset', (payload) => { if (ref) ref.invokeMethodAsync('OnModuleExecLogsReset', payload); });
         connection.on('ModuleExecLogAdded', (entry) => { if (ref) ref.invokeMethodAsync('OnModuleExecLogAdded', entry); });
+        connection.on('AutomationStatus', (status) => { if (ref) ref.invokeMethodAsync('OnAutomationStatus', status); });
+        connection.on('AutomationLogs', (logs) => { if (ref) ref.invokeMethodAsync('OnAutomationLogs', logs); });
+        connection.on('SignalConfirmState', (state) => { if (ref) ref.invokeMethodAsync('OnSignalConfirmState', state); });
+        connection.on('ConfigurationChanged', (key) => { if (ref) ref.invokeMethodAsync('OnConfigurationChanged', key); });
 
         connection.onreconnecting(() => { if (ref) ref.invokeMethodAsync('OnStateChanged', 'reconnecting'); });
         connection.onreconnected(() => {

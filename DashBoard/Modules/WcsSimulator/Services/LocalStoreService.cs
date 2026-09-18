@@ -24,6 +24,9 @@ public class LocalStoreService
 {
     private readonly Dictionary<string, string?> _cache = new();
     private bool _preloaded;
+    private bool _listening;
+    private DotNetObjectReference<LocalStoreService>? _listenerRef;
+    public event Action<string, string?>? ValueChanged;
 
     /// <summary>一次性加载所有 key 到内存（启动时调用一次，约 10ms）。</summary>
     public async Task PreloadAsync(IJSRuntime js)
@@ -59,6 +62,26 @@ public class LocalStoreService
     {
         _cache[key] = value;
         try { await js.InvokeVoidAsync("grcsStoreSave", key, value); } catch { }
+        ValueChanged?.Invoke(key, value);
+    }
+
+    public async Task StartListeningAsync(IJSRuntime js)
+    {
+        if (_listening) return;
+        try
+        {
+            _listenerRef = DotNetObjectReference.Create(this);
+            await js.InvokeVoidAsync("grcsStoreListen", _listenerRef);
+            _listening = true;
+        }
+        catch { _listenerRef?.Dispose(); _listenerRef = null; }
+    }
+
+    [JSInvokable]
+    public void OnStorageChanged(string key, string? value)
+    {
+        _cache[key] = value;
+        ValueChanged?.Invoke(key, value);
     }
 
     /// <summary>预加载的 key 列表（排除巨型 history/ledger key；服务数据已下沉后端）。</summary>

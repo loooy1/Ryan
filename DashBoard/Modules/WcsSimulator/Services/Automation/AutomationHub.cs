@@ -4,9 +4,8 @@ using Contracts.Entities;
 namespace Dashboard.Modules.WcsSimulator.Services;
 
 /// <summary>
-/// 自动化状态/日志共享轮询中枢（Skill E：数据源在后端 WCSBackend）。
-/// 每 1 秒拉一次 /api/wcs/auto/status 快照 + /api/wcs/auto/logs?sinceId 增量日志，
-/// 以及进入申请 /api/wcs/status + /api/wcs/events（信号交互页进入信号多标签页同步）。
+/// 自动化状态共享服务（Skill E：实时状态由 WCS SignalR 推送，健康状态低频 HTTP 探测）。
+/// 自动化状态、日志和信号确认由 TaskStageHub 接收；仅每 5 秒探测 WCS/GRCS 健康状态。
 /// AutoRunService / ContainerTaskService / obsolete signal service 三个瘦壳共享同一份数据与 Changed 事件。
 /// 同时兼任后端健康探测源：每轮把 WCS（/api/wcs/status）与 GRCS（/api/wcs/grcs/health 代理）
 /// 状态回报给 BackendHealthService（BackendStatus 渲染 + 各页面连接判定，单一数据源）。
@@ -16,8 +15,11 @@ public class AutomationHub : IDisposable
 {
     private readonly WcsApiClient _api;
     private readonly BackendHealthService _health;
+    private readonly TaskStageHub _stage;
     private readonly CancellationTokenSource _cts = new();
-    private readonly Task _loop;
+    private Task? _loop;
+    private bool _started;
+    private DateTime _lastHealthCheck = DateTime.MinValue;
     private readonly object _lock = new();
 
     public AutoStatusSnapshot Status { get; private set; } = new();
@@ -31,11 +33,28 @@ public class AutomationHub : IDisposable
 
     public event Action? Changed;
 
-    public AutomationHub(WcsApiClient api, BackendHealthService health)
+    public AutomationHub(WcsApiClient api, BackendHealthService health, TaskStageHub stage)
     {
-        _api = api;
-        _health = health;
+        _api = api; _health = health; _stage = stage;
+        _stage.AutomationChanged += OnRealtimeChanged;
+        OnRealtimeChanged();
+    }
+
+    private void OnRealtimeChanged()
+    {
+        Status = _stage.AutomationStatus;
+        lock (_lock) { Rounds.Clear(); Rounds.AddRange(_stage.AutomationLogs); }
+        ConfirmState = _stage.SignalConfirmState;
+        Changed?.Invoke();
+    }
+
+    /// <summary>在 LocalStore 预加载完成后启动，避免第一次轮询使用旧的默认地址。</summary>
+    public Task EnsureStartedAsync()
+    {
+        if (_started) return _loop ?? Task.CompletedTask;
+        _started = true;
         _loop = LoopAsync(_cts.Token);
+        return Task.CompletedTask;
     }
 
     private async Task LoopAsync(CancellationToken ct)
@@ -51,6 +70,7 @@ public class AutomationHub : IDisposable
     /// <summary>立即拉一轮（手动操作后调用，避免等下一拍）。</summary>
     public async Task RefreshNowAsync()
     {
+        await EnsureStartedAsync();
         // 不设置 SuppressAlerts，让手动操作的告警能弹出
         try { await PollOnceAsync(); }
         catch { }
@@ -67,35 +87,15 @@ public class AutomationHub : IDisposable
     /// <summary>执行一轮轮询（不修改 SuppressAlerts，由调用方控制）。</summary>
     private async Task PollOnceAsync()
     {
-        var st = await _api.GetAsync<AutoStatusSnapshot>("/api/wcs/auto/status");
-        if (st != null) Status = st;
-
-        // 选点范围（自动化任务页「开启/关闭限制」等跨标签页同步）
-        var range = await _api.GetAsync<RangeConfigDto>("/api/wcs/auto/range");
-        if (range != null) Range = range;
-
         // 进入申请状态（用于后端健康判定；进入信号已由 MockApprovalService 取代）
-        var adm = await _api.GetAsync<AdmittanceStatusDto>("/api/wcs/status");
-        _health.ReportWcs(adm != null);
-
-        // 信号确认状态（跨标签页同步，SignalInteraction 事实源）
-        var wf = await _api.GetAsync<Dictionary<string, List<WorkflowStateRow>>>("/api/wcs/signal-confirm");
-        if (wf != null) ConfirmState = wf;
-
-        // 按轮次分组的日志（每轮一个标题；任务完成后后端清除该轮）
-        var rounds = await _api.GetAsync<List<LogRoundDto>>("/api/wcs/auto/logs");
-        if (rounds != null)
+        if ((DateTime.UtcNow - _lastHealthCheck).TotalSeconds >= 5)
         {
-            lock (_lock)
-            {
-                Rounds.Clear();
-                Rounds.AddRange(rounds);
-            }
+            _lastHealthCheck = DateTime.UtcNow;
+            var adm = await _api.GetAsync<AdmittanceStatusDto>("/api/wcs/status");
+            _health.ReportWcs(adm != null);
+            var grcs = await _api.GetAsync<GrcsProxyResult>("/api/wcs/grcs/health");
+            _health.ReportGrcs(grcs?.Ok == true);
         }
-
-        // 健康探测：GRCS 经 WCS 代理轻量探测（后端 2s 短超时）→ 回报共享健康服务
-        var grcs = await _api.GetAsync<GrcsProxyResult>("/api/wcs/grcs/health");
-        _health.ReportGrcs(grcs?.Ok == true);
         Changed?.Invoke();
     }
 
@@ -105,5 +105,5 @@ public class AutomationHub : IDisposable
         _ = _api.DeleteAsync("/api/wcs/auto/logs");
     }
 
-    public void Dispose() => _cts.Cancel();
+    public void Dispose() { _stage.AutomationChanged -= OnRealtimeChanged; _cts.Cancel(); }
 }

@@ -4,6 +4,7 @@
 @inject WcsApiClient WcsApi
 @inject AutomationHub AutoHub
 @inject BackendHealthService Health
+@inject TaskStageHub StageHub
 @inherits Dashboard.Modules.WcsSimulator.Components.PageStateBase
 @implements IDisposable
 
@@ -223,7 +224,6 @@
     private bool _clearConfirming;                                     // 清空全部确认态
     private bool _forceConfirming;                                      // 强制删除输入行显示态
     private string _forceTaskId = "";                                   // 强制删除目标任务ID
-    private System.Threading.Timer? _timer;         // 轮询定时器
     private bool _refreshing;                       // 重入保护
 
     // ── 卡片折叠状态（基类 PageStateBase 提供，键 grcs_ts_collapsed，默认全部折叠避免初始化闪烁）──
@@ -259,13 +259,12 @@
             await LoadLedger();
         }
 
-        // 定时轮询：GRCS 每几秒可能上报新阶段，折叠时跳过节省后端压力
-        _timer = new System.Threading.Timer(async _ =>
-        {
-            if (IsCollapsed("ts_list")) return;
-            await RefreshAll();
-            await InvokeAsync(StateHasChanged);
-        }, null, TimeSpan.FromSeconds(3), TimeSpan.FromSeconds(3));
+        StageHub.Changed += OnStageHubChanged;
+    }
+
+    private void OnStageHubChanged()
+    {
+        if (!IsCollapsed("ts_list")) _ = InvokeAsync(async () => { await LoadEvents(); await LoadLedger(); StateHasChanged(); });
     }
 
     /// <summary>合并刷新：阶段事件 + 台账（台账走 2s 内存缓存，开销极小）。</summary>
@@ -284,8 +283,7 @@
 
     public void Dispose()
     {
-        _timer?.Dispose();
-        _timer = null;
+        StageHub.Changed -= OnStageHubChanged;
     }
 
     /// <summary>从台账重建 TaskId → TaskType 映射（台账走内存缓存，轮询中重复调用开销极小）。</summary>
@@ -313,15 +311,8 @@
             return;
         }
 
-        var records = await WcsApi.GetTaskRecordsAsync();
-        if (records == null)
-        {
-            _pollingOk = false;
-            _lastError = "Failed to read task records";
-            return;
-        }
-
         _pollingOk = true;
+        var records = StageHub.TaskRecords.ToList();
         BuildGroups(records);
         _ledger = records.Where(record => record.IsCreated)
             .OrderByDescending(record => record.Id).ToList();

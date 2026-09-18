@@ -1,6 +1,7 @@
 @namespace Dashboard.Modules.WcsSimulator.Pages
 @page "/wcs-simulator/dispatch"
 @inject WcsApiClient Api
+@inject TaskStageHub StageHub
 @inherits Dashboard.Modules.WcsSimulator.Components.PageStateBase
 @implements IDisposable
 
@@ -965,14 +966,10 @@
     /// <summary>把自定义模板列表持久化：后端 SQLite（跨浏览器共享）+ localStorage（离线兜底）。</summary>
     private async Task SaveCustomTemplates()
     {
-        try
-        {
-            var list = TaskTypeRegistry.Customs.ToList();
-            await Api.SaveTaskTemplatesAsync(list);
-            await LocalStore.SetAsync(Js, TemplateStorageKey,
-                System.Text.Json.JsonSerializer.Serialize(list));
-        }
-        catch { }
+        var list = TaskTypeRegistry.Customs.ToList();
+        try { await Api.SaveTaskTemplatesAsync(list); } catch { }
+        try { await LocalStore.SetAsync(Js, TemplateStorageKey,
+            System.Text.Json.JsonSerializer.Serialize(list)); } catch { }
     }
 
     /// <summary>载入自定义模板：优先后端 task_templates 表（跨浏览器共享），后端不可用时回退 localStorage。</summary>
@@ -981,7 +978,7 @@
         try
         {
             var remote = await Api.GetTaskTemplatesAsync();
-            if (remote is { Count: > 0 })
+            if (remote != null)
             {
                 TaskTypeRegistry.SetCustoms(remote);
                 return;
@@ -1075,6 +1072,7 @@
         var restored = false;
 
         await LoadCustomTemplates();
+        StageHub.ConfigurationChanged += OnConfigurationChanged;
         await LoadModules();
 
         try
@@ -1132,8 +1130,15 @@
     /// <summary>释放实时时钟定时器。</summary>
     public void Dispose()
     {
+        StageHub.ConfigurationChanged -= OnConfigurationChanged;
         _clockTimer?.Dispose();
         _clockTimer = null;
+    }
+
+    private void OnConfigurationChanged(string key)
+    {
+        if (key is "task-templates" or "feature-modules")
+            _ = InvokeAsync(async () => { await LoadCustomTemplates(); StateHasChanged(); });
     }
 
     /// <summary>加载容器库存（容器编号下拉候选用）：调用 Api.QueryCargoInventoryAsync 查询 GRCS 库存接口。</summary>
