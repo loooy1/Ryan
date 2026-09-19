@@ -1,5 +1,5 @@
 using Microsoft.AspNetCore.SignalR.Client;
-using Rcs.Contracts.Vehicles;
+using Contracts.Rcs.Vehicle;
 
 namespace Dashboard.Modules.RcsSimulator.Services;
 

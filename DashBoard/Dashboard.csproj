@@ -17,9 +17,9 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Contracts\Contracts.csproj" />
-    <ProjectReference Include="..\Rcs.Contracts\Rcs.Contracts.csproj" />
   </ItemGroup>
 
   <ProjectExtensions><VisualStudio><UserProperties properties_4launchsettings_1json__JsonSchema="https://jsr.io/schema/config-file.v1.json" /></VisualStudio></ProjectExtensions>
 
 </Project>
+

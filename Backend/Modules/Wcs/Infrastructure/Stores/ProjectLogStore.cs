@@ -11,8 +11,13 @@ namespace WCSBackend.Modules.Wcs.Infrastructure;
 public class ProjectLogStore
 {
     private readonly IUnitOfWorkFactory _uow;
+    private readonly ILogger<ProjectLogStore> _logger;
 
-    public ProjectLogStore(IUnitOfWorkFactory uowFactory) => _uow = uowFactory;
+    public ProjectLogStore(IUnitOfWorkFactory uowFactory, ILogger<ProjectLogStore> logger)
+    {
+        _uow = uowFactory;
+        _logger = logger;
+    }
 
     public long Add(Entities.ProjectLogDto rec)
     {
@@ -22,6 +27,7 @@ public class ProjectLogStore
         var repo = uow.Repository<Entities.ProjectLogDto>();
         repo.AddAsync(rec).GetAwaiter().GetResult();
         uow.CommitAsync().GetAwaiter().GetResult();
+        Audit("ProjectLedgerAdded", "新增项目台账 Id={Id} Project={Project} Status={Status}", rec.Id, rec.Project, rec.Status);
         return rec.Id;
     }
 
@@ -51,6 +57,7 @@ public class ProjectLogStore
         uow.Repository<Entities.ProjectLogDto>().DeleteWhereAsync(r => r.Project == project)
             .GetAwaiter().GetResult();
         uow.CommitAsync().GetAwaiter().GetResult();
+        Audit("ProjectLedgerProjectRemoved", "删除项目全部台账 Project={Project}", project);
     }
 
     public void Update(Entities.ProjectLogDto rec)
@@ -66,6 +73,7 @@ public class ProjectLogStore
         row.Remark = rec.Remark;
         row.UpdatedAt = DateTime.Now.ToString("O");
         uow.CommitAsync().GetAwaiter().GetResult();
+        Audit("ProjectLedgerUpdated", "修改项目台账 Id={Id} Project={Project} Status={Status}", rec.Id, rec.Project, rec.Status);
     }
 
     public void Remove(long id)
@@ -74,5 +82,17 @@ public class ProjectLogStore
         uow.Repository<Entities.ProjectLogDto>().DeleteWhereAsync(r => r.Id == id)
             .GetAwaiter().GetResult();
         uow.CommitAsync().GetAwaiter().GetResult();
+        Audit("ProjectLedgerRemoved", "删除项目台账 Id={Id}", id);
+    }
+
+    private void Audit(string eventName, string message, params object?[] args)
+    {
+        using var scope = _logger.BeginScope(new Dictionary<string, object?>
+        {
+            ["LogCategory"] = "System",
+            ["Component"] = "ProjectLedger",
+            ["EventName"] = eventName
+        });
+        _logger.LogInformation(message, args);
     }
 }

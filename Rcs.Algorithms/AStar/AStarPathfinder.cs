@@ -1,10 +1,17 @@
-using Rcs.Contracts.Map;
+using System.Diagnostics;
+using Contracts.Rcs.Map;
+using Contracts.Rcs.Route;
+using Microsoft.Extensions.Logging;
 
 namespace Rcs.Algorithms.AStar;
 
 /// <summary>纯矩阵 A* 实现：不依赖数据库、HTTP、SignalR 或 WCS。</summary>
 public sealed class AStarPathfinder : IAStarPathfinder
 {
+    private readonly ILogger<AStarPathfinder> _logger;
+
+    public AStarPathfinder(ILogger<AStarPathfinder> logger) => _logger = logger;
+
     private static readonly (int X, int Y)[] Directions =
     [
         (0, -1), (1, 0), (0, 1), (-1, 0)
@@ -12,8 +19,22 @@ public sealed class AStarPathfinder : IAStarPathfinder
 
     public RouteDto FindPath(GridMapDto map, GridPoint start, GridPoint end)
     {
+        using var scope = _logger.BeginScope(new Dictionary<string, object?>
+        {
+            ["LogCategory"] = "Algorithm",
+            ["Component"] = "AStar"
+        });
+        var stopwatch = Stopwatch.StartNew();
+        _logger.LogInformation(new EventId(1001, "PathCalculationStarted"),
+            "开始计算路径 Start={Start} End={End} Map={Width}x{Height} Obstacles={ObstacleCount}",
+            start, end, map.Width, map.Height, map.Obstacles.Count);
+
         if (!Inside(map, start) || !Inside(map, end))
+        {
+            _logger.LogWarning(new EventId(1002, "InvalidPathEndpoint"),
+                "路径计算失败：起点或终点超出地图范围 Start={Start} End={End}", start, end);
             return new RouteDto { Message = "起点或终点超出地图范围。" };
+        }
 
         var obstacles = map.Obstacles.ToHashSet();
         obstacles.Remove(start);
@@ -27,7 +48,14 @@ public sealed class AStarPathfinder : IAStarPathfinder
         while (open.TryDequeue(out var current, out _))
         {
             if (current == end)
-                return new RouteDto { Found = true, Points = Rebuild(cameFrom, current) };
+            {
+                var points = Rebuild(cameFrom, current);
+                stopwatch.Stop();
+                _logger.LogInformation(new EventId(1003, "PathCalculated"),
+                    "路径计算完成 Start={Start} End={End} Nodes={NodeCount} DurationMs={DurationMs}",
+                    start, end, points.Count, stopwatch.ElapsedMilliseconds);
+                return new RouteDto { Found = true, Points = points };
+            }
 
             foreach (var direction in Directions)
             {
@@ -43,6 +71,10 @@ public sealed class AStarPathfinder : IAStarPathfinder
             }
         }
 
+        stopwatch.Stop();
+        _logger.LogWarning(new EventId(1004, "PathNotFound"),
+            "没有可用路径 Start={Start} End={End} DurationMs={DurationMs}",
+            start, end, stopwatch.ElapsedMilliseconds);
         return new RouteDto { Message = "起点和终点之间没有可用路径。" };
     }
 

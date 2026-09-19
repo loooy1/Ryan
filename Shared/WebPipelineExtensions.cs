@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Backend.Shared.Infrastructure;
+using Backend.Shared.Logging;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
@@ -55,7 +56,14 @@ public static class WebPipelineExtensions
                 context.Response.StatusCode = 500;
                 context.Response.ContentType = "application/json";
                 var logger = context.RequestServices.GetRequiredService<ILoggerFactory>().CreateLogger("GlobalErrorHandler");
-                logger.LogError(ex, "未捕获异常");
+                using (logger.BeginScope(new Dictionary<string, object?>
+                {
+                    ["LogCategory"] = LogCategory.System.ToString(),
+                    ["Component"] = "GlobalErrorHandler",
+                    ["EventName"] = "UnhandledException",
+                    ["TraceId"] = context.TraceIdentifier
+                }))
+                    logger.LogError(ex, "未捕获异常：{Method} {Path}", context.Request.Method, context.Request.Path);
                 await context.Response.WriteAsync(JsonSerializer.Serialize(new { error = ex.Message }));
             }
         });

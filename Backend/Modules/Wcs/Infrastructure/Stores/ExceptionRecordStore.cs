@@ -11,8 +11,13 @@ namespace WCSBackend.Modules.Wcs.Infrastructure;
 public class ExceptionRecordStore
 {
     private readonly IUnitOfWorkFactory _uow;
+    private readonly ILogger<ExceptionRecordStore> _logger;
 
-    public ExceptionRecordStore(IUnitOfWorkFactory uowFactory) => _uow = uowFactory;
+    public ExceptionRecordStore(IUnitOfWorkFactory uowFactory, ILogger<ExceptionRecordStore> logger)
+    {
+        _uow = uowFactory;
+        _logger = logger;
+    }
 
     public long Add(Entities.ExceptionRecordDto rec)
     {
@@ -22,6 +27,8 @@ public class ExceptionRecordStore
         var repo = uow.Repository<Entities.ExceptionRecordDto>();
         repo.AddAsync(rec).GetAwaiter().GetResult();
         uow.CommitAsync().GetAwaiter().GetResult();
+        Audit("ExceptionLedgerAdded", "新增异常台账 Id={Id} Project={Project} Status={Status} Phenomenon={Phenomenon}",
+            rec.Id, rec.Project, rec.Status, rec.Phenomenon);
         return rec.Id;
     }
 
@@ -57,6 +64,7 @@ public class ExceptionRecordStore
         uow.Repository<Entities.ExceptionRecordDto>().DeleteWhereAsync(r => r.Project == project)
             .GetAwaiter().GetResult();
         uow.CommitAsync().GetAwaiter().GetResult();
+        Audit("ExceptionLedgerProjectRemoved", "删除项目全部异常台账 Project={Project}", project);
     }
 
     public void Update(Entities.ExceptionRecordDto rec)
@@ -77,6 +85,7 @@ public class ExceptionRecordStore
         row.ReproduceCount = rec.ReproduceCount;
         row.UpdatedAt = DateTime.Now.ToString("O");
         uow.CommitAsync().GetAwaiter().GetResult();
+        Audit("ExceptionLedgerUpdated", "修改异常台账 Id={Id} Project={Project} Status={Status}", rec.Id, rec.Project, rec.Status);
     }
 
     /// <summary>复现三联动：次数 +1、复现时间=当前、置为未解决；车号追加（顿号分隔，去重）。</summary>
@@ -99,6 +108,8 @@ public class ExceptionRecordStore
         row.Status = "pending";
         row.UpdatedAt = DateTime.Now.ToString("O");
         uow.CommitAsync().GetAwaiter().GetResult();
+        Audit("ExceptionLedgerReproduced", "异常再次复现 Id={Id} Vehicle={VehicleCode} Count={Count}",
+            id, row.VehicleCode, row.ReproduceCount);
     }
 
     public void Remove(long id)
@@ -107,7 +118,17 @@ public class ExceptionRecordStore
         uow.Repository<Entities.ExceptionRecordDto>().DeleteWhereAsync(r => r.Id == id)
             .GetAwaiter().GetResult();
         uow.CommitAsync().GetAwaiter().GetResult();
+        Audit("ExceptionLedgerRemoved", "删除异常台账 Id={Id}", id);
+    }
+
+    private void Audit(string eventName, string message, params object?[] args)
+    {
+        using var scope = _logger.BeginScope(new Dictionary<string, object?>
+        {
+            ["LogCategory"] = "System",
+            ["Component"] = "ExceptionLedger",
+            ["EventName"] = eventName
+        });
+        _logger.LogInformation(message, args);
     }
 }
-
-/// <summary>项目记录（SQLite project_logs 表，纯 HTTP 读写）。Singleton。</summary>

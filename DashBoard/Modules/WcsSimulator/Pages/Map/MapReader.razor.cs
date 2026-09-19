@@ -520,9 +520,10 @@ public partial class MapReader
     /// + 共享 localStorage 键兜底；保存后重读一次刷新显示。</summary>
     internal async Task SaveWarehouse()
     {
+        // 统一保存前端运行时配置，并触发受影响服务立即刷新。
+        await RuntimeConfig.SaveAsync(_wcsBaseUrl, _grcsBaseUrl, _warehouse);
+        // 场景名和 GRCS 地址仍由 WCS 后端持久化；后端不可达时本地配置仍保留。
         await WcsApi.PutAsync<object, object>("/api/wcs/auto/settings", new { grcsBaseUrl = _grcsBaseUrl, sceneName = _warehouse });
-        await LocalStore.SetAsync(Js, "grcs_warehouse", _warehouse);
-        await SaveAddresses();
         // 保存后重读一次：后端为准（未保存过就用默认值）
         try
         {
@@ -539,13 +540,6 @@ public partial class MapReader
         await Task.Delay(2000);
         _warehouseSaved = false;
         StateHasChanged();
-    }
-
-    /// <summary>GRCS / WCS 两个后端地址写入各自的共享 localStorage 键。</summary>
-    internal async Task SaveAddresses()
-    {
-        await LocalStore.SetAsync(Js, "grcs_grcs_url", _grcsBaseUrl);
-        await LocalStore.SetAsync(Js, "grcs_wcs_url", _wcsBaseUrl);
     }
 
     /// <summary>复制站点编码到剪贴板（调用 wwwroot 里注册的 grcsCopyText JS 函数）。</summary>

@@ -107,9 +107,16 @@ public class WcsApiClient
     private string U(string path) => BaseUrl.TrimEnd('/') + path;
 
     public async Task<T?> GetAsync<T>(string path)
+        => await GetAsync<T>(path, allowWhenOffline: false);
+
+    /// <summary>健康检查专用读取：即使上一次状态为离线，也必须允许探测新地址是否已恢复。</summary>
+    public async Task<T?> GetHealthAsync<T>(string path)
+        => await GetAsync<T>(path, allowWhenOffline: true);
+
+    private async Task<T?> GetAsync<T>(string path, bool allowWhenOffline)
     {
         await _store.PreloadAsync(_js);
-        if (!ConnectionReady()) return default;
+        if (!allowWhenOffline && !ConnectionReady()) return default;
         try
         {
             var json = await _http.GetStringAsync(U(path));

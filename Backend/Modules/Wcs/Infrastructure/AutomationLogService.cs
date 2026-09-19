@@ -1,5 +1,6 @@
 using Contracts.Dtos;
 using System.Collections.Generic;
+using Microsoft.Extensions.Logging;
 
 namespace WCSBackend.Modules.Wcs.Infrastructure;
 
@@ -10,12 +11,15 @@ namespace WCSBackend.Modules.Wcs.Infrastructure;
 /// </summary>
 public class AutomationLogService
 {
+    private readonly ILogger<AutomationLogService> _logger;
     private readonly object _lock = new();
     private readonly List<LogRoundDto> _rounds = new();
     private long _nextId = 1;
     private const int MaxRounds = 100;
     private const int MaxSysEntries = 500;
     private const string SysRoundId = "__sys__";
+
+    public AutomationLogService(ILogger<AutomationLogService> logger) => _logger = logger;
 
     private LogRoundDto EnsureSysRound()
     {
@@ -38,6 +42,7 @@ public class AutomationLogService
             _rounds.Add(new LogRoundDto { RoundId = id, ParentRoundId = parentRoundId ?? "", Title = title, StartTime = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") });
         }
         Trim();
+        WriteFile(id, $"开始自动化轮次：{title}", "#60a5fa", "AutomationRoundStarted");
         return id;
     }
 
@@ -65,6 +70,7 @@ public class AutomationLogService
             if (r == null) return;
             r.Entries.Add(new LogEntryDto { Id = _nextId++, Time = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"), Message = message, Color = color });
         }
+        WriteFile(roundId, message, color, "AutomationLogAdded");
     }
 
     /// <summary>非轮次日志（信号自动等）落入固定「系统 / 信号」分组。</summary>
@@ -74,6 +80,7 @@ public class AutomationLogService
         {
             EnsureSysRound().Entries.Add(new LogEntryDto { Id = _nextId++, Time = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"), Message = message, Color = color });
         }
+        WriteFile(SysRoundId, message, color, "AutomationSystemLogAdded");
     }
 
     /// <summary>更新式追加：系统通知中同 key（消息前缀）只保留最新一条并刷新时间，避免反复刷屏；调用方可看到最后更新时间。</summary>
@@ -96,12 +103,14 @@ public class AutomationLogService
                 while (r.Entries.Count > MaxSysEntries) r.Entries.RemoveAt(0);
             }
         }
+        WriteFile(SysRoundId, message, color, "AutomationLogUpdated");
     }
 
     /// <summary>标记轮次完成（前端可据状态提示）。</summary>
     public void CompleteRound(string roundId)
     {
         lock (_lock) { var r = _rounds.FirstOrDefault(x => x.RoundId == roundId); if (r != null) r.Completed = true; }
+        WriteFile(roundId, "自动化轮次完成", "#4ade80", "AutomationRoundCompleted");
     }
 
     /// <summary>修改轮次标题（如选托盘成功后由「第 N 轮」回写为成功轮数）。</summary>
@@ -127,4 +136,21 @@ public class AutomationLogService
 
     /// <summary>仅清空系统通知的条目（保留标题分组）。</summary>
     public void ClearSystem() { lock (_lock) { var r = _rounds.FirstOrDefault(x => x.RoundId == SysRoundId); if (r != null) r.Entries.Clear(); } }
+
+    private void WriteFile(string roundId, string message, string color, string eventName)
+    {
+        using var scope = _logger.BeginScope(new Dictionary<string, object?>
+        {
+            ["LogCategory"] = "Automation",
+            ["Component"] = nameof(AutomationLogService),
+            ["EventName"] = eventName,
+            ["RoundId"] = roundId
+        });
+        var level = color.Equals("#f87171", StringComparison.OrdinalIgnoreCase)
+            ? LogLevel.Warning
+            : color.Equals("#fbbf24", StringComparison.OrdinalIgnoreCase)
+                ? LogLevel.Warning
+                : LogLevel.Information;
+        _logger.Log(level, "{AutomationMessage}", message);
+    }
 }

@@ -147,6 +147,13 @@ public class TaskStageHub : IDisposable
         finally { _reconnectGate.Release(); }
     }
 
+    /// <summary>地址设置保存后立即切换到新的 WCS SignalR 地址。</summary>
+    public async Task RefreshConnectionAsync()
+    {
+        if (!_started) return;
+        await ReconnectAsync();
+    }
+
     /// <summary>建立 SignalR 连接（幂等；MainLayout 注入时调用，保证每个标签页常驻）。</summary>
     public async Task EnsureStartedAsync()
     {

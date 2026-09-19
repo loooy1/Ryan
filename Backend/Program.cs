@@ -1,8 +1,10 @@
 using Backend.Shared;
+using Backend.Shared.Logging;
 using WCSBackend.Modules.Wcs;
 using Microsoft.EntityFrameworkCore;
 
 var builder = WebApplication.CreateBuilder(args);
+builder.AddSharedLogging();
 
 // ── 本项目定位 ──
 // WCS 后端（管理面）：对 GRCS 核心系统暴露 WCS 协议回调接口（/api/v1/*），
@@ -20,6 +22,7 @@ builder.Services.AddGrcsJson();
 
 // CORS：允许模拟器（浏览器 WASM）调试时直接访问本服务（生产环境用 CORS_ORIGIN 收紧）。
 builder.Services.AddGrcsCors();
+builder.Services.AddSharedHttpClientLogging();
 
 // SignalR：WCS 实时事件推送（前端不再轮询任务台账）
 builder.Services.AddSignalR();
@@ -31,8 +34,10 @@ builder.Services.AddSharedModule("WCS.db", typeof(Program).Assembly, typeof(WcsM
 builder.Services.AddWcsModule();
 
 var app = builder.Build();
+app.Logger.LogInformation("WCS 后端启动，环境={Environment}", app.Environment.EnvironmentName);
 
 // 全局异常兜底：未捕获异常统一返回 {"error":"..."}，避免堆栈泄露 + 前端 FriendlyError 可解析
+app.UseSharedHttpLogging();
 app.UseGlobalErrorHandler();
 
 // 启动时应用未执行的 EF 迁移（wcs_inventory 等新表自动建表）
@@ -53,5 +58,8 @@ app.MapHub<WCSBackend.Modules.Wcs.Realtime.TaskStageRealtimeHub>("/hubs/wcs-real
 
 // 健康检查：/health/ready（SQLite 连通性）
 app.MapGrcsHealthCheck();
+
+app.Lifetime.ApplicationStopping.Register(() =>
+    app.Logger.LogInformation("WCS 后端正在停止"));
 
 app.Run();

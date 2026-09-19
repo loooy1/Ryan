@@ -91,9 +91,9 @@ public class AutomationHub : IDisposable
         if ((DateTime.UtcNow - _lastHealthCheck).TotalSeconds >= 5)
         {
             _lastHealthCheck = DateTime.UtcNow;
-            var adm = await _api.GetAsync<AdmittanceStatusDto>("/api/wcs/status");
+            var adm = await _api.GetHealthAsync<AdmittanceStatusDto>("/api/wcs/status");
             _health.ReportWcs(adm != null);
-            var grcs = await _api.GetAsync<GrcsProxyResult>("/api/wcs/grcs/health");
+            var grcs = await _api.GetHealthAsync<GrcsProxyResult>("/api/wcs/grcs/health");
             _health.ReportGrcs(grcs?.Ok == true);
         }
         Changed?.Invoke();

@@ -1,4 +1,5 @@
-using Rcs.Contracts.Map;
+using Contracts.Rcs.Map;
+using Contracts.Rcs.Route;
 
 namespace Rcs.Algorithms.AStar;
 

@@ -1,5 +1,5 @@
-using Rcs.Contracts.Map;
-using Rcs.Contracts.Vehicles;
+using Contracts.Rcs.Map;
+using Contracts.Rcs.Vehicle;
 
 namespace Rcs.VirtualVehicle;
 

@@ -1,6 +1,7 @@
 using System.Net.Http.Json;
-using Rcs.Contracts.Map;
-using Rcs.Contracts.Vehicles;
+using Contracts.Rcs.Map;
+using Contracts.Rcs.Route;
+using Contracts.Rcs.Vehicle;
 
 namespace Dashboard.Modules.RcsSimulator.Services;
 

@@ -37,12 +37,15 @@ public class WcsInventoryStore
     private readonly IUnitOfWorkFactory _uow;
     private readonly MapStoreService _map;
     private readonly ITaskStageService _stages;
+    private readonly ILogger<WcsInventoryStore> _logger;
 
-    public WcsInventoryStore(IUnitOfWorkFactory uow, MapStoreService map, ITaskStageService stages)
+    public WcsInventoryStore(IUnitOfWorkFactory uow, MapStoreService map, ITaskStageService stages,
+        ILogger<WcsInventoryStore> logger)
     {
         _uow = uow;
         _map = map;
         _stages = stages;
+        _logger = logger;
     }
 
     private static bool IsCargo(string code) => code.Contains("Cargo", StringComparison.OrdinalIgnoreCase);
@@ -110,6 +113,8 @@ public class WcsInventoryStore
             RefreshSelectionStatus(slot);
             slot.UpdatedAt = DateTime.Now.ToString("O");
             uow.CommitAsync().GetAwaiter().GetResult();
+            LogInventory("TaskStartPrepared", $"准备任务起点库存 Mark={mark} Code={code} Inserted={inserted}",
+                stationCode: mark, containerCode: IsCargo(code) ? "" : code, cargoCode: IsCargo(code) ? code : "");
             return true;
         }
     }
@@ -140,6 +145,8 @@ public class WcsInventoryStore
             RefreshSelectionStatus(slot);
             slot.UpdatedAt = DateTime.Now.ToString("O");
             uow.CommitAsync().GetAwaiter().GetResult();
+            LogInventory("TaskStartPreparationRolledBack", $"回滚任务起点预写 Mark={mark} Code={code}",
+                stationCode: mark);
         }
     }
 
@@ -195,6 +202,7 @@ public class WcsInventoryStore
             row.SelectionStatus = SelectionTaskEndLocked;
             row.UpdatedAt = DateTime.Now.ToString("O");
             uow.CommitAsync().GetAwaiter().GetResult();
+            LogInventory("DestinationLocked", $"锁定任务终点储位 TaskId={taskId} Mark={mark}", taskId, mark);
             return true;
         }
     }
@@ -212,6 +220,7 @@ public class WcsInventoryStore
             RefreshSelectionStatus(row);
             row.UpdatedAt = DateTime.Now.ToString("O");
             uow.CommitAsync().GetAwaiter().GetResult();
+            LogInventory("TaskLockCleared", $"释放任务储位锁 TaskId={taskId} Mark={mark}", taskId, mark);
         }
     }
 
@@ -239,6 +248,7 @@ public class WcsInventoryStore
             row.SelectionStatus = SelectionTaskStartLocked;
             row.UpdatedAt = DateTime.Now.ToString("O");
             uow.CommitAsync().GetAwaiter().GetResult();
+            LogInventory("StartLocked", $"锁定任务起点储位 TaskId={taskId} Mark={mark} Chained={isChainedStart}", taskId, mark);
             return true;
         }
     }
@@ -421,6 +431,7 @@ public class WcsInventoryStore
                 slot.UpdatedAt = DateTime.Now.ToString("O");
             }
             uow.CommitAsync().GetAwaiter().GetResult();
+            LogInventory("ManualStockAdded", $"手工库存写入 Count={normalized.Count} Codes={string.Join(',', normalized.Select(x => x.Code))}");
             return (true, "WCS 库存已写入");
         }
     }
@@ -508,6 +519,7 @@ public class WcsInventoryStore
                 row.UpdatedAt = DateTime.Now.ToString("O");
             }
             uow.CommitAsync().GetAwaiter().GetResult();
+            LogInventory("InventoryPicked", $"领取库存 Codes={string.Join(',', requested)}");
             return true;
         }
     }
@@ -541,6 +553,7 @@ public class WcsInventoryStore
                 row.UpdatedAt = DateTime.Now.ToString("O");
             }
             uow.CommitAsync().GetAwaiter().GetResult();
+            LogInventory("InventoryMarkedBusy", $"库存进入忙碌状态 Codes={string.Join(',', list)}");
         }
     }
 
@@ -582,6 +595,9 @@ public class WcsInventoryStore
             if (!string.IsNullOrWhiteSpace(palletCode) || !string.IsNullOrWhiteSpace(cargoCode))
                 _stages.TryRecordSystemEvent(taskId, $"TRANSIT:{palletCode}({cargoCode})", true, 0,
                     sourceMark, palletCode ?? "", cargoCode ?? "");
+            LogInventory("InventoryEnteredTransit",
+                $"任务库存进入在途 TaskId={taskId} Source={sourceMark} Pallet={palletCode} Cargo={cargoCode}",
+                taskId, sourceMark ?? "", palletCode ?? "", cargoCode ?? "");
         }
     }
 
@@ -614,6 +630,8 @@ public class WcsInventoryStore
             RefreshSelectionStatus(slot);
             slot.UpdatedAt = DateTime.Now.ToString("O");
             uow.CommitAsync().GetAwaiter().GetResult();
+            LogInventory("TaskCargoWritten", $"写入任务货物 TaskId={taskId} Mark={mark} Cargo={created.CargoCode}",
+                taskId, mark, cargoCode: created.CargoCode);
             return true;
         }
     }
@@ -645,6 +663,8 @@ public class WcsInventoryStore
             RefreshSelectionStatus(slot);
             slot.UpdatedAt = DateTime.Now.ToString("O");
             uow.CommitAsync().GetAwaiter().GetResult();
+            LogInventory("TaskCargoRemoved", $"移除任务货物 TaskId={taskId} Mark={mark} Cargo={created.CargoCode}",
+                taskId, mark, cargoCode: created.CargoCode);
             return true;
         }
     }
@@ -674,6 +694,8 @@ public class WcsInventoryStore
                 row.UpdatedAt = DateTime.Now.ToString("O");
             }
             uow.CommitAsync().GetAwaiter().GetResult();
+            LogInventory("InventoryMarkedFailed", $"库存标记失败 TaskId={taskId} Codes={string.Join(',', codes)}", taskId,
+                level: LogLevel.Warning);
         }
     }
 
@@ -738,6 +760,8 @@ public class WcsInventoryStore
                 }
             }
             uow.CommitAsync().GetAwaiter().GetResult();
+            LogInventory("InventoryReleased", $"任务库存落位 TaskId={taskId} Destination={destMark} Codes={string.Join(',', codes)}",
+                taskId, destMark);
         }
     }
 
@@ -817,6 +841,9 @@ public class WcsInventoryStore
             RefreshSelectionStatus(destination);
             destination.UpdatedAt = DateTime.Now.ToString("O");
             uow.CommitAsync().GetAwaiter().GetResult();
+            LogInventory("SortingInventoryReleased",
+                $"分拣库存落位 TaskId={taskId} Parent={parentMark} Destination={destination.Mark} Codes={string.Join(',', codes)}",
+                taskId, destination.Mark);
             return new(true, true, destination.Mark, "已写入实际分拣台");
         }
     }
@@ -870,6 +897,8 @@ public class WcsInventoryStore
                 row.UpdatedAt = DateTime.Now.ToString("O");
             }
             uow.CommitAsync().GetAwaiter().GetResult();
+            LogInventory("SortingAssociationSaved",
+                $"保存人工分拣台关联 Parent={parent} Children={string.Join(',', validChildren)}");
             return new() { Success = true, ParentStationCode = parent, ChildStationCodes = validChildren,
                 Message = validChildren.Count == 0 ? "已解除人工分拣台关联" : "人工分拣台关联已保存" };
         }
@@ -901,6 +930,7 @@ public class WcsInventoryStore
                 row.UpdatedAt = DateTime.Now.ToString("O");
             }
             uow.CommitAsync().GetAwaiter().GetResult();
+            LogInventory("PickedInventoryRecycled", $"回收未下发库存 Codes={string.Join(',', codes)}");
         }
     }
 
@@ -919,6 +949,7 @@ public class WcsInventoryStore
                 s.UpdatedAt = DateTime.Now.ToString("O");
             }
             uow.CommitAsync().GetAwaiter().GetResult();
+            LogInventory("BusyInventoryCleared", "强制释放全部忙碌库存", level: LogLevel.Warning);
         }
     }
 
@@ -952,6 +983,7 @@ public class WcsInventoryStore
                 slot.UpdatedAt = DateTime.Now.ToString("O");
             }
             uow.CommitAsync().GetAwaiter().GetResult();
+            LogInventory("InventoryRebuilt", $"从 GRCS 全量重建库存 Records={records.Count}");
         }
     }
 
@@ -983,6 +1015,7 @@ public class WcsInventoryStore
                 slot.UpdatedAt = DateTime.Now.ToString("O");
             }
             uow.CommitAsync().GetAwaiter().GetResult();
+            LogInventory("InventoryMerged", $"从 GRCS 增量合并库存 Records={records.Count} Stations={stationSet?.Count ?? 0}");
         }
     }
 
@@ -1028,6 +1061,22 @@ public class WcsInventoryStore
                 | Contracts.Dtos.MapStationTypeBits.TransferPoint
                 | Contracts.Dtos.MapStationTypeBits.PickingStation)) != 0)
             .Select(s => s.Mark), StringComparer.OrdinalIgnoreCase);
+    }
+
+    private void LogInventory(string eventName, string message, string taskId = "", string stationCode = "",
+        string containerCode = "", string cargoCode = "", LogLevel level = LogLevel.Information)
+    {
+        using var scope = _logger.BeginScope(new Dictionary<string, object?>
+        {
+            ["LogCategory"] = "Inventory",
+            ["Component"] = nameof(WcsInventoryStore),
+            ["EventName"] = eventName,
+            ["TaskId"] = taskId,
+            ["StationCode"] = stationCode,
+            ["ContainerCode"] = containerCode,
+            ["CargoCode"] = cargoCode
+        });
+        _logger.Log(level, "{InventoryMessage}", message);
     }
 
     /// <summary>任务创建行保存了本次搬运的托盘和货物，是库存流转的唯一任务映射来源。</summary>

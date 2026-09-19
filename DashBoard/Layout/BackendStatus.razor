@@ -1,5 +1,6 @@
 @inject BackendHealthService Health
 @inject WcsApiClient WcsApi
+@inject LocalStoreService LocalStore
 @inject NavigationManager NavManager
 @implements IDisposable
 
@@ -22,11 +23,11 @@
         <span class="ss-state @DotStateClass(Health.WcsOnline)">@DotStateText(Health.WcsOnline)</span>
         <span class="ss-port">@WcsPort</span>
     </div>
-    <div class="ss-card" title="GRCS 后端接口 — http://localhost:8224">
+    <div class="ss-card" title="GRCS 后端接口 — @WcsApi.GrcsBaseUrl">
         <span class="ss-dot @DotClass(Health.GrcsOnline)"></span>
         <span class="ss-name">GRCS 后端</span>
         <span class="ss-state @DotStateClass(Health.GrcsOnline)">@DotStateText(Health.GrcsOnline)</span>
-        <span class="ss-port">8224</span>
+        <span class="ss-port">@GrcsPort</span>
     </div>
     <div class="ss-front" title="WCS 前端当前运行地址">前端 · @NavManager.BaseUri</div>
 </div>
@@ -35,9 +36,16 @@
     protected override void OnInitialized()
     {
         Health.Changed += OnChanged;
+        LocalStore.ValueChanged += OnStoreValueChanged;
     }
 
     private void OnChanged() => InvokeAsync(StateHasChanged);
+
+    private void OnStoreValueChanged(string key, string? value) 
+    {
+        if (key is "grcs_wcs_url" or "grcs_grcs_url")
+            _ = InvokeAsync(StateHasChanged);
+    }
 
     private string WcsPort
     {
@@ -49,6 +57,16 @@
                 ? (uri.Scheme == Uri.UriSchemeHttps ? "443" : "80")
                 : uri.Port.ToString();
         }
+    }
+
+    private string GrcsPort => PortOf(WcsApi.GrcsBaseUrl);
+
+    private static string PortOf(string address)
+    {
+        if (!Uri.TryCreate(address, UriKind.Absolute, out var uri)) return "—";
+        return uri.IsDefaultPort
+            ? (uri.Scheme == Uri.UriSchemeHttps ? "443" : "80")
+            : uri.Port.ToString();
     }
 
     private static string DotClass(bool? online) => online switch
@@ -75,5 +93,6 @@
     public void Dispose()
     {
         Health.Changed -= OnChanged;
+        LocalStore.ValueChanged -= OnStoreValueChanged;
     }
 }

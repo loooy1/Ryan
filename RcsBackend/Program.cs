@@ -1,7 +1,9 @@
 using Backend.Shared;
+using Backend.Shared.Logging;
 using RCSBackend.Modules.Rcs;
 
 var builder = WebApplication.CreateBuilder(args);
+builder.AddSharedLogging();
 
 // ── 本项目定位 ──
 // RCS 后端（核心系统，替代 GRCS）：实现 GRCS 协议服务端接口（/api/Cargo、/api/Map/GetMap、
@@ -19,6 +21,7 @@ builder.Services.AddGrcsJson();
 
 // CORS：允许模拟器（浏览器 WASM）调试时直接访问本服务（生产环境用 CORS_ORIGIN 收紧）
 builder.Services.AddGrcsCors();
+builder.Services.AddSharedHttpClientLogging();
 
 // SignalR：RCS 实时推送（业务定义后注册 Hub）
 builder.Services.AddSignalR();
@@ -30,8 +33,10 @@ builder.Services.AddSharedModule("rcs.db", typeof(Program).Assembly, typeof(RcsM
 builder.Services.AddRcsModule();
 
 var app = builder.Build();
+app.Logger.LogInformation("RCS 后端启动，环境={Environment}", app.Environment.EnvironmentName);
 
 // 全局异常兜底：未捕获异常统一返回 {"error":"..."}
+app.UseSharedHttpLogging();
 app.UseGlobalErrorHandler();
 
 // RCS 第一阶段只运行内存矩阵地图和虚拟车，不初始化数据库迁移。
@@ -43,5 +48,8 @@ app.MapHub<RCSBackend.Modules.Rcs.Realtime.RcsRealtimeHub>("/hubs/rcs-realtime")
 
 // 健康检查：/health/ready（SQLite 连通性）
 app.MapGrcsHealthCheck();
+
+app.Lifetime.ApplicationStopping.Register(() =>
+    app.Logger.LogInformation("RCS 后端正在停止"));
 
 app.Run();
