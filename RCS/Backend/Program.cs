@@ -1,0 +1,59 @@
+using Backend.Shared;
+using Backend.Shared.Logging;
+using RCSBackend.Modules.Rcs;
+
+var builder = WebApplication.CreateBuilder(args);
+builder.AddSharedLogging();
+
+// ── 本项目定位 ──
+// RCS 后端（核心系统，替代 GRCS）：实现 GRCS 协议服务端接口（/api/Cargo、/api/Map/GetMap、
+// /api/RawOrder/ChangeFloor、/api/v1/task_receive 等），WCS 只改 GRCS 地址配置即可切换对接。
+// 对 RCS 前端/管理面提供 /api/rcs/* 管理接口。监听端口由 appsettings.json 的 Urls 决定（默认 8231）。
+// 数据库：独立 MySQL 数据库（与 WCS 数据库隔离）。
+//
+// ── 模块化约定 ──
+// 每个业务域一个 Modules/<域>/ 目录（Controllers/Models/Services），
+// 通过 Modules/<域>/XxxModuleExtensions.AddXxxModule() 在此挂接注册。
+// 共享设施（DbContext/仓储/管线）来自 Backend.Shared 类库。
+
+// 控制器 + NewtonsoftJson：与 GRCS 协议一致的日期序列化格式（WCS 解析本服务响应依赖它）
+builder.Services.AddGrcsJson();
+
+// CORS：允许模拟器（浏览器 WASM）调试时直接访问本服务（生产环境用 CORS_ORIGIN 收紧）
+builder.Services.AddGrcsCors();
+builder.Services.AddSharedHttpClientLogging();
+
+// SignalR：RCS 实时推送（业务定义后注册 Hub）
+builder.Services.AddSignalR();
+
+// 共享基础设施：MySQL。RCS 尚无持久化实体，先由 EnsureCreated 初始化空库。
+builder.Services.AddSharedModule(
+    builder.Configuration,
+    new SharedDatabaseRegistration(
+        "RcsDatabase",
+        typeof(Program).Assembly),
+    typeof(RcsModuleExtensions).Assembly);
+
+// 模块注册（Rcs 总模块：Protocol/Console/Realtime/Infrastructure 子模块，业务定义后填充）
+builder.Services.AddRcsModule();
+
+var app = builder.Build();
+app.Logger.LogInformation("RCS 后端启动，环境={Environment}", app.Environment.EnvironmentName);
+
+// 全局异常兜底：未捕获异常统一返回 {"error":"..."}
+app.UseSharedHttpLogging();
+app.UseGlobalErrorHandler();
+
+await app.InitializeSharedDatabaseAsync();
+
+app.UseCors();
+app.MapControllers();
+app.MapHub<RCSBackend.Modules.Rcs.Realtime.RcsRealtimeHub>("/hubs/rcs-realtime");
+
+// 健康检查：/health/ready（当前数据库连通性）
+app.MapGrcsHealthCheck();
+
+app.Lifetime.ApplicationStopping.Register(() =>
+    app.Logger.LogInformation("RCS 后端正在停止"));
+
+app.Run();

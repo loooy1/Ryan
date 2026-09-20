@@ -3,19 +3,19 @@ Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 18
 VisualStudioVersion = 18.9.12023.133
 MinimumVisualStudioVersion = 10.0.40219.1
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "WCSBackend", "..\Backend\WCSBackend.csproj", "{2973D3EB-A45B-4DFB-AD16-7CA3F6829069}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "WCSBackend", "..\WCS\WCSBackend\WCSBackend.csproj", "{2973D3EB-A45B-4DFB-AD16-7CA3F6829069}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Contracts", "..\Contracts\Contracts.csproj", "{73EB6D6B-3DF7-4E54-AFAC-5EFD4DF99342}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Contracts", "..\Shared\Contracts\Contracts.csproj", "{73EB6D6B-3DF7-4E54-AFAC-5EFD4DF99342}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Dashboard", "..\DashBoard\Dashboard.csproj", "{47ADF6A0-2A15-4212-8883-ED1B410ECE95}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Dashboard", "..\Frontend\Dashboard\Dashboard.csproj", "{47ADF6A0-2A15-4212-8883-ED1B410ECE95}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Backend.Shared", "..\Shared\Backend.Shared.csproj", "{894BC2C0-7C0C-4CDA-8D66-B54C017E82F9}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Backend.Shared", "..\Shared\Backend.Shared\Backend.Shared.csproj", "{894BC2C0-7C0C-4CDA-8D66-B54C017E82F9}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "RCSBackend", "..\RcsBackend\RCSBackend.csproj", "{8F4A22CA-F545-CCDF-DB56-CA4DE2A16B6B}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "RCSBackend", "..\RCS\Backend\RCSBackend.csproj", "{8F4A22CA-F545-CCDF-DB56-CA4DE2A16B6B}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Rcs.Algorithms", "..\Rcs.Algorithms\Rcs.Algorithms.csproj", "{D0298458-CA5A-49BE-A5EE-A8C5169CCAA6}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Rcs.Algorithms", "..\RCS\Algorithms\Rcs.Algorithms.csproj", "{D0298458-CA5A-49BE-A5EE-A8C5169CCAA6}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Rcs.VirtualVehicle", "..\Rcs.VirtualVehicle\Rcs.VirtualVehicle.csproj", "{97E41D56-DEC3-4361-8729-A8F78418C675}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Rcs.VirtualVehicle", "..\RCS\VirtualVehicle\Rcs.VirtualVehicle.csproj", "{97E41D56-DEC3-4361-8729-A8F78418C675}"
 EndProject
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "WCS", "WCS", "{B1A8D5E6-7F20-4C41-9A35-11A8E7D4C201}"
 EndProject

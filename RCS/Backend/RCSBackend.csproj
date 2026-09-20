@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\Shared\Contracts\Contracts.csproj" />
+    <ProjectReference Include="..\..\Shared\Backend.Shared\Backend.Shared.csproj" />
+    <ProjectReference Include="..\Algorithms\Rcs.Algorithms.csproj" />
+    <ProjectReference Include="..\VirtualVehicle\Rcs.VirtualVehicle.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- EF Core Design：dotnet ef migrations 工具所需（RCS 自己的迁移在 RcsBackend 程序集生成） -->
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="9.0.16">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+  </ItemGroup>
+
+</Project>
+
