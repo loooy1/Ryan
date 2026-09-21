@@ -64,7 +64,6 @@ public class InventoryController : ControllerBase
     {
         if (_invStore.HasInTransit())
             return BadRequest(new { success = false, message = "存在在途自动化任务，禁止同步库存；请先停止或等待任务完成" });
-        _invStore.EnsureSlots();
         var records = await _inventoryCache.SyncAllAsync();
         if (!_inventoryCache.Ready && records.Count == 0)
             return BadRequest(new { success = false, message = "GRCS 未响应，无法同步库存" });

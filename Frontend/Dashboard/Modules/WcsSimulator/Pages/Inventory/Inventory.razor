@@ -10,7 +10,7 @@
 <PageTitle>库存管理</PageTitle>
 
 @* ════════════════════════════════════════════════
-   WCS 手工入库：纯货物按框选储位写入；托盘由 RCS 批量生成后同步回 WCS。
+   WCS 手工入库：纯货物按框选储位写入；托盘只由 RCS 批量生成，不自动同步 WCS。
    带货托仅展示，不可由此功能创建或覆盖。
    ════════════════════════════════════════════════ *@
 <section class="inventory-workspace">
@@ -140,12 +140,12 @@
                         @(_manualSubmitting
                             ? "⏳ 处理中..."
                             : _manualInventoryType == ManualInventoryTypes.Pallet
-                                ? "由 RCS 生成当前楼层全部托盘并同步 WCS"
+                                ? "只由 RCS 生成当前楼层全部托盘"
                                 : $"确认增加 {_manualSelectedMarks.Count} 条货物")
                     </button>
                     <div class="hint-text manual-entry-hint">
                         @(_manualInventoryType == ManualInventoryTypes.Pallet
-                            ? "托盘由 RCS /AutoContainerEnter 创建；成功后立即以 RCS 库存重建 WCS 账本和地图。"
+                            ? "托盘由 RCS /AutoContainerEnter 创建；成功后不写入或同步 WCS 库存。"
                             : "货物先整体写入 WCS 指定储位，再按储位顺序逐条同步 RCS。")
                         不创建带货托。
                     </div>
@@ -733,26 +733,23 @@
                     return;
                 }
 
-                var (synced, syncJson) = await WcsService.SyncInventoryAsync();
                 _manualResult = new ManualInventoryEnterResult
                 {
-                    WcsWritten = synced,
-                    Message = synced
-                        ? "RCS 已生成当前楼层全部可用托盘，WCS 已按 RCS 实际落位同步完成"
-                        : $"RCS 已生成托盘，但 WCS 库存同步失败：{syncJson}",
+                    WcsWritten = false,
+                    Message = "RCS 已生成当前楼层全部可用托盘，WCS 库存未同步",
                     Items = [new ManualInventoryEnterItemResult
                     {
                         StationMark = $"{_manualFloor} 层（RCS 自动分配）",
                         Code = _manualPrefix,
                         InventoryType = ManualInventoryTypes.Pallet,
-                        WcsWritten = synced,
+                        WcsWritten = false,
                         RcsSynced = true,
                         RcsStatusCode = statusCode,
-                        Message = synced ? "RCS 已生成，WCS 已同步实际储位" : syncJson,
+                        Message = "RCS 已生成，WCS 未同步",
                     }]
                 };
-                if (synced) _manualSelectedMarks.Clear();
-                ShowFeedback(synced ? "✅" : "❌", _manualResult.Message);
+                _manualSelectedMarks.Clear();
+                ShowFeedback("✅", _manualResult.Message);
                 await RefreshManualSnapshot();
                 return;
             }

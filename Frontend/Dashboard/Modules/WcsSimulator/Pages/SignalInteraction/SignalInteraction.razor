@@ -34,7 +34,7 @@
     .mod-card { transition: transform .15s, box-shadow .15s; }
     .mod-card:hover { transform: translateY(-2px); box-shadow: 0 4px 14px rgba(0,0,0,.35); }
     .exec-log-card { border: 1px solid #1e293b; border-radius: 10px; background: linear-gradient(135deg, #0f172a, #111c31); overflow: hidden; }
-    .exec-log-summary { width: 100%; border: 0; background: transparent; padding: 12px 14px; text-align: left; color: inherit; cursor: pointer; }
+    .exec-log-summary { width: 100%; border: 0; background: transparent; padding: 12px 14px 12px 0; text-align: left; color: inherit; cursor: pointer; }
     .exec-log-summary:hover { background: rgba(30, 41, 59, .55); }
     .exec-log-summary:focus-visible, .exec-copy-btn:focus-visible { outline: 2px solid #38bdf8; outline-offset: -2px; }
     .exec-log-detail { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; padding: 12px 14px 14px; border-top: 1px solid #1e293b; }
@@ -485,7 +485,7 @@
                     <div style="display:flex;flex-direction:column;gap:8px;">
                         @foreach (var e in _filteredApprovals.OrderByDescending(x => x.Time))
                         {
-                            <div style="border:1px solid #1e293b;border-radius:8px;background:#0f172a;padding:10px 12px;">
+                            <div style="border:1px solid #1e293b;border-radius:8px;background:#0f172a;padding:10px 12px;cursor:pointer;" title="单击打开配置" @onclick="() => ToggleMockDetail(e.Key)">
                                 <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
                                     <span class="badge @(e.Status=="Pending"?"badge-warn":e.Status=="Approved"?"badge-info":e.Status=="Allowed"||e.Status=="AutoPass"?"badge-ok":"badge-empty")">@(e.Status=="Pending"?"待审批":e.Status=="Approved"?"已批准·待重试":e.Status=="Allowed"?"已放行":e.Status=="AutoPass"?"自动通过":"已拒绝")</span>
                                     <span style="color:#94a3b8;font-family:Consolas,monospace;font-size:0.8rem;" title="系统唯一标识：同一 Key 的新进站会生成新 ID，放行后原卡自动更换 ID 退出匹配">#@e.Id</span>
@@ -498,11 +498,10 @@
                                     <span style="display:flex;gap:6px;flex-wrap:wrap;">
                                         @if (e.Status == "Pending")
                                         {
-                                            <button class="btn btn-primary btn-xs" @onclick="() => DecideMock(e.Key, true)">批准</button>
-                                            <button class="btn btn-danger btn-xs" @onclick="() => DecideMock(e.Key, false)">拒绝</button>
+                                            <button class="btn btn-primary btn-xs" @onclick="() => DecideMock(e.Key, true)" @onclick:stopPropagation @ondblclick:stopPropagation>批准</button>
+                                            <button class="btn btn-danger btn-xs" @onclick="() => DecideMock(e.Key, false)" @onclick:stopPropagation @ondblclick:stopPropagation>拒绝</button>
                                         }
-                                        <button class="btn btn-outline btn-xs" @onclick="() => ToggleMockDetail(e.Key)">配置</button>
-                                        <button class="btn btn-outline btn-xs" @onclick="() => DeleteMockApproval(e.Key)">删除</button>
+                                        <button class="btn btn-outline btn-xs" @onclick="() => DeleteMockApproval(e.Key)" @onclick:stopPropagation @ondblclick:stopPropagation>删除</button>
                                     </span>
                                 </div>
                                 @if (_expandedMock.Contains(e.Key))
@@ -594,6 +593,7 @@
                                 <button type="button" class="exec-log-summary" @onclick="() => ToggleExecLog(e.Id)" aria-expanded="@IsExecLogExpanded(e.Id)">
                                 <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
                                     <span class="badge @(e.Ok ? "badge-ok" : "badge-warn")">@(e.Ok ? "\u6210\u529f" : "\u5931\u8d25") HTTP @e.HttpCode</span>
+                                    <span style="color:#94a3b8;font-family:Consolas,monospace;font-size:0.8rem;" title="模块执行记录编号">#@e.Id</span>
                                     <span style="color:#cbd5e1;font-family:Consolas,monospace;font-size:0.8rem;">@e.Time</span>
                                     <span style="color:#e2e8f0;font-family:Consolas,monospace;font-size:0.85rem;" title="Task ID">@e.TaskId</span>
                                     <span class="badge badge-info">@e.Point</span>

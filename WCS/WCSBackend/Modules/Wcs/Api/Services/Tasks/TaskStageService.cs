@@ -44,7 +44,7 @@ public class TaskStageService : ITaskStageService
     private readonly HashSet<string> _forcedFinished = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, TaskCompletionSource<bool>> _waiters = new(StringComparer.OrdinalIgnoreCase);
     private int _forceGeneration;
-    private const int MaxRecords = 10000;
+    private const int MaxRecords = 50000;
 
     public TaskStageService(IHubContext<TaskStageRealtimeHub> hub, IUnitOfWorkFactory uowFactory,
         TaskLifecycleService lifecycle, ILogger<TaskStageService> logger)

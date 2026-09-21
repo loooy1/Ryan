@@ -23,7 +23,8 @@ public class MockApprovalService
     private readonly Dictionary<string, bool> _decisions = new(StringComparer.OrdinalIgnoreCase);
     private readonly IUnitOfWorkFactory _uow;
     private readonly IHubContext<TaskStageRealtimeHub> _hub;
-    private const int MaxEvents = 500;
+    // 请求信号记录统一保留最近 5 万条，不区分 Pending 或已处理状态。
+    private const int MaxEvents = 50000;
 
     public MockApprovalService(IUnitOfWorkFactory uowFactory, IHubContext<TaskStageRealtimeHub> hub)
     {
@@ -31,13 +32,18 @@ public class MockApprovalService
         _hub = hub;
         try
         {
-            using var uow = _uow.Create();
-            foreach (var row in uow.Repository<MockRequestEventRow>().FindAllAsync().GetAwaiter().GetResult())
             {
-                var ev = row.Adapt<MockRequestEventDto>();
-                _events[ev.Key] = ev;
-                if (ev.Id > _seq) _seq = ev.Id;
+                using var uow = _uow.Create();
+                foreach (var row in uow.Repository<MockRequestEventRow>().FindAllAsync().GetAwaiter().GetResult())
+                {
+                    var ev = row.Adapt<MockRequestEventDto>();
+                    _events[ev.Key] = ev;
+                    if (ev.Id > _seq) _seq = ev.Id;
+                }
             }
+
+            // 启动时也执行一次总量裁剪，确保历史数据不会绕过 5 万条上限。
+            TrimEvents(MaxEvents);
         }
         catch { }
     }
@@ -54,16 +60,24 @@ public class MockApprovalService
         uow.CommitAsync().GetAwaiter().GetResult();
     }
 
-    /// <summary>裁剪：删除超限的已处理（非 Pending）记录，Pending 不受上限约束。</summary>
+    /// <summary>裁剪：总记录数超过上限时，删除最老的记录（包括 Pending）。</summary>
     private void TrimEvents(int max)
     {
         using var uow = _uow.Create();
         var repo = uow.Repository<MockRequestEventRow>();
-        var keep = repo.Query().Where(x => x.Status != "Pending")
-            .OrderByDescending(x => x.Time).ThenByDescending(x => x.Key)
-            .Take(max).Select(x => x.Key).ToList();
-        if (keep.Count > 0)
-            repo.DeleteWhereAsync(x => x.Status != "Pending" && !keep.Contains(x.Key)).GetAwaiter().GetResult();
+        var staleKeys = repo.Query()
+            .OrderByDescending(x => x.Time)
+            .ThenByDescending(x => x.EventId)
+            .ThenByDescending(x => x.Key)
+            .Skip(max)
+            .Select(x => x.Key)
+            .ToList();
+        if (staleKeys.Count == 0) return;
+
+        foreach (var key in staleKeys)
+            _events.Remove(key);
+
+        repo.DeleteWhereAsync(x => staleKeys.Contains(x.Key)).GetAwaiter().GetResult();
         uow.CommitAsync().GetAwaiter().GetResult();
     }
 

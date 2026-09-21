@@ -955,35 +955,50 @@ public class WcsInventoryStore
 
     // ── 同步 ──
 
-    /// <summary>全量重建（同步按钮）：清空储位行占用 → 按 GRCS 记录回填（仅储位点；接驳位等非储位记录跳过，任务链会恢复）。
-    /// GRCS 仅提供初始化（位置+号码），状态一律 ready（不照搬 GRCS 锁定）；同步后旧任务映射作废（后续 FINISHED 不落地）。</summary>
+    /// <summary>
+    /// 全量重建（同步按钮）：清空 WCS 库存表，然后按当前地图站点重建站点行，
+    /// 再用 GRCS 返回的库存号码回填对应站点。GRCS 只提供位置和号码，状态统一为 ready。
+    /// </summary>
     public void RebuildFromGrcs(List<Contracts.Dtos.CargoInventoryItem> records)
     {
         lock (WriteLock)
         {
             using var uow = _uow.Create();
             var repo = uow.Repository<WcsSlotRow>();
-            foreach (var slot in repo.Query().ToList())
+            // 同步是全量替换：删除旧库存行（包括旧点位、旧库存、旧锁和旧关联），
+            // 防止已不存在于 RCS/当前地图的数据残留。
+            repo.DeleteWhereAsync(_ => true).GetAwaiter().GetResult();
+
+            var slotsByMark = new Dictionary<string, WcsSlotRow>(StringComparer.OrdinalIgnoreCase);
+            foreach (var station in InventoryMapStations())
             {
-                slot.PalletCode = ""; slot.PalletStatus = "";
-                slot.CargoCode = ""; slot.CargoStatus = "";
-                slot.TaskLockId = "";
-                RefreshSelectionStatus(slot);
-                slot.UpdatedAt = DateTime.Now.ToString("O");
+                var siteType = SiteTypeOf(station);
+                var slot = new WcsSlotRow
+                {
+                    Mark = station.Mark,
+                    SiteType = siteType,
+                    Floor = station.Floor,
+                    X = station.X,
+                    Y = station.Y,
+                    SelectionStatus = siteType == "Storage" ? SelectionStartUnavailable : SelectionAvailable,
+                    UpdatedAt = DateTime.Now.ToString("O")
+                };
+                repo.AddAsync(slot).GetAwaiter().GetResult();
+                slotsByMark[slot.Mark] = slot;
             }
+
             foreach (var r in records)
             {
                 var code = r.Code ?? "";
                 if (string.IsNullOrEmpty(code) || string.IsNullOrEmpty(r.CurrentStationCode)) continue;
-                var slot = repo.FindAsync(r.CurrentStationCode).GetAwaiter().GetResult();
-                if (slot == null) continue;
+                if (!slotsByMark.TryGetValue(r.CurrentStationCode, out var slot)) continue;
                 if (IsCargo(code)) { slot.CargoCode = code; slot.CargoStatus = "ready"; }
                 else { slot.PalletCode = code; slot.PalletStatus = "ready"; }
                 RefreshSelectionStatus(slot);
                 slot.UpdatedAt = DateTime.Now.ToString("O");
             }
             uow.CommitAsync().GetAwaiter().GetResult();
-            LogInventory("InventoryRebuilt", $"从 GRCS 全量重建库存 Records={records.Count}");
+            LogInventory("InventoryRebuilt", $"清空并重建库存表：地图站点={slotsByMark.Count}，GRCS库存={records.Count}");
         }
     }
 

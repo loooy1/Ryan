@@ -8,7 +8,7 @@ namespace WCSBackend.Modules.Wcs.Console.Services;
 
 public sealed class ModuleExecutionLogStore
 {
-    private const int MaxRecords = 2000;
+    private const int MaxRecords = 50000;
     private readonly object _writeLock = new();
     private readonly IUnitOfWorkFactory _uow;
     private readonly IHubContext<TaskStageRealtimeHub> _hub;
