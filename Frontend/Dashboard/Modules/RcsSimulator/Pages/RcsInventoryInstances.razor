@@ -1,0 +1,162 @@
+@page "/rcs/inventory/instances"
+@using Contracts.Rcs.Inventory
+@using Contracts.Rcs.Map
+@inject RcsApiClient Api
+
+<PageTitle>RCS 货物与托盘实例</PageTitle>
+<div class="rcs-inventory-page">
+    <header class="inventory-page-header">
+        <div><div class="inventory-kicker">RCS / INVENTORY INSTANCES</div><h1>货物 / 托盘实例</h1><p>实例是现场实际存在的货物或托盘，可放置到站点，也可将货物装入托盘。</p></div>
+        <button class="inventory-primary" @onclick="StartCreate" disabled="@_busy">＋ 新建实例</button>
+    </header>
+    <div class="inventory-toolbar">
+        <div class="inventory-tabs">
+            <button class="@(_filter.Length == 0 ? "active" : "")" @onclick="() => SetType(string.Empty)">全部</button>
+            <button class="@TabClass(RcsInventoryItemTypes.Cargo)" @onclick="() => SetType(RcsInventoryItemTypes.Cargo)">货物</button>
+            <button class="@TabClass(RcsInventoryItemTypes.Pallet)" @onclick="() => SetType(RcsInventoryItemTypes.Pallet)">托盘</button>
+        </div>
+        <button class="inventory-secondary" @onclick="LoadAsync" disabled="@_busy">↻ 刷新</button>
+    </div>
+    <div class="inventory-content">
+        <section class="inventory-table-card">
+            <div class="inventory-card-heading"><strong>实例列表</strong><span>@_instances.Count 项 · 地图 @_mapCode</span></div>
+            @if (_loading) { <div class="inventory-empty">正在读取实例…</div> }
+            else if (_instances.Count == 0) { <div class="inventory-empty">没有实例记录。</div> }
+            else
+            {
+                <div class="inventory-table-scroll"><table><thead><tr><th>类型</th><th>实例编码</th><th>模型</th><th>位置 / 所属托盘</th><th>状态</th><th>操作</th></tr></thead><tbody>
+                @foreach (var item in _instances)
+                {
+                    <tr>
+                        <td><span class="inventory-type @(item.ItemType == RcsInventoryItemTypes.Pallet ? "pallet" : "cargo")">@TypeText(item.ItemType)</span></td>
+                        <td><code>@item.InstanceCode</code></td><td>@item.ModelCode</td>
+                        <td>@LocationText(item)</td><td>@item.Status</td>
+                        <td class="inventory-instance-actions">
+                            <select @bind="_moveTargets[item.Id]" disabled="@_busy" aria-label="选择目标站点">
+                                <option value="">移动到站点…</option>
+                                @foreach (var point in _map?.Points ?? [])
+                                { <option value="@point.PointCode">@point.PointCode · @point.PointName</option> }
+                            </select>
+                            <button class="inventory-row-action" @onclick="() => MoveAsync(item)" disabled="@_busy">移动</button>
+                            <button class="inventory-row-action danger" @onclick="() => DeleteAsync(item)" disabled="@_busy">删除</button>
+                        </td>
+                    </tr>
+                }
+                </tbody></table></div>
+            }
+        </section>
+        <section class="inventory-form-card">
+            <div class="inventory-card-heading"><strong>新建实例</strong></div>
+            <label>类型<select @bind="_newItem.ItemType" @bind:after="OnTypeChanged" disabled="@_busy"><option value="CARGO">货物</option><option value="PALLET">托盘</option></select></label>
+            <label>实例编码<input @bind="_newItem.InstanceCode" disabled="@_busy" maxlength="128" required placeholder="输入现场条码/编号" /></label>
+            <label>模型<select @bind="_newItem.ModelCode" disabled="@_busy"><option value="">选择模型</option>@foreach (var model in AvailableModels) { <option value="@model.ModelCode">@model.ModelCode · @model.Name</option> }</select></label>
+            @if (!AvailableModels.Any())
+            {
+                <div class="inventory-empty-callout"><strong>当前类型没有可用模型</strong><span>先创建并启用对应类型的模型，实例才能引用它。</span><a href="rcs/inventory/models">前往模型管理 →</a></div>
+            }
+            @if (_newItem.ItemType == RcsInventoryItemTypes.Cargo)
+            {
+                <label>装载到托盘（可选）<select @bind="_newItem.ParentInstanceCode" @bind:after="OnParentChanged" disabled="@_busy"><option value="">不装托盘</option>@foreach (var pallet in _allInstances.Where(x => x.ItemType == RcsInventoryItemTypes.Pallet)) { <option value="@pallet.InstanceCode">@pallet.InstanceCode · @LocationText(pallet)</option> }</select></label>
+            }
+            @if (string.IsNullOrEmpty(_newItem.ParentInstanceCode))
+            {
+                <label>地图编码<input @bind="_newItem.MapCode" readonly /></label>
+                <label>站点<select @bind="_newItem.PointCode" disabled="@(_busy || _map?.Points.Count is not > 0)"><option value="">选择站点</option>@foreach (var point in _map?.Points ?? []) { <option value="@point.PointCode">@point.PointCode · @point.PointName</option> }</select></label>
+            }
+            @if (string.IsNullOrEmpty(_newItem.ParentInstanceCode) && _map?.Points.Count is not > 0)
+            {
+                <div class="inventory-empty-callout"><strong>当前地图没有可选站点</strong><span>请先在 RCS 地图中保存包含站点的地图。</span></div>
+            }
+            <div class="inventory-form-actions"><button class="inventory-secondary" @onclick="StartCreate" disabled="@_busy">清空</button><button class="inventory-primary" @onclick="CreateAsync" disabled="@(!CanCreate)">@(_busy ? "处理中…" : "创建实例")</button></div>
+        </section>
+    </div>
+    @if (!string.IsNullOrWhiteSpace(_message)) { <div class="inventory-message @(_error ? "error" : "success")">@_message</div> }
+</div>
+
+@code {
+    private List<RcsInventoryInstanceDto> _instances = [];
+    private List<RcsInventoryInstanceDto> _allInstances = [];
+    private List<RcsInventoryModelDto> _models = [];
+    private RcsMapEditorDto? _map;
+    private string _mapCode = "default", _filter = "";
+    private CreateRcsInventoryInstanceRequest _newItem = NewRequest();
+    private readonly Dictionary<long, string> _moveTargets = [];
+    private bool _loading, _busy, _error;
+    private string _message = "";
+    private IEnumerable<RcsInventoryModelDto> AvailableModels => _models.Where(x => x.ItemType == _newItem.ItemType && x.IsEnabled);
+    private bool CanCreate => !_busy && !string.IsNullOrWhiteSpace(_newItem.InstanceCode)
+        && !string.IsNullOrWhiteSpace(_newItem.ModelCode)
+        && (!string.IsNullOrWhiteSpace(_newItem.ParentInstanceCode)
+            || (!string.IsNullOrWhiteSpace(_newItem.MapCode) && !string.IsNullOrWhiteSpace(_newItem.PointCode)));
+    protected override async Task OnInitializedAsync()
+    {
+        try { _map = await Api.GetEditorMapAsync(_mapCode); }
+        catch (Exception ex) { _message = $"读取地图失败：{ex.Message}"; _error = true; }
+        if (_map is null)
+        {
+            try { _map = await Api.GetEditorMapAsync(); _mapCode = _map?.MapCode ?? "default"; }
+            catch (Exception ex) { _message = $"读取地图失败：{ex.Message}"; _error = true; }
+        }
+        try { _models = (await Api.GetInventoryModelsAsync()).ToList(); }
+        catch (Exception ex) { _message = $"读取模型失败：{ex.Message}"; _error = true; }
+        StartCreate();
+        await LoadAsync();
+    }
+    private static CreateRcsInventoryInstanceRequest NewRequest() => new() { ItemType = RcsInventoryItemTypes.Cargo, MapCode = "default" };
+    private string TabClass(string type) => _filter == type ? "active" : "";
+    private static string TypeText(string type) => type == RcsInventoryItemTypes.Pallet ? "托盘" : "货物";
+    private string LocationText(RcsInventoryInstanceDto item) => !string.IsNullOrWhiteSpace(item.ParentInstanceCode)
+        ? $"托盘 {item.ParentInstanceCode} · {item.PointCode}" : $"{item.MapCode} · {item.PointCode}";
+    private async Task SetType(string type) { _filter = type; await LoadAsync(); }
+    private async Task LoadAsync()
+    {
+        _loading = true;
+        try
+        {
+            _instances = (await Api.GetInventoryInstancesAsync(_filter)).ToList();
+            _allInstances = (await Api.GetInventoryInstancesAsync()).ToList();
+            _moveTargets.Clear(); foreach (var item in _instances) _moveTargets[item.Id] = "";
+            _message = "";
+        }
+        catch (Exception ex) { _message = $"读取失败：{ex.Message}"; _error = true; }
+        finally { _loading = false; }
+    }
+    private void StartCreate() { _newItem = NewRequest(); _newItem.MapCode = _mapCode; if (AvailableModels.FirstOrDefault() is { } model) _newItem.ModelCode = model.ModelCode; }
+    private void OnTypeChanged() { _newItem.ModelCode = AvailableModels.FirstOrDefault()?.ModelCode ?? ""; _newItem.ParentInstanceCode = ""; }
+    private void OnParentChanged() { if (!string.IsNullOrEmpty(_newItem.ParentInstanceCode)) { _newItem.MapCode = ""; _newItem.PointCode = ""; } else { _newItem.MapCode = _mapCode; } }
+    private async Task CreateAsync()
+    {
+        if (!CanCreate) return;
+        _busy = true;
+        try
+        {
+            var result = await Api.CreateInventoryInstanceAsync(_newItem);
+            if (result is null) throw new InvalidOperationException("后端没有确认创建结果。");
+            _message = "实例已创建。"; _error = false; StartCreate(); await LoadAsync();
+        }
+        catch (Exception ex) { _message = $"创建失败：{ex.Message}"; _error = true; }
+        finally { _busy = false; }
+    }
+    private async Task MoveAsync(RcsInventoryInstanceDto item)
+    {
+        var target = _moveTargets.GetValueOrDefault(item.Id);
+        if (string.IsNullOrWhiteSpace(target)) { _message = "先选择目标站点。"; _error = true; return; }
+        _busy = true;
+        try
+        {
+            await Api.MoveInventoryInstanceAsync(item.Id, new() { MapCode = _mapCode, PointCode = target });
+            _message = item.ItemType == RcsInventoryItemTypes.Pallet ? "托盘及其货物已移动。" : "实例已移动。";
+            _error = false; await LoadAsync();
+        }
+        catch (Exception ex) { _message = $"移动失败：{ex.Message}"; _error = true; }
+        finally { _busy = false; }
+    }
+    private async Task DeleteAsync(RcsInventoryInstanceDto item)
+    {
+        _busy = true;
+        try { await Api.DeleteInventoryInstanceAsync(item.Id); _message = "实例已删除。"; _error = false; await LoadAsync(); }
+        catch (Exception ex) { _message = $"删除失败：{ex.Message}"; _error = true; }
+        finally { _busy = false; }
+    }
+}
+

@@ -113,6 +113,9 @@ public sealed class ManualInventoryService
     /// <summary>打开库存地图时读取一次 RCS 的在途托盘位置；不保留定时器。</summary>
     public async Task<List<TransitPalletPositionDto>> GetTransitPalletPositionsAsync()
     {
+        // 在途托盘的实时位置来自 GRCS；GRCS 已确认离线时，不读取在途账本或发起逐托盘查询。
+        if (_grcs.GrcsOnline == false) return [];
+
         var settings = _settings.Get();
         if (settings == null || string.IsNullOrWhiteSpace(settings.GrcsBaseUrl)) return [];
         var snapshots = new List<TransitPalletPositionDto>();

@@ -1,0 +1,105 @@
+@page "/rcs/inventory/models"
+@using Contracts.Rcs.Inventory
+@inject RcsApiClient Api
+
+<PageTitle>RCS 货物与托盘模型</PageTitle>
+<div class="rcs-inventory-page">
+    <header class="inventory-page-header">
+        <div><div class="inventory-kicker">RCS / INVENTORY MODELS</div><h1>货物 / 托盘模型</h1><p>维护货物与托盘的规格；实例通过模型编码引用对应规格。</p></div>
+        <button class="inventory-primary" @onclick="StartCreate" disabled="@_busy">＋ 新建模型</button>
+    </header>
+    <div class="inventory-toolbar">
+        <div class="inventory-tabs">
+            <button class="@(_filter.Length == 0 ? "active" : "")" @onclick="() => SetType(string.Empty)">全部</button>
+            <button class="@TabClass(RcsInventoryItemTypes.Cargo)" @onclick="() => SetType(RcsInventoryItemTypes.Cargo)">货物</button>
+            <button class="@TabClass(RcsInventoryItemTypes.Pallet)" @onclick="() => SetType(RcsInventoryItemTypes.Pallet)">托盘</button>
+        </div>
+        <button class="inventory-secondary" @onclick="LoadAsync" disabled="@_busy">↻ 刷新</button>
+    </div>
+    <div class="inventory-content">
+        <section class="inventory-table-card">
+            <div class="inventory-card-heading"><strong>模型列表</strong><span>@_models.Count 项</span></div>
+            @if (_loading) { <div class="inventory-empty">正在读取模型…</div> }
+            else if (_models.Count == 0) { <div class="inventory-empty">没有模型，点击“新建模型”添加。</div> }
+            else
+            {
+                <div class="inventory-table-scroll"><table><thead><tr><th>类型</th><th>模型编码</th><th>名称</th><th>尺寸 (mm)</th><th>重量 (kg)</th><th>额定载荷</th><th>状态</th><th></th></tr></thead><tbody>
+                @foreach (var model in _models)
+                {
+                    <tr class="@(model.Id == _editing.Id ? "selected" : "")" @onclick="() => Edit(model)">
+                        <td><span class="inventory-type @(model.ItemType == RcsInventoryItemTypes.Pallet ? "pallet" : "cargo")">@TypeText(model.ItemType)</span></td>
+                        <td><code>@model.ModelCode</code></td><td>@model.Name</td>
+                        <td>@model.LengthMm × @model.WidthMm × @model.HeightMm</td><td>@model.WeightKg</td>
+                        <td>@(model.MaxLoadKg?.ToString() ?? "—")</td><td>@(model.IsEnabled ? "启用" : "停用")</td>
+                        <td><button class="inventory-row-action danger" @onclick:stopPropagation @onclick="() => DeleteAsync(model)">删除</button></td>
+                    </tr>
+                }
+                </tbody></table></div>
+            }
+        </section>
+        <section class="inventory-form-card">
+            <div class="inventory-card-heading"><strong>@(_editing.Id == 0 ? "新建模型" : "编辑模型")</strong></div>
+            <label>类型<select @bind="_editing.ItemType" disabled="@(_editing.Id != 0 || _busy)"><option value="CARGO">货物</option><option value="PALLET">托盘</option></select></label>
+            <label>模型编码<input @bind="_editing.ModelCode" disabled="@_busy" maxlength="128" placeholder="例如 BOX-01" /></label>
+            <label>名称<input @bind="_editing.Name" disabled="@_busy" maxlength="200" placeholder="输入易识别的名称" /></label>
+            <div class="inventory-form-grid">
+                <label>长度 (mm)<input type="number" min="0" step="any" @bind="_editing.LengthMm" disabled="@_busy" /></label>
+                <label>宽度 (mm)<input type="number" min="0" step="any" @bind="_editing.WidthMm" disabled="@_busy" /></label>
+                <label>高度 (mm)<input type="number" min="0" step="any" @bind="_editing.HeightMm" disabled="@_busy" /></label>
+                <label>重量 (kg)<input type="number" min="0" step="any" @bind="_editing.WeightKg" disabled="@_busy" /></label>
+                @if (_editing.ItemType == RcsInventoryItemTypes.Pallet) { <label>最大载荷 (kg)<input type="number" min="0" step="any" @bind="_editing.MaxLoadKg" disabled="@_busy" /></label> }
+            </div>
+            <label class="inventory-checkbox"><input type="checkbox" @bind="_editing.IsEnabled" disabled="@_busy" />启用模型</label>
+            <label>扩展属性 JSON<textarea @bind="_editing.MetadataJson" disabled="@_busy" rows="3"></textarea></label>
+            <div class="inventory-form-actions"><button class="inventory-secondary" @onclick="StartCreate" disabled="@_busy">清空</button><button class="inventory-primary" @onclick="SaveAsync" disabled="@_busy">@(_busy ? "保存中…" : "保存模型")</button></div>
+        </section>
+    </div>
+    @if (!string.IsNullOrWhiteSpace(_message)) { <div class="inventory-message @(_error ? "error" : "success")">@_message</div> }
+</div>
+
+@code {
+    private List<RcsInventoryModelDto> _models = [];
+    private string _filter = "";
+    private RcsInventoryModelDto _editing = NewModel();
+    private bool _loading, _busy, _error;
+    private string _message = "";
+    protected override Task OnInitializedAsync() => LoadAsync();
+    private static RcsInventoryModelDto NewModel() => new() { ItemType = RcsInventoryItemTypes.Cargo, MetadataJson = "{}" };
+    private string TabClass(string value) => _filter == value ? "active" : "";
+    private static string TypeText(string value) => value == RcsInventoryItemTypes.Pallet ? "托盘" : "货物";
+    private async Task SetType(string value) { _filter = value; await LoadAsync(); }
+    private async Task LoadAsync()
+    {
+        _loading = true;
+        try { _models = (await Api.GetInventoryModelsAsync(_filter)).ToList(); _message = ""; }
+        catch (Exception ex) { _message = $"读取失败：{ex.Message}"; _error = true; }
+        finally { _loading = false; }
+    }
+    private void StartCreate() { _editing = NewModel(); _message = ""; }
+    private void Edit(RcsInventoryModelDto model) => _editing = new()
+    {
+        Id = model.Id, ItemType = model.ItemType, ModelCode = model.ModelCode, Name = model.Name,
+        LengthMm = model.LengthMm, WidthMm = model.WidthMm, HeightMm = model.HeightMm,
+        WeightKg = model.WeightKg, MaxLoadKg = model.MaxLoadKg, IsEnabled = model.IsEnabled, MetadataJson = model.MetadataJson
+    };
+    private async Task SaveAsync()
+    {
+        _busy = true;
+        try
+        {
+            var saved = await Api.SaveInventoryModelAsync(_editing);
+            if (saved is null) throw new InvalidOperationException("后端没有确认保存结果。");
+            _message = "模型已保存。"; _error = false; _editing = NewModel(); await LoadAsync();
+        }
+        catch (Exception ex) { _message = $"保存失败：{ex.Message}"; _error = true; }
+        finally { _busy = false; }
+    }
+    private async Task DeleteAsync(RcsInventoryModelDto model)
+    {
+        _busy = true;
+        try { await Api.DeleteInventoryModelAsync(model.Id); _message = "模型已删除。"; _error = false; await LoadAsync(); if (_editing.Id == model.Id) StartCreate(); }
+        catch (Exception ex) { _message = $"删除失败：{ex.Message}"; _error = true; }
+        finally { _busy = false; }
+    }
+}
+

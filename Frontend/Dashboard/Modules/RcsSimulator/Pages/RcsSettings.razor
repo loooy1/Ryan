@@ -1,0 +1,174 @@
+@page "/rcs/settings"
+@inject RcsApiClient Api
+@inject RcsRealtimeHubClient Realtime
+@inject IJSRuntime Js
+
+<PageTitle>RCS 系统设置</PageTitle>
+
+<style>
+    .rcs-settings-page{max-width:1080px;margin:0 auto;padding:2px 0 32px}
+    .settings-hero{padding:26px 28px;border:1px solid #263650;border-radius:18px;background:radial-gradient(circle at 88% 0%,#164e63 0,transparent 38%),linear-gradient(135deg,#111d32,#0b1425 72%);box-shadow:0 18px 42px #02061744}
+    .settings-kicker{color:#67e8f9;font-size:.7rem;letter-spacing:.16em;text-transform:uppercase;font-weight:700}
+    .settings-title{margin:8px 0 6px;color:#f8fafc;font-size:1.45rem;font-weight:750}
+    .settings-subtitle{color:#94a3b8;font-size:.82rem;line-height:1.6}
+    .settings-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;margin-top:16px}
+    .settings-card,.settings-panel,.settings-note{border:1px solid #263650;border-radius:14px;background:linear-gradient(180deg,#111d32,#0d1729)}
+    .settings-card{padding:16px}.settings-label{color:#64748b;font-size:.68rem;letter-spacing:.1em;text-transform:uppercase}.settings-value{margin-top:8px;color:#67e8f9;font-size:.9rem;font-weight:650;overflow-wrap:anywhere}
+    .settings-value.online{color:#4ade80}.settings-value.offline{color:#f87171}
+    .settings-panel{margin-top:16px;padding:22px}.settings-panel-head{display:flex;justify-content:space-between;gap:16px;margin-bottom:18px}.settings-panel-title{color:#f8fafc;font-size:1rem;font-weight:700}.settings-hint{margin-top:5px;color:#64748b;font-size:.72rem}
+    .settings-form{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:12px;align-items:end}.settings-form .form-group{margin:0}.settings-form input{width:100%;box-sizing:border-box;background:#091426;border-color:#334155}.settings-form input:focus{border-color:#22d3ee;box-shadow:0 0 0 3px #22d3ee18}
+    .algorithm-form{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;align-items:end}.algorithm-form .form-group{margin:0}.algorithm-form input{width:100%;box-sizing:border-box;background:#091426;border-color:#334155}.algorithm-form input:focus{border-color:#22d3ee;box-shadow:0 0 0 3px #22d3ee18}.algorithm-form small{display:block;margin-top:6px;color:#64748b;font-size:.68rem;line-height:1.5}.algorithm-actions{display:flex;justify-content:flex-end;margin-top:18px;padding-top:15px;border-top:1px solid #263650}
+    .settings-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:20px;padding-top:16px;border-top:1px solid #263650}.settings-actions button{white-space:nowrap}
+    .settings-status{padding:8px 11px;border:1px solid #14532d;border-radius:9px;color:#86efac;background:#14532d22;font-size:.74rem;white-space:nowrap}.settings-status.offline{border-color:#7f1d1d;color:#fca5a5;background:#7f1d1d22}
+    .settings-feedback{margin-top:14px;padding:11px 13px;border-radius:9px;font-size:.78rem}.settings-feedback.ok{border:1px solid #14532d;color:#86efac;background:#14532d22}.settings-feedback.error{border:1px solid #7f1d1d;color:#fca5a5;background:#7f1d1d22}
+    .settings-notes{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:16px}.settings-note{padding:13px 15px;color:#94a3b8;font-size:.74rem;line-height:1.6}.settings-note b{display:block;margin-bottom:4px;color:#cbd5e1}
+    @@media(max-width:700px){.settings-grid,.settings-notes,.algorithm-form{grid-template-columns:1fr}.settings-form{grid-template-columns:1fr}.settings-panel-head{flex-direction:column}.settings-status{white-space:normal}}
+</style>
+
+<div class="rcs-settings-page">
+    <section class="settings-hero">
+        <div class="settings-kicker">RCS / RUNTIME CONFIGURATION</div>
+        <div class="settings-title">系统设置</div>
+        <div class="settings-subtitle">配置 RCS 后端连接和路径算法的分段下发规则。算法返回完整路径及路径段，RCS 按设置的续发间隔发送路径段。</div>
+    </section>
+
+    <section class="settings-panel">
+        <div class="settings-panel-head">
+            <div><div class="settings-panel-title">算法设置</div><div class="settings-hint">由路径算法计算完整路径并按以下参数生成路径段；RCS 只负责将算法返回的路径段发送给车辆。</div></div>
+        </div>
+        <div class="algorithm-form">
+            <div class="form-group">
+                <label>每段下发点数</label>
+                <input type="number" min="2" max="1000" step="1" @bind="_segmentPointCount" />
+                <small>例如 4 表示每次下发最多 4 个点。</small>
+            </div>
+            <div class="form-group">
+                <label>经过几个点后续发</label>
+                <input type="number" min="1" max="@Math.Max(1, _segmentPointCount - 1)" step="1" @bind="_advanceAfterPoints" />
+                <small>例如设为 1：下发 1、2、3、4；到达 2 后续发 2、3、4、5。</small>
+            </div>
+        </div>
+        <div class="algorithm-actions"><button class="btn btn-primary" @onclick="SaveAlgorithmSettingsAsync" disabled="@_savingAlgorithm">@(_savingAlgorithm ? "保存中…" : "💾 保存算法设置")</button></div>
+        @if (!string.IsNullOrWhiteSpace(_algorithmFeedback)) { <div class="settings-feedback @(_algorithmFeedbackError ? "error" : "ok")">@_algorithmFeedback</div> }
+    </section>
+
+    <section class="settings-grid">
+        <div class="settings-card"><div class="settings-label">RCS 后端地址</div><div class="settings-value">@_baseUrl</div></div>
+        <div class="settings-card"><div class="settings-label">服务状态</div><div class="settings-value @(_online == true ? "online" : "offline")">@OnlineText</div></div>
+    </section>
+
+    <section class="settings-panel">
+        <div class="settings-panel-head">
+            <div><div class="settings-panel-title">连接配置</div><div class="settings-hint">请输入 RCS 后端的完整 HTTP 地址，例如 http://localhost:8232。</div></div>
+            <span class="settings-status @(_online == true ? "" : "offline")">● @OnlineText</span>
+        </div>
+        <div class="settings-form">
+            <div class="form-group"><label>RCS 后端地址</label><input @bind="_baseUrl" @bind:event="oninput" placeholder="http://localhost:8232" /></div>
+            <button class="btn btn-primary" @onclick="SaveAsync" disabled="@_saving">@(_saving ? "保存中…" : "💾 保存设置")</button>
+        </div>
+        <div class="settings-actions"><button class="btn btn-outline" @onclick="CheckOnline">🔄 重新检测</button></div>
+        @if (!string.IsNullOrWhiteSpace(_feedback)) { <div class="settings-feedback @(_feedbackError ? "error" : "ok")">@_feedback</div> }
+    </section>
+
+    <section class="settings-notes">
+        <div class="settings-note"><b>连接作用</b>RCS 地址用于读取数据库地图缓存、请求 A* 路径、控制虚拟车以及连接 RCS SignalR 实时通道。</div>
+        <div class="settings-note"><b>状态判断</b>系统通过请求 RCS 地图接口确认服务是否在线；服务能返回 HTTP 成功响应即显示在线。</div>
+    </section>
+</div>
+
+@code {
+    private string _baseUrl = "http://localhost:8232";
+    private bool? _online;
+    private bool _saving;
+    private int _segmentPointCount = 4;
+    private int _advanceAfterPoints = 1;
+    private bool _savingAlgorithm;
+    private bool _algorithmFeedbackError;
+    private string _algorithmFeedback = "";
+    private bool _feedbackError;
+    private string _feedback = "";
+    private string OnlineText => _online == true ? "在线" : _online == false ? "离线" : "未检测";
+
+    protected override async Task OnInitializedAsync()
+    {
+        var saved = await Js.InvokeAsync<string?>("localStorage.getItem", "rcs_backend_url");
+        if (!string.IsNullOrWhiteSpace(saved)) _baseUrl = saved;
+        try { Api.SetBaseUrl(_baseUrl); } catch { }
+        try
+        {
+            var settings = await Api.GetAlgorithmSettingsAsync();
+            _segmentPointCount = settings.SegmentPointCount;
+            _advanceAfterPoints = settings.AdvanceAfterPoints;
+        }
+        catch (Exception ex)
+        {
+            _algorithmFeedbackError = true;
+            _algorithmFeedback = $"读取算法设置失败：{ex.Message}";
+        }
+        await CheckOnline();
+    }
+
+    private async Task CheckOnline()
+    {
+        _online = await Api.CheckOnlineAsync();
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task SaveAsync()
+    {
+        if (_saving) return;
+        _saving = true;
+        _feedback = "";
+        try
+        {
+            Api.SetBaseUrl(_baseUrl);
+            _baseUrl = Api.BaseUrl;
+            await Js.InvokeVoidAsync("localStorage.setItem", "rcs_backend_url", _baseUrl);
+            _feedbackError = false;
+            _feedback = "RCS 地址已保存，正在后台检测连接…";
+            _ = RefreshConnectionInBackgroundAsync(_baseUrl);
+        }
+        catch (Exception ex)
+        {
+            _feedbackError = true;
+            _feedback = $"保存失败：{ex.Message}";
+        }
+        finally { _saving = false; }
+    }
+
+    private async Task SaveAlgorithmSettingsAsync()
+    {
+        if (_savingAlgorithm) return;
+        _savingAlgorithm = true;
+        _algorithmFeedback = "";
+        try
+        {
+            var saved = await Api.SaveAlgorithmSettingsAsync(new Contracts.Rcs.Algorithm.AlgorithmSettingsDto
+            {
+                SegmentPointCount = _segmentPointCount,
+                AdvanceAfterPoints = _advanceAfterPoints
+            });
+            _segmentPointCount = saved.SegmentPointCount;
+            _advanceAfterPoints = saved.AdvanceAfterPoints;
+            _algorithmFeedbackError = false;
+            _algorithmFeedback = "算法设置已保存，新设置会用于之后规划或重新规划的路径。正在执行的路径保持不变。";
+        }
+        catch (Exception ex)
+        {
+            _algorithmFeedbackError = true;
+            _algorithmFeedback = $"保存算法设置失败：{ex.Message}";
+        }
+        finally { _savingAlgorithm = false; }
+    }
+
+    private async Task RefreshConnectionInBackgroundAsync(string baseUrl)
+    {
+        try { await Realtime.RestartAsync(baseUrl).WaitAsync(TimeSpan.FromSeconds(3)); } catch { }
+        try { await CheckOnline(); } catch { }
+        _feedbackError = _online != true;
+        _feedback = _online == true
+            ? "RCS 地址已保存并连接成功。"
+            : "RCS 地址已保存，但当前无法连接 RCS 后端。";
+        await InvokeAsync(StateHasChanged);
+    }
+}

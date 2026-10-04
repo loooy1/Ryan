@@ -94,7 +94,7 @@ public class WcsApiClient
         }
     }
 
-    /// <summary>GRCS 后端地址（grcs_grcs_url，地图信息页地址设置保存），缺省 http://localhost:8224。</summary>
+    /// <summary>GRCS 后端地址（grcs_grcs_url，系统设置保存），缺省 http://localhost:8224。</summary>
     public string GrcsBaseUrl
     {
         get

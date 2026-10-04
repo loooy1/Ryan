@@ -13,10 +13,16 @@
         <aside class="map-builder-tools">
             <div class="map-builder-caption">工具</div>
             <button class="map-tool @( Host._mapBuilderTool == "select" ? "active" : "")" @onclick='() => Host.SetMapBuilderTool("select")'>↖ <span>选择</span></button>
-            <button class="map-tool @( Host._mapBuilderTool == "storage" ? "active" : "")" @onclick='() => Host.SetMapBuilderTool("storage")'><MudIcon Icon="@Icons.Material.Filled.Storage" Size="Size.Small" /> <span>储位</span></button>
-            <button class="map-tool @( Host._mapBuilderTool == "transfer" ? "active" : "")" @onclick='() => Host.SetMapBuilderTool("transfer")'><MudIcon Icon="@Icons.Material.Filled.SwapHoriz" Size="Size.Small" /> <span>接驳位</span></button>
-            <button class="map-tool @( Host._mapBuilderTool == "people" ? "active" : "")" @onclick='() => Host.SetMapBuilderTool("people")'><MudIcon Icon="@Icons.Material.Filled.Person" Size="Size.Small" /> <span>人工分拣台</span></button>
-            <button class="map-tool @( Host._mapBuilderTool == "sorting" ? "active" : "")" @onclick='() => Host.SetMapBuilderTool("sorting")'><MudIcon Icon="@Icons.Material.Filled.Sort" Size="Size.Small" /> <span>分拣台</span></button>
+            <button class="map-tool point-group-toggle @(Host._pointToolsExpanded ? "active" : "")" @onclick="Host.TogglePointTools"><span class="tool-leading-icon">＋</span><span><b>站点</b></span><em>@(Host._pointToolsExpanded ? "⌃" : "⌄")</em></button>
+            @if (Host._pointToolsExpanded)
+            {
+                <div class="point-tools-panel">
+                    <button class="point-tool-card @(Host._mapBuilderTool == "storage" ? "active" : "")" @onclick='() => Host.SetMapBuilderTool("storage")'><span class="point-card-icon storage"><MudIcon Icon="@Icons.Material.Filled.Storage" Size="Size.Small" /></span><span><b>储位</b></span></button>
+                    <button class="point-tool-card @(Host._mapBuilderTool == "transfer" ? "active" : "")" @onclick='() => Host.SetMapBuilderTool("transfer")'><span class="point-card-icon transfer"><MudIcon Icon="@Icons.Material.Filled.SwapHoriz" Size="Size.Small" /></span><span><b>接驳位</b></span></button>
+                    <button class="point-tool-card @(Host._mapBuilderTool == "people" ? "active" : "")" @onclick='() => Host.SetMapBuilderTool("people")'><span class="point-card-icon people"><MudIcon Icon="@Icons.Material.Filled.Person" Size="Size.Small" /></span><span><b>人工分拣台</b></span></button>
+                    <button class="point-tool-card @(Host._mapBuilderTool == "sorting" ? "active" : "")" @onclick='() => Host.SetMapBuilderTool("sorting")'><span class="point-card-icon sorting"><MudIcon Icon="@Icons.Material.Filled.Sort" Size="Size.Small" /></span><span><b>分拣台</b></span></button>
+                </div>
+            }
             <button class="map-tool @( Host._mapBuilderTool == "matrix" ? "active" : "")" @onclick="Host.OpenMatrixDialog"><MudIcon Icon="@Icons.Material.Filled.GridOn" Size="Size.Small" /> <span>点阵</span></button>
             <button class="map-tool align-tool @( Host._mapBuilderTool == "align-x" ? "active" : "")" @onclick='() => Host.SetMapBuilderTool("align-x")'>↔ <span>X 对齐</span></button>
             <button class="map-tool align-tool @( Host._mapBuilderTool == "align-y" ? "active" : "")" @onclick='() => Host.SetMapBuilderTool("align-y")'>↕ <span>Y 对齐</span></button>
@@ -89,5 +95,7 @@
         </div>
     </div>
 }
+
+
 
 

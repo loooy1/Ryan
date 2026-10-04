@@ -6,9 +6,8 @@ var builder = WebApplication.CreateBuilder(args);
 builder.AddSharedLogging();
 
 // ── 本项目定位 ──
-// RCS 后端（核心系统，替代 GRCS）：实现 GRCS 协议服务端接口（/api/Cargo、/api/Map/GetMap、
-// /api/RawOrder/ChangeFloor、/api/v1/task_receive 等），WCS 只改 GRCS 地址配置即可切换对接。
-// 对 RCS 前端/管理面提供 /api/rcs/* 管理接口。监听端口由 appsettings.json 的 Urls 决定（默认 8231）。
+// 自研 RCS 后端：地图、算法、任务接收/调度及虚拟车；尚未实现完整 GRCS 库存和回调协议。
+// 对 RCS 前端/管理面提供 /api/rcs/* 管理接口。监听端口由 appsettings.json 的 Urls 决定（默认 8232）。
 // 数据库：独立 MySQL 数据库（与 WCS 数据库隔离）。
 //
 // ── 模块化约定 ──
@@ -23,10 +22,10 @@ builder.Services.AddGrcsJson();
 builder.Services.AddGrcsCors();
 builder.Services.AddSharedHttpClientLogging();
 
-// SignalR：RCS 实时推送（业务定义后注册 Hub）
+// SignalR：车辆状态、任务变化和日志实时推送。
 builder.Services.AddSignalR();
 
-// 共享基础设施：MySQL。RCS 尚无持久化实体，先由 EnsureCreated 初始化空库。
+// 共享基础设施：MySQL。RCS 地图与任务实体由本项目迁移初始化。
 builder.Services.AddSharedModule(
     builder.Configuration,
     new SharedDatabaseRegistration(
@@ -34,7 +33,7 @@ builder.Services.AddSharedModule(
         typeof(Program).Assembly),
     typeof(RcsModuleExtensions).Assembly);
 
-// 模块注册（Rcs 总模块：Protocol/Console/Realtime/Infrastructure 子模块，业务定义后填充）
+// 注册地图、任务调度、虚拟车和实时发布模块。
 builder.Services.AddRcsModule();
 
 var app = builder.Build();
@@ -45,13 +44,15 @@ app.UseSharedHttpLogging();
 app.UseGlobalErrorHandler();
 
 await app.InitializeSharedDatabaseAsync();
+await app.Services.GetRequiredService<RCSBackend.Modules.Rcs.Application.Execution.RcsAlgorithmSettingsService>().InitializeAsync();
+await app.Services.GetRequiredService<RCSBackend.Modules.Rcs.Application.Simulation.RcsSimulationService>().ReloadMapAsync();
 
 app.UseCors();
 app.MapControllers();
 app.MapHub<RCSBackend.Modules.Rcs.Realtime.RcsRealtimeHub>("/hubs/rcs-realtime");
 
-// 健康检查：/health/ready（当前数据库连通性）
-app.MapGrcsHealthCheck();
+// 健康检查：/RCS_ready（当前数据库连通性）
+app.MapGrcsHealthCheck("/RCS_ready");
 
 app.Lifetime.ApplicationStopping.Register(() =>
     app.Logger.LogInformation("RCS 后端正在停止"));

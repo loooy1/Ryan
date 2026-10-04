@@ -23,7 +23,7 @@
 <PageTitle>自动化任务</PageTitle>
 
 <div class="hint-text" style="margin:0 0 12px;">
-    GRCS 地址与场景名在「地图信息」页系统设置配置，本页自动读取；自动化任务由后端执行。
+    GRCS 地址与场景名在「系统设置」页配置，本页自动读取；自动化任务由后端执行。
 </div>
 
 @* ════════════════════════════════════════════════
@@ -869,7 +869,7 @@
 
     private async Task RunNest()
     {
-        if (string.IsNullOrWhiteSpace(SceneName)) { ShowResp("❌ 未配置场景名称（地图信息页系统设置）", "error"); return; }
+        if (string.IsNullOrWhiteSpace(SceneName)) { ShowResp("❌ 未配置场景名称（系统设置）", "error"); return; }
         var result = await WcsApi.RunNestAsync(_selectedVehicles.Count > 0 ? _selectedVehicles : null);
         if (result == null) { StateHasChanged(); return; }   // 连接守卫已弹全局告警，不再重复提示
         if (!result.Success) { ShowResp("❌ " + (result.Reason ?? "归巢执行被拒绝"), "error"); return; }
@@ -894,7 +894,7 @@
         catch { _fleetVehicles = []; }
         if (_fleetVehicles.Count == 0)
         {
-            ShowResp("❌ 未获取到车辆（检查 GRCS 连接与「地图信息 → 系统设置」的场景名称）", "error");
+            ShowResp("❌ 未获取到车辆（检查 GRCS 连接与「系统设置」的场景名称）", "error");
             return;
         }
         var chargingMarks = new HashSet<string>(
@@ -1242,7 +1242,7 @@
             StateHasChanged();
             return;
         }
-        if (string.IsNullOrEmpty(SceneName)) { ShowResp("❌ 未配置场景名称（地图信息页系统设置）", "error"); return; }
+        if (string.IsNullOrEmpty(SceneName)) { ShowResp("❌ 未配置场景名称（系统设置）", "error"); return; }
 
         var (ok, reason) = await MoveLoop.StartAsync(new Dashboard.Modules.WcsSimulator.Services.MoveLoopService.Options
         {

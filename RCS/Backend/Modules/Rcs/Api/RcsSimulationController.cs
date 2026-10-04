@@ -2,9 +2,9 @@ using Microsoft.AspNetCore.Mvc;
 using Contracts.Rcs.Map;
 using Contracts.Rcs.Route;
 using Contracts.Rcs.Vehicle;
-using RCSBackend.Modules.Rcs.Infrastructure;
+using RCSBackend.Modules.Rcs.Application.Simulation;
 
-namespace RCSBackend.Modules.Rcs.Console;
+namespace RCSBackend.Modules.Rcs.Api;
 
 [ApiController]
 [Route("api/rcs")]
@@ -12,34 +12,21 @@ public sealed class RcsSimulationController : ControllerBase
 {
     private readonly RcsSimulationService _simulation;
 
-    public RcsSimulationController(RcsSimulationService simulation) => _simulation = simulation;
+    public RcsSimulationController(RcsSimulationService simulation)
+    { _simulation = simulation; }
 
     [HttpGet("map")]
-    public ActionResult<GridMapDto> GetMap() => Ok(_simulation.Map);
+    public ActionResult<RcsMapSnapshot> GetMap() => _simulation.Map is { } map ? Ok(map) : NotFound();
 
-    [HttpGet("vehicles")]
-    public ActionResult<IReadOnlyList<VehicleStateDto>> GetVehicles() =>
-        Ok(new[] { _simulation.Vehicle.State });
+    [HttpPost("map/reload")]
+    public async Task<ActionResult<RcsMapSnapshot>> ReloadMap(CancellationToken cancellationToken = default)
+    {
+        var map = await _simulation.ReloadMapAsync(cancellationToken);
+        return map is null ? NotFound() : Ok(map);
+    }
 
     [HttpPost("routes/preview")]
     public ActionResult<RouteDto> Preview([FromBody] RunVehicleRequest request) =>
-        Ok(_simulation.Preview(request.Start, request.End));
+        Ok(_simulation.Preview(request.StartPointCode, request.EndPointCode));
 
-    [HttpPost("vehicles/V-01/run")]
-    public async Task<ActionResult<RouteDto>> Run([FromBody] RunVehicleRequest request) =>
-        Ok(await _simulation.RunAsync(request.Start, request.End));
-
-    [HttpPost("vehicles/V-01/pause")]
-    public IActionResult Pause()
-    {
-        _simulation.Vehicle.Pause();
-        return NoContent();
-    }
-
-    [HttpPost("vehicles/V-01/reset")]
-    public IActionResult Reset([FromBody] GridPoint position)
-    {
-        _simulation.Vehicle.Reset(position);
-        return NoContent();
-    }
 }

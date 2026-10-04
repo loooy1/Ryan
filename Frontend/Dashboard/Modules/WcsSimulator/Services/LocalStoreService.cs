@@ -42,7 +42,13 @@ public class LocalStoreService
                 if (store != null)
                 {
                     foreach (var kv in store)
-                        _cache[kv.Key] = kv.Value;
+                    {
+                        // 页面可能在首次预加载完成前已经编辑并写入了值。
+                        // 不要用 localStorage 的旧快照覆盖这次刚保存的值，否则首次点击保存
+                        // 会先写入新值，随后又被旧值覆盖，第二次点击才看起来生效。
+                        if (!_cache.ContainsKey(kv.Key))
+                            _cache[kv.Key] = kv.Value;
+                    }
                 }
             }
         }

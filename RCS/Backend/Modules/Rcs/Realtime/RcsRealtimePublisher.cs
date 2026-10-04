@@ -1,22 +1,32 @@
 using Backend.Shared.Logging;
 using Microsoft.AspNetCore.SignalR;
-using RCSBackend.Modules.Rcs.Infrastructure;
+using RCSBackend.Modules.Rcs.Application.Execution;
+using RCSBackend.Modules.Rcs.Application.Tasks;
+using Contracts.Rcs.Tasks;
+using RCSBackend.Modules.Rcs.Application.Vehicles;
+using Contracts.Rcs.Vehicle;
 
 namespace RCSBackend.Modules.Rcs.Realtime;
 
 public sealed class RcsRealtimePublisher : IHostedService
 {
-    private readonly RcsSimulationService _simulation;
+    private readonly IRcsTaskExecutionService _execution;
     private readonly IHubContext<RcsRealtimeHub> _hub;
     private readonly LogEventBuffer _logs;
+    private readonly IRcsTaskService _tasks;
+    private readonly RcsVehicleRegistry _vehicles;
 
-    public RcsRealtimePublisher(RcsSimulationService simulation, IHubContext<RcsRealtimeHub> hub,
-        LogEventBuffer logs)
+    public RcsRealtimePublisher(IRcsTaskExecutionService execution, IHubContext<RcsRealtimeHub> hub,
+        LogEventBuffer logs, IRcsTaskService tasks, RcsVehicleRegistry vehicles)
     {
-        _simulation = simulation;
+        _execution = execution;
         _hub = hub;
         _logs = logs;
-        _simulation.Vehicle.StateChanged += OnStateChanged;
+        _tasks = tasks;
+        _vehicles = vehicles;
+        _vehicles.VehiclesChanged += OnVehiclesChanged;
+        _tasks.TaskChanged += OnTaskChanged;
+        _execution.VehicleStateChanged += OnStateChanged;
         _logs.EventAdded += OnLogAdded;
     }
 
@@ -24,13 +34,20 @@ public sealed class RcsRealtimePublisher : IHostedService
 
     public Task StopAsync(CancellationToken cancellationToken)
     {
-        _simulation.Vehicle.StateChanged -= OnStateChanged;
+        _execution.VehicleStateChanged -= OnStateChanged;
+        _vehicles.VehiclesChanged -= OnVehiclesChanged;
+        _tasks.TaskChanged -= OnTaskChanged;
         _logs.EventAdded -= OnLogAdded;
         return Task.CompletedTask;
     }
 
     private void OnStateChanged(global::Contracts.Rcs.Vehicle.VehicleStateDto state) =>
         _ = _hub.Clients.All.SendAsync("VehicleStateChanged", state);
+
+    private void OnVehiclesChanged(IReadOnlyList<VehicleStateDto> states) =>
+        _ = _hub.Clients.All.SendAsync("VehiclesChanged", _execution.GetVehicles());
+
+    private void OnTaskChanged(RcsTaskDto task) => _ = _hub.Clients.All.SendAsync("TaskChanged", task);
 
     private void OnLogAdded(AppLogEvent entry)
     {

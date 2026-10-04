@@ -1,0 +1,133 @@
+@namespace Dashboard.Modules.WcsSimulator.Pages
+@page "/wcs-simulator/system-settings"
+@inject WcsApiClient WcsApi
+@inject RuntimeConfigurationCoordinator RuntimeConfig
+@inherits Dashboard.Modules.WcsSimulator.Components.PageStateBase
+@using Contracts.Dtos
+
+<PageTitle>系统设置</PageTitle>
+
+<style>
+    .settings-page { max-width:1080px; margin:0 auto; }
+    .settings-hero { position:relative; overflow:hidden; padding:26px 28px; border:1px solid #263650; border-radius:18px; background:radial-gradient(circle at 88% 0%,#164e63 0,transparent 38%),linear-gradient(135deg,#111d32,#0b1425 72%); box-shadow:0 18px 42px rgba(2,6,23,.26); }
+    .settings-kicker { color:#67e8f9; font-size:.7rem; letter-spacing:.16em; text-transform:uppercase; font-weight:700; }
+    .settings-title { margin:8px 0 6px; color:#f8fafc; font-size:1.45rem; font-weight:750; }
+    .settings-subtitle { max-width:700px; color:#94a3b8; font-size:.82rem; line-height:1.6; }
+    .settings-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:14px; margin-top:16px; }
+    .settings-card { padding:16px; border:1px solid #263650; border-radius:14px; background:linear-gradient(180deg,#111d32,#0d1729); }
+    .settings-card-label { color:#64748b; font-size:.68rem; text-transform:uppercase; letter-spacing:.1em; }
+    .settings-card-value { margin-top:8px; color:#e2e8f0; font-size:.9rem; font-weight:650; overflow-wrap:anywhere; }
+    .settings-card-value.scene { color:#c4b5fd; }
+    .settings-card-value.wcs { color:#fbbf24; }
+    .settings-card-value.grcs { color:#67e8f9; }
+    .settings-panel { margin-top:16px; padding:22px; border:1px solid #263650; border-radius:16px; background:#0f1b2e; }
+    .settings-panel-head { display:flex; align-items:flex-start; justify-content:space-between; gap:16px; margin-bottom:18px; }
+    .settings-panel-title { color:#f8fafc; font-size:1rem; font-weight:700; }
+    .settings-panel-hint { margin-top:5px; color:#64748b; font-size:.72rem; line-height:1.5; }
+    .settings-status { padding:8px 11px; border:1px solid #14532d; border-radius:9px; color:#86efac; background:#14532d22; font-size:.74rem; white-space:nowrap; }
+    .settings-form { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:14px; }
+    .settings-form .form-group { margin:0; }
+    .settings-form input { width:100%; box-sizing:border-box; background:#091426; border-color:#334155; }
+    .settings-form input:focus { border-color:#22d3ee; box-shadow:0 0 0 3px #22d3ee18; }
+    .settings-actions { display:flex; align-items:center; justify-content:flex-end; gap:10px; margin-top:20px; padding-top:16px; border-top:1px solid #263650; }
+    .settings-saving { color:#fbbf24; font-size:.78rem; }
+    .settings-feedback { margin-top:14px; padding:11px 13px; border-radius:9px; font-size:.78rem; white-space:pre-wrap; }
+    .settings-feedback.ok { border:1px solid #14532d; color:#86efac; background:#14532d22; }
+    .settings-feedback.error { border:1px solid #7f1d1d; color:#fca5a5; background:#7f1d1d22; }
+    .settings-notes { display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-top:16px; }
+    .settings-note { padding:13px 15px; border:1px solid #263650; border-radius:12px; color:#94a3b8; background:#0b1425; font-size:.74rem; line-height:1.6; }
+    .settings-note b { display:block; margin-bottom:4px; color:#cbd5e1; }
+    @@media (max-width:760px) { .settings-grid,.settings-form { grid-template-columns:1fr; } .settings-notes { grid-template-columns:1fr; } .settings-panel-head { flex-direction:column; } .settings-status { white-space:normal; } }
+</style>
+
+<div class="settings-page">
+    <section class="settings-hero">
+        <div class="settings-kicker">WCS / Runtime configuration</div>
+        <div class="settings-title">系统设置</div>
+        <div class="settings-subtitle">统一管理场景、WCS 后端和 GRCS 服务地址。保存后配置会写入后端数据库，并同步到当前浏览器标签页的运行时连接。</div>
+    </section>
+
+    <section class="settings-grid">
+        <div class="settings-card"><div class="settings-card-label">当前场景</div><div class="settings-card-value scene">@_warehouse</div></div>
+        <div class="settings-card"><div class="settings-card-label">WCS 后端</div><div class="settings-card-value wcs">@_wcsBaseUrl</div></div>
+        <div class="settings-card"><div class="settings-card-label">GRCS 服务</div><div class="settings-card-value grcs">@_grcsBaseUrl</div></div>
+    </section>
+
+    <section class="settings-panel">
+        <div class="settings-panel-head">
+            <div><div class="settings-panel-title">连接与场景配置</div><div class="settings-panel-hint">地址可以填写本机、局域网 IP 或通过 Nginx 暴露的访问地址；不要在末尾填写多余的“/”。</div></div>
+            @if (_saved) { <span class="settings-status">✓ 已保存并生效</span> }
+        </div>
+        <div class="settings-form">
+            <div class="form-group"><label>场景名称</label><input @bind="_warehouse" @bind:event="oninput" placeholder="Show" /></div>
+            <div class="form-group"><label>WCS 后端地址</label><input @bind="_wcsBaseUrl" @bind:event="oninput" placeholder="http://localhost:8230" /></div>
+            <div class="form-group"><label>GRCS 地址</label><input @bind="_grcsBaseUrl" @bind:event="oninput" placeholder="http://localhost:8224" /></div>
+        </div>
+        <div class="settings-actions">
+            @if (_saving) { <span class="settings-saving">正在保存配置…</span> }
+            <button class="btn btn-primary" @onclick="SaveAsync" disabled="@_saving">💾 保存设置</button>
+        </div>
+        @if (!string.IsNullOrWhiteSpace(_settingsFeedback)) { <div class="settings-feedback @(_feedbackError ? "error" : "ok")">@_settingsFeedback</div> }
+    </section>
+
+    <section class="settings-notes">
+        <div class="settings-note"><b>配置作用</b>WCS 后端地址用于页面 API 和 SignalR 连接；GRCS 地址用于地图、车辆、库存及任务下发；场景名称会写入发送给 GRCS 的任务报文。</div>
+        <div class="settings-note"><b>保存方式</b>配置同时保存到浏览器运行时缓存和 WCS 后端数据库。后端保存成功后，其他页面会使用新配置。</div>
+    </section>
+</div>
+
+@code {
+    private string _warehouse = "Show";
+    private string _grcsBaseUrl = "http://localhost:8224";
+    private string _wcsBaseUrl = "http://localhost:8230";
+    private bool _saving;
+    private bool _saved;
+    private bool _feedbackError;
+    private string _settingsFeedback = "";
+
+    protected override async Task OnInitializedAsync()
+    {
+        if (V("grcs_wcs_url") is string wcs) _wcsBaseUrl = wcs;
+        if (V("grcs_grcs_url") is string grcs) _grcsBaseUrl = grcs;
+        if (V("grcs_warehouse") is string warehouse && !string.IsNullOrWhiteSpace(warehouse)) _warehouse = warehouse;
+
+        var settings = await WcsApi.GetAsync<WcsSettingsDto>("/api/wcs/auto/settings");
+        if (settings != null)
+        {
+            if (!string.IsNullOrWhiteSpace(settings.GrcsBaseUrl)) _grcsBaseUrl = settings.GrcsBaseUrl;
+            if (!string.IsNullOrWhiteSpace(settings.SceneName)) _warehouse = settings.SceneName;
+        }
+    }
+
+    private async Task SaveAsync()
+    {
+        if (_saving) return;
+        _saving = true;
+        _saved = false;
+        _settingsFeedback = "";
+        try
+        {
+            await RuntimeConfig.SaveAsync(_wcsBaseUrl, _grcsBaseUrl, _warehouse);
+            var result = await WcsApi.PutWithStatusAsync("/api/wcs/auto/settings", new { grcsBaseUrl = _grcsBaseUrl, sceneName = _warehouse });
+            if (!result.Ok)
+            {
+                _feedbackError = true;
+                _settingsFeedback = $"保存失败（HTTP {result.StatusCode}）：{result.Json}";
+                return;
+            }
+
+            _feedbackError = false;
+            _settingsFeedback = "系统设置已保存，新的连接配置已生效。";
+            _saved = true;
+        }
+        catch (Exception ex)
+        {
+            _feedbackError = true;
+            _settingsFeedback = $"保存失败：{ex.Message}";
+        }
+        finally
+        {
+            _saving = false;
+        }
+    }
+}

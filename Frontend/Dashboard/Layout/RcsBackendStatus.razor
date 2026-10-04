@@ -1,0 +1,58 @@
+@inject Dashboard.Modules.RcsSimulator.Services.RcsApiClient RcsApi
+@inject IJSRuntime Js
+@implements IDisposable
+
+<div class="sidebar-status">
+    <div class="ss-card" title="RCS 后端管理接口 — @RcsApi.BaseUrl">
+        <span class="ss-dot @DotClass(_online)"></span>
+        <span class="ss-name">RCS 后端</span>
+        <span class="ss-state @DotStateClass(_online)">@DotStateText(_online)</span>
+        <span class="ss-port">@Port</span>
+    </div>
+</div>
+
+@code {
+    private bool? _online;
+    private CancellationTokenSource _cts = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            var saved = await Js.InvokeAsync<string?>("localStorage.getItem", "rcs_backend_url");
+            if (!string.IsNullOrWhiteSpace(saved)) RcsApi.SetBaseUrl(saved);
+        }
+        catch { }
+        _ = ProbeLoopAsync(_cts.Token);
+    }
+
+    private async Task ProbeLoopAsync(CancellationToken token)
+    {
+        while (!token.IsCancellationRequested)
+        {
+            _online = await RcsApi.CheckOnlineAsync(token);
+            await InvokeAsync(StateHasChanged);
+            try { await Task.Delay(TimeSpan.FromSeconds(5), token); }
+            catch (OperationCanceledException) { return; }
+        }
+    }
+
+    private string Port
+    {
+        get
+        {
+            if (!Uri.TryCreate(RcsApi.BaseUrl, UriKind.Absolute, out var uri)) return "—";
+            return uri.IsDefaultPort ? (uri.Scheme == Uri.UriSchemeHttps ? "443" : "80") : uri.Port.ToString();
+        }
+    }
+
+    private static string DotClass(bool? online) => online switch { true => "on", false => "off", _ => "" };
+    private static string DotStateText(bool? online) => online switch { true => "在线", false => "离线", _ => "检测中" };
+    private static string DotStateClass(bool? online) => online switch { true => "on", false => "off", _ => "probe" };
+
+    public void Dispose()
+    {
+        _cts.Cancel();
+        _cts.Dispose();
+    }
+}

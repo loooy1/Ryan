@@ -98,7 +98,7 @@ public class GrcsApiDocsController : ControllerBase
             Params =
             [
                 new() { Name = "GroupId", Type = "string", Required = true, Description = "任务组唯一编号（如 SimAuto_xxx，全局不重复）" },
-                new() { Name = "MsgTime", Type = "string", Required = true, Description = "报文时间（ISO 格式）" },
+                new() { Name = "MsgTime", Type = "string", Required = true, Description = "报文时间，格式 yyyy-MM-dd HH:mm:ss，精确到秒" },
                 new() { Name = "PriorityCode", Type = "int", Required = false, Description = "优先级" },
                 new() { Name = "Warehouse", Type = "string", Required = true, Description = "场景/仓库名（系统设置中的场景名称）" },
                 new() { Name = "Tasks[]", Type = "array", Required = true, Description = "任务列表" },
@@ -111,7 +111,7 @@ public class GrcsApiDocsController : ControllerBase
             BodyExample = """
                 {
                   "GroupId": "SimAuto_0000000001",
-                  "MsgTime": "2026-08-30T10:00:00+08:00",
+                  "MsgTime": "2026-08-30 10:00:00",
                   "PriorityCode": 50,
                   "Warehouse": "Show",
                   "Tasks": [
@@ -135,7 +135,7 @@ public class GrcsApiDocsController : ControllerBase
             UsedBy = "手动任务下发（MOVE_ONLY 车辆移动）、归巢模式调度、移动循环",
             Params =
             [
-                new() { Name = "CreateTime", Type = "datetime", Required = true, Description = "创建时间" },
+                new() { Name = "CreateTime", Type = "string", Required = true, Description = "创建时间，格式 yyyy-MM-dd HH:mm:ss，精确到秒" },
                 new() { Name = "SceneName", Type = "string", Required = true, Description = "场景名（系统设置）" },
                 new() { Name = "OrderType", Type = "string", Required = true, Description = "订单类型，当前固定 MOVE_ONLY（纯移动）" },
                 new() { Name = "OrderId", Type = "string", Required = true, Description = "订单唯一编号（如 NestHome_xxx / MoveLoop_xxx）" },
@@ -147,7 +147,7 @@ public class GrcsApiDocsController : ControllerBase
             ],
             BodyExample = """
                 {
-                  "CreateTime": "2026-08-30T10:00:00+08:00",
+                  "CreateTime": "2026-08-30 10:00:00",
                   "SceneName": "Show",
                   "OrderType": "MOVE_ONLY",
                   "OrderId": "NestHome_1A2B3C_5F7A",
@@ -235,11 +235,11 @@ public class GrcsApiDocsController : ControllerBase
             Name = "Ping（存活探测）",
             Method = "GET",
             UrlTemplate = "/",
-            Description = "存活探测：GET GRCS 根路径，能拿到任意状态码即视为可达（2 秒短超时），供前端连通性轮询与健康显示。",
+            Description = "存活探测：测试配置地址的 TCP 端口是否有程序监听（2 秒超时），不依赖 GRCS 提供首页或健康接口。",
             UsedBy = "地图信息页（GRCS 连接状态）、各页面连通性提示",
             Params =
             [
-                new() { Name = "（无参数）", Type = "-", Required = false, Description = "直接请求根路径" },
+                new() { Name = "（无参数）", Type = "-", Required = false, Description = "连接配置地址的 TCP 端口" },
             ],
         },
     ];

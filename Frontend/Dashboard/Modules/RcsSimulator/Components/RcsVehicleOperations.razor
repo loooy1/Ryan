@@ -1,0 +1,54 @@
+@using Contracts.Rcs.Vehicle
+@inject RcsApiClient Api
+@implements IDisposable
+
+<div class="vehicle-operations">
+    <div class="operation-controls">
+        <button disabled="@(IsBusy || Vehicle.Status != "Running")" @onclick='() => ControlAsync(Api.PauseVehicleAsync, "车辆已暂停")'>Ⅱ 暂停</button>
+        <button disabled="@(IsBusy || Vehicle.Status != "Paused")" @onclick='() => ControlAsync(Api.ResumeVehicleAsync, "车辆已继续执行")'>▷ 继续</button>
+        <button class="danger" disabled="@(IsBusy || Vehicle.Status is not ("Running" or "Paused"))" @onclick='() => ControlAsync(Api.StopVehicleAsync, "停止请求已接受，正在结束当前任务")'>□ 停止</button>
+    </div>
+    <section class="operation-section">
+        <button class="primary wide" @onclick="() => MoveRequested.InvokeAsync()" disabled="@(IsBusy || !AllowMove || !Vehicle.IsEnabled || Vehicle.Status is "Running" or "Paused")">↗ 移动任务</button>
+        @if (!AllowMove) { <small>@MoveHint</small> }
+        else if (!Vehicle.IsEnabled) { <small>车辆已停用，请在车辆管理中启用。</small> }
+    </section>
+</div>
+
+@code {
+    [Parameter, EditorRequired] public VehicleStateDto Vehicle { get; set; } = new();
+    [Parameter] public bool Disabled { get; set; }
+    [Parameter] public bool AllowMove { get; set; } = true;
+    [Parameter] public string MoveHint { get; set; } = "地图属性修改后请先保存，再下发移动任务。";
+    [Parameter] public EventCallback<bool> BusyChanged { get; set; }
+    [Parameter] public EventCallback<string> Completed { get; set; }
+    [Parameter] public EventCallback<string> Failed { get; set; }
+    [Parameter] public EventCallback MoveRequested { get; set; }
+    private readonly CancellationTokenSource _lifetime = new();
+    private bool _busy, _disposed;
+    private bool IsBusy => _busy || Disabled;
+
+    private Task ControlAsync(Func<string, CancellationToken, Task> action, string message) =>
+        ExecuteAsync((id, token) => action(id, token), message);
+    private async Task ExecuteAsync(Func<string, CancellationToken, Task> action, string message)
+    {
+        if (IsBusy || _disposed) return;
+        var id = Vehicle.Id;
+        var token = _lifetime.Token;
+        _busy = true;
+        try
+        {
+            await BusyChanged.InvokeAsync(true);
+            await action(id, token);
+            if (!_disposed) await Completed.InvokeAsync(message);
+        }
+        catch (OperationCanceledException) when (_disposed) { }
+        catch (Exception ex) when (!_disposed) { await Failed.InvokeAsync(ex.Message); }
+        finally
+        {
+            _busy = false;
+            if (!_disposed) await BusyChanged.InvokeAsync(false);
+        }
+    }
+    public void Dispose() { _disposed = true; _lifetime.Cancel(); _lifetime.Dispose(); }
+}

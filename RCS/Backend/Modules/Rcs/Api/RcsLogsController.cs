@@ -1,7 +1,7 @@
 using Backend.Shared.Logging;
 using Microsoft.AspNetCore.Mvc;
 
-namespace RCSBackend.Modules.Rcs.Console;
+namespace RCSBackend.Modules.Rcs.Api;
 
 [ApiController]
 [Route("api/rcs/logs")]

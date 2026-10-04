@@ -40,4 +40,4 @@ public class ModuleNavigationService
 }
 
 /// <summary>第二层：一个页面导航项（如"任务下发"）。Pinned=固定在侧边栏底部状态区上方，不随列表滚动。</summary>
-public record SubNavItem(string Label, string Href, string Icon, bool Pinned = false);
+public record SubNavItem(string Label, string Href, string Icon, bool Pinned = false, IReadOnlyList<SubNavItem>? Children = null);

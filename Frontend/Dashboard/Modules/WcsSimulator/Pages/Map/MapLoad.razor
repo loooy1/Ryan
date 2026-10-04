@@ -23,7 +23,7 @@
         {
             <div class="hint-text" style="margin-bottom:4px;">已加载 <b>@StationCount</b> 个站点 / <b>@PathsCount</b> 条连线</div>
         }
-        <div class="hint-text">接口读取经 WCS 后端 <code>GET /api/wcs/grcs/map</code> 从 GRCS <code>GET /api/Map/GetMap</code> 下载 zip（场景名按「系统设置」）；文件读取选择本地 <code>map.json</code> 直接解析。</div>
+        <div class="hint-text">进入页面时优先读取 WCS 共享地图缓存 <code>GET /api/wcs/map</code>；点“接口读取”会经 WCS 后端从 GRCS <code>GET /api/Map/GetMap</code> 下载 zip。也可选择本地 <code>map.json</code>。</div>
     }
 </div>
 

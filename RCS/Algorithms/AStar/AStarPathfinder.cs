@@ -1,97 +1,59 @@
-using System.Diagnostics;
 using Contracts.Rcs.Map;
 using Contracts.Rcs.Route;
-using Microsoft.Extensions.Logging;
 
 namespace Rcs.Algorithms.AStar;
 
-/// <summary>纯矩阵 A* 实现：不依赖数据库、HTTP、SignalR 或 WCS。</summary>
 public sealed class AStarPathfinder : IAStarPathfinder
 {
-    private readonly ILogger<AStarPathfinder> _logger;
+    public RouteDto FindPath(RcsMapSnapshot map, string startPointCode, string endPointCode)
+        => FindPath(map, startPointCode, endPointCode,
+            new HashSet<string>(StringComparer.OrdinalIgnoreCase), new HashSet<string>(StringComparer.OrdinalIgnoreCase));
 
-    public AStarPathfinder(ILogger<AStarPathfinder> logger) => _logger = logger;
-
-    private static readonly (int X, int Y)[] Directions =
-    [
-        (0, -1), (1, 0), (0, 1), (-1, 0)
-    ];
-
-    public RouteDto FindPath(GridMapDto map, GridPoint start, GridPoint end)
+    public RouteDto FindPath(RcsMapSnapshot map, string startPointCode, string endPointCode,
+        IReadOnlySet<string> blockedPoints, IReadOnlySet<string> blockedLines)
     {
-        using var scope = _logger.BeginScope(new Dictionary<string, object?>
-        {
-            ["LogCategory"] = "Algorithm",
-            ["Component"] = "AStar"
-        });
-        var stopwatch = Stopwatch.StartNew();
-        _logger.LogInformation(new EventId(1001, "PathCalculationStarted"),
-            "开始计算路径 Start={Start} End={End} Map={Width}x{Height} Obstacles={ObstacleCount}",
-            start, end, map.Width, map.Height, map.Obstacles.Count);
+        if (string.IsNullOrWhiteSpace(startPointCode) || string.IsNullOrWhiteSpace(endPointCode))
+            return new RouteDto { Message = "起点和终点不能为空。" };
+        if (!map.TryGetPoint(startPointCode, out var start) || !map.TryGetPoint(endPointCode, out var end))
+            return new RouteDto { Message = "起点或终点不在当前已加载地图中。" };
+        if (string.Equals(startPointCode, endPointCode, StringComparison.OrdinalIgnoreCase))
+            return new RouteDto { Found = true, PointCodes = new[] { start.PointCode } };
 
-        if (!Inside(map, start) || !Inside(map, end))
-        {
-            _logger.LogWarning(new EventId(1002, "InvalidPathEndpoint"),
-                "路径计算失败：起点或终点超出地图范围 Start={Start} End={End}", start, end);
-            return new RouteDto { Message = "起点或终点超出地图范围。" };
-        }
-
-        var obstacles = map.Obstacles.ToHashSet();
-        obstacles.Remove(start);
-        obstacles.Remove(end);
-
-        var open = new PriorityQueue<GridPoint, int>();
-        var cameFrom = new Dictionary<GridPoint, GridPoint>();
-        var cost = new Dictionary<GridPoint, int> { [start] = 0 };
-        open.Enqueue(start, Heuristic(start, end));
+        var open = new PriorityQueue<(string PointCode, double Cost), double>();
+        var cameFrom = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var cost = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase) { [start.PointCode] = 0 };
+        open.Enqueue((start.PointCode, 0), Heuristic(start, end));
 
         while (open.TryDequeue(out var current, out _))
         {
-            if (current == end)
+            var currentCode = current.PointCode;
+            // A better route may have enqueued this point again. Ignore the older queue entry.
+            if (!cost.TryGetValue(currentCode, out var bestCost) || current.Cost > bestCost) continue;
+            if (string.Equals(currentCode, end.PointCode, StringComparison.OrdinalIgnoreCase))
+                return new RouteDto { Found = true, PointCodes = Rebuild(cameFrom, currentCode) };
+            if (!map.Adjacency.TryGetValue(currentCode, out var edges)) continue;
+            foreach (var edge in edges)
             {
-                var points = Rebuild(cameFrom, current);
-                stopwatch.Stop();
-                _logger.LogInformation(new EventId(1003, "PathCalculated"),
-                    "路径计算完成 Start={Start} End={End} Nodes={NodeCount} DurationMs={DurationMs}",
-                    start, end, points.Count, stopwatch.ElapsedMilliseconds);
-                return new RouteDto { Found = true, Points = points };
-            }
-
-            foreach (var direction in Directions)
-            {
-                var next = new GridPoint(current.X + direction.X, current.Y + direction.Y);
-                if (!Inside(map, next) || obstacles.Contains(next)) continue;
-
-                var nextCost = cost[current] + 1;
-                if (cost.TryGetValue(next, out var oldCost) && nextCost >= oldCost) continue;
-
-                cost[next] = nextCost;
-                cameFrom[next] = current;
-                open.Enqueue(next, nextCost + Heuristic(next, end));
+                if (blockedPoints.Contains(edge.ToPointCode) || blockedLines.Contains(edge.LineCode)) continue;
+                if (!map.Points.TryGetValue(edge.ToPointCode, out var next)) continue;
+                var edgeCost = edge.Distance > 0 ? edge.Distance : Distance(map.Points[currentCode], next);
+                var nextCost = current.Cost + edgeCost;
+                if (cost.TryGetValue(next.PointCode, out var known) && nextCost >= known) continue;
+                cost[next.PointCode] = nextCost;
+                cameFrom[next.PointCode] = currentCode;
+                open.Enqueue((next.PointCode, nextCost), nextCost + Heuristic(next, end));
             }
         }
-
-        stopwatch.Stop();
-        _logger.LogWarning(new EventId(1004, "PathNotFound"),
-            "没有可用路径 Start={Start} End={End} DurationMs={DurationMs}",
-            start, end, stopwatch.ElapsedMilliseconds);
         return new RouteDto { Message = "起点和终点之间没有可用路径。" };
     }
 
-    private static bool Inside(GridMapDto map, GridPoint point) =>
-        point.X >= 0 && point.X < map.Width && point.Y >= 0 && point.Y < map.Height;
-
-    private static int Heuristic(GridPoint a, GridPoint b) =>
-        Math.Abs(a.X - b.X) + Math.Abs(a.Y - b.Y);
-
-    private static IReadOnlyList<GridPoint> Rebuild(Dictionary<GridPoint, GridPoint> cameFrom, GridPoint current)
+    private static double Heuristic(RcsMapNode a, RcsMapNode b) => Distance(a, b);
+    private static double Distance(RcsMapNode a, RcsMapNode b) =>
+        Math.Sqrt((a.X - b.X) * (a.X - b.X) + (a.Y - b.Y) * (a.Y - b.Y) + (a.Z - b.Z) * (a.Z - b.Z));
+    private static IReadOnlyList<string> Rebuild(Dictionary<string, string> cameFrom, string current)
     {
-        var result = new List<GridPoint> { current };
-        while (cameFrom.TryGetValue(current, out var previous))
-        {
-            current = previous;
-            result.Add(current);
-        }
+        var result = new List<string> { current };
+        while (cameFrom.TryGetValue(current, out var previous)) { current = previous; result.Add(current); }
         result.Reverse();
         return result;
     }

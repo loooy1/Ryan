@@ -164,7 +164,7 @@ public class MoveLoopRunner
             {
                 var payload = new VehicleOrderRequest
                 {
-                    CreateTime = DateTime.Now,
+                    CreateTime = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"),
                     SceneName = settings.SceneName,
                     OrderType = "MOVE_ONLY",
                     OrderId = $"{_orderIdPrefix}_{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString("x").ToUpper()}_{Interlocked.Increment(ref _seq)}",

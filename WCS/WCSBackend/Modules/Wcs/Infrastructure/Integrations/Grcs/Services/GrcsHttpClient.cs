@@ -1,6 +1,8 @@
 using System.Net.Http.Json;
+using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
+using System.Globalization;
 using Contracts.Dtos;
 
 namespace WCSBackend.Modules.Wcs.Proxy.Services;
@@ -40,12 +42,16 @@ public class GrcsHttpClient
 
     /// <summary>任务组下发（/api/v1/task_receive）。</summary>
     public Task<(bool Ok, int StatusCode, string Json)> SendTaskGroupAsync(string baseUrl, WcsTaskGroup payload)
-        => PostAsync($"{baseUrl.TrimEnd('/')}/api/v1/task_receive", payload);
+    {
+        payload.MsgTime = NormalizeProtocolTime(payload.MsgTime);
+        return PostAsync($"{baseUrl.TrimEnd('/')}/api/v1/task_receive", payload);
+    }
 
     /// <summary>车辆任务（/api/RawOrder/ChangeFloor，MOVE_ONLY 纯移动）。
     /// 超时 7 秒：必须早于前端 dispatch 限时（8 秒），保证超时时后端先落失败日志、前后端判定一致。</summary>
     public async Task<(bool Ok, int StatusCode, string Json)> SendVehicleOrderAsync(string baseUrl, VehicleOrderRequest payload)
     {
+        payload.CreateTime = NormalizeProtocolTime(payload.CreateTime);
         try
         {
             var c = NewClient();
@@ -55,6 +61,23 @@ public class GrcsHttpClient
             return (resp.IsSuccessStatusCode, (int)resp.StatusCode, body);
         }
         catch (Exception ex) { return (false, 0, JsonSerializer.Serialize(new { error = ex.Message })); }
+    }
+
+    /// <summary>
+    /// 统一 GRCS 协议时间：只保留本地时间的年月日、时分秒，不发送 ISO 时区和毫秒。
+    /// 代理层再次规范化，兼容旧版前端仍提交带时区的时间。
+    /// </summary>
+    private static string NormalizeProtocolTime(string? value)
+    {
+        if (DateTimeOffset.TryParse(value, CultureInfo.InvariantCulture,
+                DateTimeStyles.AllowWhiteSpaces, out var offsetTime))
+            return offsetTime.DateTime.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture);
+
+        if (DateTime.TryParse(value, CultureInfo.InvariantCulture,
+                DateTimeStyles.AllowWhiteSpaces, out var localTime))
+            return localTime.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture);
+
+        return DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture);
     }
 
     /// <summary>查询全部车辆及当前状态（GET /api/Vehicle/GetAllVehicles，归巢模式用）。</summary>
@@ -153,16 +176,27 @@ public class GrcsHttpClient
         catch (Exception ex) { return (false, 0, JsonSerializer.Serialize(new { error = ex.Message })); }
     }
 
-    /// <summary>存活探测：GET GRCS 首页，能收到 HTTP 响应即视为服务可达（2 秒短超时，供健康轮询）。
+    /// <summary>存活探测：测试配置地址的 TCP 端口是否有程序监听（2 秒超时）。
+    /// 不依赖 GRCS 是否提供 HTTP 首页或健康接口；只要目标端口接受 TCP 连接即可视为服务可达。
     /// 探测结果写入 GrcsOnline 缓存（自动发送类服务熔断依据）。</summary>
     public async Task<bool> PingAsync(string baseUrl)
     {
         try
         {
-            var c = NewClient();
-            c.Timeout = TimeSpan.FromSeconds(2);
-            using var resp = await c.GetAsync(baseUrl.TrimEnd('/') + "/index.html");
-            var online = resp.IsSuccessStatusCode;
+            if (!Uri.TryCreate(baseUrl?.Trim(), UriKind.Absolute, out var uri) ||
+                string.IsNullOrWhiteSpace(uri.Host))
+            {
+                lock (_healthLock) { _grcsOnline = false; _healthCheckedAt = DateTime.Now; }
+                return false;
+            }
+
+            var port = uri.Port > 0
+                ? uri.Port
+                : uri.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase) ? 443 : 80;
+
+            using var socket = new TcpClient();
+            await socket.ConnectAsync(uri.Host, port).WaitAsync(TimeSpan.FromSeconds(2));
+            var online = socket.Connected;
             lock (_healthLock) { _grcsOnline = online; _healthCheckedAt = DateTime.Now; }
             return online;
         }

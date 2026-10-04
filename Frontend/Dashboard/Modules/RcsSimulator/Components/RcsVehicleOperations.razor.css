@@ -1,0 +1,13 @@
+.operation-controls{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:7px}
+.vehicle-operations button{padding:9px 5px;border:1px solid #334155;border-radius:8px;background:#17243a;color:#dbeafe;font-size:12px;cursor:pointer}
+.vehicle-operations button:hover{border-color:#22d3ee;background:#203149}
+.vehicle-operations button:disabled{opacity:.42;cursor:not-allowed}
+.vehicle-operations button.danger{color:#fca5a5;border-color:#7f1d1d;background:#7f1d1d22}
+.vehicle-operations button.primary{background:#0891b2;border-color:#22d3ee;color:white}
+.operation-section{border-top:1px solid #263650;margin-top:17px;padding-top:16px}
+
+
+
+
+.operation-section .wide{width:100%}
+.operation-section small{display:block;color:#7890ad;font-size:11px;line-height:1.6;margin-top:8px}

@@ -39,6 +39,7 @@ builder.Services.AddScoped<Dashboard.Modules.WcsSimulator.Services.TaskStageHub>
 builder.Services.AddScoped<Dashboard.Modules.WcsSimulator.Services.MoveLoopService>();
 builder.Services.AddScoped<Dashboard.Modules.WcsSimulator.Services.RuntimeConfigurationCoordinator>();
 builder.Services.AddScoped<Dashboard.Modules.RcsSimulator.Services.RcsApiClient>();
+builder.Services.AddScoped<Dashboard.Modules.RcsSimulator.Services.RcsMapCacheService>();
 builder.Services.AddScoped<Dashboard.Modules.RcsSimulator.Services.RcsRealtimeHubClient>();
 
 await builder.Build().RunAsync();

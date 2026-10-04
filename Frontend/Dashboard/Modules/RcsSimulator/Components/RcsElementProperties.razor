@@ -1,0 +1,56 @@
+@using Contracts.Rcs.Map
+
+<div class="rcs-element-properties">
+@if (Point is not null)
+{
+    <div class="property-title">点位属性</div>
+    <label>编码<input value="@Point.PointCode" readonly="@(ReadOnlyCodes || RuntimeMode)" @onchange="PointCodeChanged" /></label>
+    <label>名称<input readonly="@RuntimeMode" @bind="Point.PointName" @bind:after="NotifyChanged" /></label>
+    <label>类型<select disabled="@RuntimeMode" @bind="Point.PointType" @bind:after="NotifyChanged"><option value="STORAGE">储位</option><option value="TRANSFER">接驳位</option><option value="PEOPLE">人工分拣台</option><option value="SORTING">分拣台</option><option value="WAYPOINT">路径点</option><option value="ELEVATOR">跨层点</option><option value="CHARGING">充电点</option></select></label>
+    <div class="property-grid">
+        <label>X<input type="number" step="any" readonly="@RuntimeMode" @bind="Point.X" @bind:after="NotifyChanged" /></label>
+        <label>Y<input type="number" step="any" readonly="@RuntimeMode" @bind="Point.Y" @bind:after="NotifyChanged" /></label>
+        <label>Z<input type="number" step="any" readonly="@RuntimeMode" @bind="Point.Z" @bind:after="NotifyChanged" /></label>
+        <label>楼层<input type="number" readonly="@RuntimeMode" @bind="Point.Floor" @bind:after="NotifyChanged" /></label>
+    </div>
+    <label>状态<select value="@Point.IsEnabled.ToString()" @onchange="PointEnabledChanged"><option value="True">启用</option><option value="False">禁用</option></select></label>
+}
+else if (Line is not null)
+{
+    <div class="property-title">路径属性</div>
+    <label>编码<input @bind="Line.LineCode" readonly="@(ReadOnlyCodes || RuntimeMode)" @bind:after="NotifyChanged" /></label>
+    <div class="property-endpoints">@Line.FromPointCode → @Line.ToPointCode</div>
+    <label>方向<select disabled="@RuntimeMode" @bind="Line.Direction" @bind:after="NotifyChanged"><option value="BIDIRECTIONAL">双向</option><option value="FORWARD">起点 → 终点</option></select></label>
+    <div class="property-grid">
+        <label>距离<input type="number" min="0" step="any" readonly="@RuntimeMode" @bind="Line.Distance" @bind:after="NotifyChanged" /></label>
+        <label>最高速度<input type="number" min="0" step="any" @bind="Line.MaxSpeed" @bind:after="NotifyChanged" /></label>
+    </div>
+    <label>状态<select value="@Line.IsEnabled.ToString()" @onchange="LineEnabledChanged"><option value="True">启用</option><option value="False">禁用</option></select></label>
+}
+else
+{
+    <div class="property-empty">选择一个站点或一条路径，查看并修改对应属性。</div>
+}
+</div>
+
+@code {
+    [Parameter] public RcsMapPointDto? Point { get; set; }
+    [Parameter] public RcsMapLineDto? Line { get; set; }
+    [Parameter] public bool ReadOnlyCodes { get; set; }
+    [Parameter] public bool RuntimeMode { get; set; }
+    [Parameter] public EventCallback<ChangeEventArgs> PointCodeChanged { get; set; }
+    [Parameter] public EventCallback Changed { get; set; }
+    private Task NotifyChanged() => Changed.InvokeAsync();
+    private Task PointEnabledChanged(ChangeEventArgs args)
+    {
+        if (Point is null || !bool.TryParse(args.Value?.ToString(), out var enabled)) return Task.CompletedTask;
+        Point.IsEnabled = enabled;
+        return NotifyChanged();
+    }
+    private Task LineEnabledChanged(ChangeEventArgs args)
+    {
+        if (Line is null || !bool.TryParse(args.Value?.ToString(), out var enabled)) return Task.CompletedTask;
+        Line.IsEnabled = enabled;
+        return NotifyChanged();
+    }
+}

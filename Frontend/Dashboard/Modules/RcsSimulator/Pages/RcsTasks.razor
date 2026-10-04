@@ -1,0 +1,242 @@
+@page "/rcs/tasks/upstream"
+@page "/rcs/tasks/internal"
+@using System.Text.Json
+@using Contracts.Rcs.Tasks
+@using Contracts.Rcs.Vehicle
+@inject RcsApiClient Api
+@inject RcsRealtimeHubClient Realtime
+@inject NavigationManager Navigation
+@inject IJSRuntime Js
+@implements IAsyncDisposable
+
+<PageTitle>@(InternalView ? "RCS 内部任务拆分" : "上游原始任务")</PageTitle>
+
+<div class="rcs-tasks-page">
+    <header class="tasks-header">
+        <div><div class="tasks-kicker">RCS / TASK FLOW</div><h1>@(InternalView ? "RCS 内部任务拆分" : "上游原始任务")</h1>
+            <p>@(InternalView ? "查看每个上游任务在 RCS 内的分配、行驶和站点动作进度。" : "按上游任务组查看收到的原始字段及 RCS 拆分出的子任务。")</p></div>
+        <div class="tasks-header-actions"><button class="tasks-refresh" @onclick="RefreshAsync" disabled="@_loading">↻ 刷新</button></div>
+    </header>
+
+    <nav class="tasks-tabs" aria-label="任务模块子页面">
+        <a class="@(!InternalView ? "selected" : "")" href="rcs/tasks/upstream">↙ 上游原始任务</a>
+        <a class="@(InternalView ? "selected" : "")" href="rcs/tasks/internal">↳ RCS内部任务拆分</a>
+    </nav>
+
+    <section class="tasks-metrics">
+        <div><span>上游任务组</span><strong>@UpstreamGroupCount</strong></div>
+        <div><span>RCS 子任务</span><strong>@UpstreamTasks.Count</strong></div>
+        <div><span>待分配</span><strong>@UpstreamTasks.Count(x => x.Status == RcsTaskStatus.Waiting)</strong></div>
+        <div><span>执行中</span><strong>@UpstreamTasks.Count(x => x.Status is RcsTaskStatus.Running or RcsTaskStatus.Paused or RcsTaskStatus.Cancelling)</strong></div>
+    </section>
+
+    <div class="tasks-toolbar">
+        <label><span>搜索</span><input @bind="_search" @bind:event="oninput" placeholder="任务组、任务编号、车辆或容器" /></label>
+        <label><span>任务状态</span><select @bind="_statusFilter"><option value="">全部状态</option><option value="WAITING">待分配</option><option value="RUNNING">执行中</option><option value="PAUSED">已暂停</option><option value="COMPLETED">已完成</option><option value="FAILED">失败</option><option value="CANCELLED">已取消</option><option value="INTERRUPTED">已中断</option></select></label>
+        <small>@(Realtime.IsConnected ? "● 实时更新已连接" : "○ 等待实时连接") · 最近 500 条任务</small>
+    </div>
+
+    @if (_error != "") { <div class="tasks-error" role="alert">@_error</div> }
+    @if (_loading && _tasks.Count == 0) { <div class="tasks-empty">正在读取 RCS 任务…</div> }
+    else if (VisibleGroups.Count == 0) { <div class="tasks-empty">@(_tasks.Count == 0 ? "当前没有已接收的 RCS 任务。" : "没有符合搜索条件的任务。")</div> }
+    else if (!InternalView)
+    {
+        <div class="upstream-list">
+            @foreach (var group in VisibleGroups)
+            {
+                <details class="upstream-card" @key="group.Key">
+                    <summary><span class="group-mark">↙</span><span class="group-main"><strong>@group.GroupId</strong><small>@group.Warehouse · @group.MsgTime</small></span><span class="group-count">@group.Tasks.Length 个子任务</span><span class="task-status @StatusClass(GroupStatus(group.Tasks))">@StatusText(GroupStatus(group.Tasks))</span><span class="group-toggle">⌄</span></summary>
+                    <div class="group-content">
+                        <h2>上游原始任务字段</h2>
+                        <pre>@RawRequest(group)</pre>
+                        <div class="group-subtasks"><strong>RCS 已拆分 @group.Tasks.Length 个子任务</strong><a href="rcs/tasks/internal">查看执行阶段 →</a></div>
+                        <div class="raw-task-list">
+                            @foreach (var task in group.Tasks.OrderBy(x => x.CreatedAt, StringComparer.Ordinal))
+                            {
+                                <div><span>@task.TaskId</span><span>@task.TaskType</span><span>@(task.StationCode.Count == 0 ? "无站点" : string.Join(" → ", task.StationCode))</span><span class="task-status @StatusClass(task.Status)">@StatusText(task.Status)</span></div>
+                            }
+                        </div>
+                    </div>
+                </details>
+            }
+        </div>
+    }
+    else
+    {
+        <div class="internal-list">
+            @foreach (var group in VisibleGroups)
+            {
+                <section class="internal-group" @key="group.Key">
+                    <header><span><small>任务组</small><strong>@group.GroupId</strong></span><span>@group.Warehouse · @group.MsgTime</span><span class="group-count">@group.Tasks.Length 个子任务</span></header>
+                    @foreach (var task in group.Tasks.OrderBy(x => x.CreatedAt, StringComparer.Ordinal))
+                    {
+                        var vehicle = _vehicles.GetValueOrDefault(task.VehicleId);
+                        <article class="internal-task">
+                            <div class="internal-task-heading"><div><small>RCS 子任务</small><h2>@task.TaskId</h2></div><span class="task-status @StatusClass(task.Status)">@StatusText(task.Status)</span></div>
+                            <div class="task-facts"><span>来源 <b>@(task.Source == RcsTaskSource.Manual ? "手动" : "上游自动")</b></span><span>类型 <b>@task.TaskType</b></span><span>容器 <b>@(task.ContainerCode == "" ? "—" : task.ContainerCode)</b></span><span>车辆 <b>@(task.VehicleId == "" ? "待分配" : task.VehicleId)</b></span><span>站点 <b>@(task.StationCode.Count == 0 ? "—" : string.Join(" → ", task.StationCode))</b></span></div>
+                            <ol class="task-timeline">
+                                @foreach (var step in Timeline(task, vehicle))
+                                {
+                                    <li class="@step.State"><span class="timeline-node">@(step.State == "done" ? "✓" : step.State == "failed" ? "!" : step.Number.ToString())</span><span class="timeline-copy"><strong>@step.Title</strong><small>@step.Detail</small></span></li>
+                                }
+                            </ol>
+                            @if (task.Message != "") { <div class="internal-message">@task.Message</div> }
+                        </article>
+                    }
+                </section>
+            }
+        </div>
+    }
+</div>
+
+@code {
+    private static readonly JsonSerializerOptions PrettyJson = new() { WriteIndented = true };
+    private readonly CancellationTokenSource _lifetime = new();
+    private readonly Dictionary<string, RcsTaskDto> _tasks = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, VehicleStateDto> _vehicles = new(StringComparer.OrdinalIgnoreCase);
+    private string _search = "", _statusFilter = "", _error = "";
+    private bool _loading, _disposed;
+    private bool InternalView => Navigation.Uri.Contains("/rcs/tasks/internal", StringComparison.OrdinalIgnoreCase);
+    private List<TaskGroup> TaskGroups => _tasks.Values
+        .GroupBy(x => (x.GroupId, x.MsgTime))
+        .Select(group => new TaskGroup($"{group.Key.GroupId}|{group.Key.MsgTime}", group.Key.GroupId, group.Key.MsgTime,
+            group.OrderBy(x => x.CreatedAt, StringComparer.Ordinal).ToArray()))
+        .OrderByDescending(group => group.Tasks.Max(x => x.CreatedAt), StringComparer.Ordinal).ToList();
+    private List<RcsTaskDto> UpstreamTasks => _tasks.Values.Where(task => task.Source == RcsTaskSource.Upstream).ToList();
+    private int UpstreamGroupCount => TaskGroups.Count(group => group.Tasks.Any(task => task.Source == RcsTaskSource.Upstream));
+    private List<TaskGroup> VisibleGroups => TaskGroups.Select(group => group with
+        { Tasks = group.Tasks.Where(task => task.Source == RcsTaskSource.Upstream && Matches(task)).ToArray() })
+        .Where(group => group.Tasks.Length > 0).ToList();
+
+    protected override async Task OnInitializedAsync()
+    {
+        try { var saved = await Js.InvokeAsync<string?>("localStorage.getItem", "rcs_backend_url"); if (!string.IsNullOrWhiteSpace(saved)) Api.SetBaseUrl(saved); } catch { }
+        Realtime.TaskChanged += OnTaskChanged; Realtime.VehicleStateChanged += OnVehicleStateChanged;
+        Realtime.VehiclesChanged += OnVehiclesChanged;
+        Realtime.Reconnected += OnReconnected;
+        await RefreshAsync();
+        if (_disposed) return;
+        Realtime.SetBaseUrl(Api.BaseUrl);
+        try { await Realtime.StartAsync(); } catch { }
+    }
+
+    private async Task RefreshAsync()
+    {
+        if (_loading || _disposed) return;
+        _loading = true; _error = "";
+        try
+        {
+            var tasks = await Api.GetTasksAsync(500, _lifetime.Token);
+            var vehicles = await Api.GetVehiclesAsync(_lifetime.Token);
+            _tasks.Clear(); foreach (var task in tasks) _tasks[task.TaskId] = task;
+            _vehicles.Clear(); foreach (var vehicle in vehicles) _vehicles[vehicle.Id] = vehicle;
+            if (!Realtime.IsConnected) { Realtime.SetBaseUrl(Api.BaseUrl); try { await Realtime.StartAsync(); } catch { } }
+        }
+        catch (OperationCanceledException) when (_disposed) { }
+        catch (Exception ex) when (!_disposed) { _error = ex.Message; }
+        finally { _loading = false; }
+    }
+
+    private Task RefreshAsyncFromHub() => InvokeAsync(RefreshAsync);
+    private void OnReconnected() => _ = RefreshAsyncFromHub();
+    private void OnTaskChanged(RcsTaskDto task) => _ = InvokeAsync(() => { if (!_disposed) { _tasks[task.TaskId] = task; StateHasChanged(); } });
+    private void OnVehicleStateChanged(VehicleStateDto vehicle) => _ = InvokeAsync(() => { if (!_disposed) { _vehicles[vehicle.Id] = vehicle; StateHasChanged(); } });
+    private void OnVehiclesChanged(IReadOnlyList<VehicleStateDto> vehicles) => _ = InvokeAsync(() =>
+    {
+        if (_disposed) return;
+        _vehicles.Clear(); foreach (var vehicle in vehicles) _vehicles[vehicle.Id] = vehicle;
+        StateHasChanged();
+    });
+    private bool Matches(RcsTaskDto task) => (_statusFilter == "" || task.Status == _statusFilter)
+        && (_search.Trim() == "" || string.Join(' ', task.GroupId, task.TaskId, task.VehicleId, task.RequestedVehicleId,
+            task.ContainerCode, task.Warehouse, task.TaskType, string.Join(' ', task.StationCode), string.Join(' ', task.AreaCode))
+            .Contains(_search.Trim(), StringComparison.OrdinalIgnoreCase));
+
+    private static string RawRequest(TaskGroup group) => JsonSerializer.Serialize(new
+    {
+        GroupId = group.GroupId,
+        MsgTime = group.MsgTime,
+        PriorityCode = group.Tasks.FirstOrDefault()?.PriorityCode ?? 1,
+        Warehouse = group.Warehouse,
+        Tasks = group.Tasks.Select(task => new
+        {
+            task.TaskId,
+            VehicleId = task.RequestedVehicleId,
+            task.TaskType,
+            task.ContainerCode,
+            StationCode = task.StationCode,
+            AreaCode = task.AreaCode
+        })
+    }, PrettyJson);
+
+    private static string GroupStatus(IReadOnlyList<RcsTaskDto> tasks) => tasks.All(x => x.Status == RcsTaskStatus.Completed) ? RcsTaskStatus.Completed
+        : tasks.Any(x => x.Status == RcsTaskStatus.Failed) ? RcsTaskStatus.Failed
+        : tasks.Any(x => x.Status is RcsTaskStatus.Running or RcsTaskStatus.Paused or RcsTaskStatus.Cancelling) ? RcsTaskStatus.Running
+        : tasks.All(x => x.Status is RcsTaskStatus.Cancelled or RcsTaskStatus.Interrupted) ? tasks[0].Status
+        : RcsTaskStatus.Waiting;
+    private static string StatusText(string status) => status switch
+    {
+        RcsTaskStatus.Waiting => "待分配", RcsTaskStatus.Running => "执行中", RcsTaskStatus.Paused => "已暂停",
+        RcsTaskStatus.Cancelling => "取消中", RcsTaskStatus.Completed => "已完成", RcsTaskStatus.Failed => "失败",
+        RcsTaskStatus.Cancelled => "已取消", RcsTaskStatus.Interrupted => "已中断", _ => status
+    };
+    private static string StatusClass(string status) => status switch
+    {
+        RcsTaskStatus.Completed => "status-done", RcsTaskStatus.Waiting => "status-waiting",
+        RcsTaskStatus.Failed or RcsTaskStatus.Cancelled or RcsTaskStatus.Interrupted => "status-error",
+        RcsTaskStatus.Paused or RcsTaskStatus.Cancelling => "status-paused", _ => "status-running"
+    };
+
+    private static IReadOnlyList<TimelineStep> Timeline(RcsTaskDto task, VehicleStateDto? vehicle)
+    {
+        var stops = task.StationCode;
+        var start = stops.FirstOrDefault() ?? "";
+        var end = stops.LastOrDefault() ?? "";
+        var firstDone = vehicle?.CompletedStepIds.Contains($"{task.TaskId}:0", StringComparer.Ordinal) == true;
+        var lastDone = vehicle?.CompletedStepIds.Contains($"{task.TaskId}:{Math.Max(0, stops.Count - 1)}", StringComparer.Ordinal) == true;
+        var atStart = vehicle?.TaskId == task.TaskId && vehicle.PointCode == start;
+        var atEnd = vehicle?.TaskId == task.TaskId && vehicle.PointCode == end;
+        var terminal = task.Status is RcsTaskStatus.Completed or RcsTaskStatus.Failed or RcsTaskStatus.Cancelled or RcsTaskStatus.Interrupted;
+        var current = task.Status == RcsTaskStatus.Waiting ? 0
+            : task.VehicleId == "" ? 1
+            : task.Status == RcsTaskStatus.Completed ? 6
+            : task.RoutePointCodes.Count == 0 ? 1
+            : !firstDone ? (atStart ? 3 : 2)
+            : !lastDone ? (atEnd ? 5 : 4)
+            : 6;
+        if (task.Status == RcsTaskStatus.Cancelled && task.VehicleId == "") current = 1;
+        var startAction = task.TaskType is "INBOUND" or "OUTBOUND" ? "取货动作" : "起点动作（move）";
+        var endAction = task.TaskType is "INBOUND" or "OUTBOUND" ? "放货动作" : "终点动作（move）";
+        var titles = new[] { "收到任务，等待分配", "分配给车辆", "车辆从当前位置前往起点", $"车辆在起点执行{startAction}", "车辆从起点前往终点", $"车辆在终点执行{endAction}", "任务完成" };
+        var details = new[]
+        {
+            task.Status == RcsTaskStatus.Waiting ? "已接收，正在等待调度器分配。" : $"上游任务 {task.GroupId} 已被 RCS 接收。",
+            task.VehicleId == "" ? "尚未分配车辆。" : $"已分配车辆 {task.VehicleId}。",
+            start == "" ? "报文未提供起点站。" : vehicle is null ? $"目标起点 {start}，等待车辆状态。" : $"当前 {vehicle.PointCode} · 目标 {start}。",
+            start == "" ? "无起点站动作。" : $"站点 {start} · {(task.TaskType is "INBOUND" or "OUTBOUND" ? "fetch" : "move")}。",
+            start == "" || end == "" ? "报文未提供完整起终点。" : $"{start} → {end} · 路径 {task.RoutePointCodes.Count} 点。",
+            end == "" ? "无终点站动作。" : $"站点 {end} · {(task.TaskType is "INBOUND" or "OUTBOUND" ? "put" : "move")}。",
+            task.FinishedAt is null ? "等待车辆完成终点动作。" : $"完成时间 {task.FinishedAt}。"
+        };
+        return Enumerable.Range(0, 7).Select(index => new TimelineStep(index + 1, titles[index], details[index],
+            task.Status == RcsTaskStatus.Completed || index < current ? "done"
+            : index == current && task.Status == RcsTaskStatus.Failed ? "failed"
+            : index == current && !terminal ? "current"
+            : index == current && task.Status is RcsTaskStatus.Cancelled or RcsTaskStatus.Interrupted ? "failed" : "pending")).ToArray();
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        _disposed = true; _lifetime.Cancel(); _lifetime.Dispose();
+        Realtime.TaskChanged -= OnTaskChanged; Realtime.VehicleStateChanged -= OnVehicleStateChanged;
+        Realtime.VehiclesChanged -= OnVehiclesChanged;
+        Realtime.Reconnected -= OnReconnected;
+        await Task.CompletedTask;
+    }
+
+    private sealed record TaskGroup(string Key, string GroupId, string MsgTime, RcsTaskDto[] Tasks)
+    {
+        public string Warehouse => Tasks.FirstOrDefault()?.Warehouse ?? "";
+    }
+    private sealed record TimelineStep(int Number, string Title, string Detail, string State);
+}

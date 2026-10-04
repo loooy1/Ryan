@@ -1,0 +1,213 @@
+@page "/rcs/vehicles"
+@using Contracts.Rcs.Map
+@using Contracts.Rcs.Vehicle
+@using Contracts.Rcs.Tasks
+@inject RcsApiClient Api
+@inject RcsRealtimeHubClient Realtime
+@inject IJSRuntime Js
+@implements IAsyncDisposable
+
+<PageTitle>RCS 车辆管理</PageTitle>
+
+<div class="fleet-page">
+    <header class="fleet-header">
+        <div><div class="fleet-kicker">RCS / VEHICLES</div><h1>车辆管理</h1><p>添加车辆并配置车辆参数，任务操作请在地图与路径中进行。</p></div>
+        <div class="fleet-header-actions"><button @onclick="RefreshAsync" disabled="@_busy">↻ 刷新</button><button class="primary" @onclick="OpenAdd" disabled="@_busy">＋ 添加车辆</button></div>
+    </header>
+    <section class="fleet-summary" aria-label="车辆统计">
+        <div><span>车辆总数</span><strong>@_vehicles.Count</strong><small>已启用 @_vehicles.Values.Count(x => x.IsEnabled) 台</small></div>
+        <div class="running"><span>正在运行</span><strong>@_vehicles.Values.Count(x => x.Status == "Running")</strong><small>各车独立执行</small></div>
+        <div class="paused"><span>已暂停</span><strong>@_vehicles.Values.Count(x => x.Status == "Paused")</strong><small>保留当前任务</small></div>
+        <div class="idle"><span>自动可分配</span><strong>@_vehicles.Values.Count(x => x.IsEnabled && x.OperatingMode == RcsOperatingMode.Automatic && (x.Status is "Idle" or "Arrived"))</strong><small>自动模式、启用且空闲</small></div>
+    </section>
+    @if (_feedback != "") { <div class="fleet-feedback @(_error ? "error" : "ok")" role="status">@_feedback</div> }
+    <div class="fleet-layout">
+        <section class="fleet-list-panel">
+            <div class="fleet-section-heading"><h2>车辆列表 <span>@_vehicles.Count</span></h2><span class="fleet-live">● @(Realtime.IsConnected ? "实时连接" : "等待连接")</span></div>
+            @if (_loading) { <div class="fleet-empty">正在读取车辆…</div> }
+            else if (_vehicles.Count == 0)
+            {
+                <div class="fleet-empty"><div class="empty-icon">◇</div><strong>还没有车辆</strong><p>添加一台虚拟车并配置名称、当前位置及启用状态。</p><button class="primary" @onclick="OpenAdd">＋ 添加车辆</button></div>
+            }
+            else
+            {
+                <div class="fleet-grid">
+                    @foreach (var item in OrderedVehicles)
+                    {
+                        <button @key="item.Id" class="vehicle-card @(_selectedId == item.Id ? "selected" : "") @(!item.IsEnabled ? "disabled-car" : "")"
+                                @onclick="() => SelectVehicle(item.Id)" disabled="@_busy" aria-label="@($"选择车辆 {item.Id}")" aria-pressed="@(_selectedId == item.Id)">
+                            <div class="vehicle-card-top"><span class="vehicle-symbol">▰</span><span class="state-badge @StatusClass(item)">@StatusText(item)</span></div>
+                            <strong class="vehicle-id">@item.Id</strong><span class="vehicle-name">@item.Name</span>
+                            <div class="vehicle-card-data"><span>模式</span><b>@ModeText(item)</b><span>当前位置</span><b>@PointText(item)</b></div>
+                        </button>
+                    }
+                </div>
+            }
+        </section>
+        <aside class="vehicle-detail">
+            @if (Selected is { } car)
+            {
+                <div class="detail-heading"><div><span class="fleet-kicker">SELECTED VEHICLE</span><h2>@car.Id</h2></div><span class="state-badge @StatusClass(car)">@StatusText(car)</span></div>
+                <div class="detail-position"><span>实时位置</span><strong>@PointText(car)</strong><small>X @car.X.ToString("0.##") · Y @car.Y.ToString("0.##") · 楼层 @car.Floor</small></div>
+                <div class="detail-meta"><span>车辆协议</span><b>@car.Protocol</b><span>运行模式</span><b>@ModeText(car)</b><span>初始站点</span><b>@(car.InitialPointCode == "" ? "未设置" : car.InitialPointCode)</b></div>
+                <section class="detail-section">
+                    <h3>车辆配置</h3>
+                    <label>车辆名称<input @bind="_editName" @bind:event="oninput" @bind:after="MarkDirty" maxlength="128" disabled="@_busy" /></label>
+                    <label>当前位置<select @bind="_editPointCode" @bind:after="MarkPositionDirty" disabled="@(_busy || car.Status is "Running" or "Paused")"><option value="">未定位</option>@foreach (var point in MapPoints) { <option value="@point.PointCode">@point.PointCode · @point.PointName</option> }</select></label>
+                    <button class="wide position-save" @onclick="SetCurrentPositionAsync" disabled="@(_busy || !_positionDirty || car.Status is "Running" or "Paused")">设置当前位置</button>
+                    <label class="check-label"><input type="checkbox" @bind="_editEnabled" @bind:after="MarkDirty" disabled="@_busy" />允许分配新任务</label>
+                    <button class="wide" @onclick="SaveDefinitionAsync" disabled="@(_busy || !_dirty)">保存配置</button>
+                </section>
+                <div class="detail-delete">
+                    @if (_confirmDelete)
+                    {
+                        <p>确认删除车辆 @car.Id？</p><div class="delete-actions"><button @onclick="() => _confirmDelete = false" disabled="@_busy">取消</button><button class="danger" @onclick="DeleteAsync" disabled="@_busy">确认删除</button></div>
+                    }
+                    else { <button class="delete-link" @onclick="() => _confirmDelete = true" disabled="@(_busy || car.Status is "Running" or "Paused" || car.LoadedContainerCode != "")">删除车辆</button> }
+                </div>
+            }
+            else { <div class="fleet-empty">选择车辆配置参数</div> }
+        </aside>
+    </div>
+    @if (_showAdd)
+    {
+        <div class="fleet-modal-backdrop">
+            <section class="fleet-modal" role="dialog" aria-modal="true" aria-labelledby="add-vehicle-title">
+                <div class="detail-heading"><h2 id="add-vehicle-title">添加虚拟车</h2><button class="modal-close" @onclick="CloseAdd" disabled="@_busy" aria-label="关闭">×</button></div>
+                <p class="modal-intro">每台车辆独立执行任务，可选择初始地图站点。</p>
+                <label>车辆编号<input @bind="_newId" @bind:event="oninput" placeholder="例如 V-02" maxlength="64" disabled="@_busy" /></label>
+                <label>车辆名称<input @bind="_newName" @bind:event="oninput" placeholder="例如 虚拟车 02" maxlength="128" disabled="@_busy" /></label>
+                <label>当前位置<select @bind="_newPoint" disabled="@_busy"><option value="">未定位</option>@foreach (var point in MapPoints) { <option value="@point.PointCode">@point.PointCode · @point.PointName</option> }</select></label>
+                <label class="check-label"><input type="checkbox" @bind="_newEnabled" disabled="@_busy" />允许分配任务</label>
+                @if (_modalError != "") { <div class="fleet-feedback error" role="alert">@_modalError</div> }
+                <div class="modal-actions"><button @onclick="CloseAdd" disabled="@_busy">取消</button><button class="primary" @onclick="AddAsync" disabled="@(_busy || string.IsNullOrWhiteSpace(_newId))">@(_busy ? "添加中…" : "添加车辆")</button></div>
+            </section>
+        </div>
+    }
+</div>
+
+@code {
+    private readonly CancellationTokenSource _lifetime = new();
+    private readonly Dictionary<string, VehicleStateDto> _vehicles = new(StringComparer.OrdinalIgnoreCase);
+    private RcsMapSnapshot? _map;
+    private string _selectedId = "", _editName = "", _editPointCode = "";
+    private string _newId = "", _newName = "", _newPoint = "", _feedback = "", _modalError = "";
+    private bool _editEnabled = true, _newEnabled = true, _loading, _busy, _error, _showAdd, _confirmDelete, _dirty, _positionDirty, _disposed;
+    private VehicleStateDto? Selected => _vehicles.GetValueOrDefault(_selectedId);
+    private IEnumerable<VehicleStateDto> OrderedVehicles => _vehicles.Values.OrderBy(x => x.Id, StringComparer.Ordinal);
+    private IEnumerable<RcsMapNode> MapPoints => _map?.Points.Values.OrderBy(x => x.PointCode, StringComparer.Ordinal) ?? Enumerable.Empty<RcsMapNode>();
+
+    protected override async Task OnInitializedAsync()
+    {
+        try { var saved = await Js.InvokeAsync<string?>("localStorage.getItem", "rcs_backend_url"); if (!string.IsNullOrWhiteSpace(saved)) Api.SetBaseUrl(saved); } catch { }
+        Realtime.VehicleStateChanged += OnStateChanged; Realtime.VehiclesChanged += OnVehiclesChanged; Realtime.Reconnected += OnReconnected;
+        await RefreshAsync();
+        if (_disposed) return;
+        Realtime.SetBaseUrl(Api.BaseUrl);
+        try { await Realtime.StartAsync(); } catch { }
+    }
+    private async Task RefreshAsync()
+    {
+        if (_busy) return;
+        _loading = true;
+        try
+        {
+            ApplyFleet(await Api.GetVehiclesAsync(_lifetime.Token));
+            try { _map = await Api.GetMapAsync(_lifetime.Token); } catch { _map = null; }
+            if (!_disposed && !Realtime.IsConnected)
+            {
+                Realtime.SetBaseUrl(Api.BaseUrl);
+                try { await Realtime.StartAsync(); } catch { }
+            }
+        }
+        catch (OperationCanceledException) when (_disposed) { }
+        catch (Exception ex) when (!_disposed) { Feedback(ex.Message, true); }
+        finally { _loading = false; }
+    }
+    private void ApplyFleet(IReadOnlyList<VehicleStateDto> states)
+    {
+        _vehicles.Clear(); foreach (var state in states) _vehicles[state.Id] = state;
+        if (!_vehicles.ContainsKey(_selectedId)) SelectVehicle(OrderedVehicles.FirstOrDefault()?.Id ?? "");
+        else if (Selected is { } car)
+        {
+            if (!_dirty) { _editName = car.Name; _editEnabled = car.IsEnabled; }
+            if (!_positionDirty) _editPointCode = car.PointCode;
+        }
+    }
+    private void SelectVehicle(string id)
+    {
+        _selectedId = id; _confirmDelete = false; _dirty = false; _positionDirty = false;
+        if (Selected is { } car) { _editName = car.Name; _editEnabled = car.IsEnabled; _editPointCode = car.PointCode; }
+    }
+    private void MarkDirty() => _dirty = true;
+    private void MarkPositionDirty() => _positionDirty = true;
+    private void OpenAdd()
+    {
+        var number = 1; while (_vehicles.ContainsKey($"V-{number:00}")) number++;
+        _newId = $"V-{number:00}"; _newName = $"虚拟车 {number:00}"; _newPoint = ""; _newEnabled = true; _modalError = ""; _showAdd = true;
+    }
+    private void CloseAdd() { if (!_busy) _showAdd = false; }
+    private async Task AddAsync()
+    {
+        if (_busy) return;
+        _busy = true; _modalError = "";
+        try
+        {
+            var state = await Api.AddVehicleAsync(new() { Id = _newId.Trim(), Name = _newName.Trim(), PointCode = _newPoint, IsEnabled = _newEnabled }, _lifetime.Token)
+                ?? throw new InvalidOperationException("RCS 未返回新车辆。");
+            _showAdd = false; _vehicles[state.Id] = state; SelectVehicle(state.Id); Feedback($"车辆 {state.Id} 已添加。");
+        }
+        catch (OperationCanceledException) when (_disposed) { }
+        catch (Exception ex) when (!_disposed) { _modalError = ex.Message; }
+        finally { _busy = false; }
+    }
+    private async Task SaveDefinitionAsync() => await ActAsync(async () =>
+    {
+        var state = await Api.UpdateVehicleAsync(_selectedId, new() { Name = _editName, IsEnabled = _editEnabled }, _lifetime.Token);
+        _dirty = false; if (state is not null) _vehicles[state.Id] = state; Feedback("车辆配置已保存。");
+    });
+    private async Task SetCurrentPositionAsync() => await ActAsync(async () =>
+    {
+        var point = _editPointCode;
+        var state = await Api.SetVehiclePositionAsync(_selectedId, point, _lifetime.Token);
+        if (state is not null) _vehicles[state.Id] = state;
+        _positionDirty = false;
+        Feedback(point == "" ? "车辆当前位置已清除。" : $"车辆当前位置已设为 {point}。");
+    });
+    private async Task DeleteAsync() => await ActAsync(async () =>
+    {
+        var id = _selectedId; await Api.DeleteVehicleAsync(id, _lifetime.Token);
+        _vehicles.Remove(id); SelectVehicle(OrderedVehicles.FirstOrDefault()?.Id ?? ""); Feedback($"车辆 {id} 已删除。");
+    });
+    private async Task ActAsync(Func<Task> action)
+    {
+        if (_busy || Selected is null) return;
+        _busy = true;
+        try { await action(); ApplyFleet(await Api.GetVehiclesAsync(_lifetime.Token)); }
+        catch (OperationCanceledException) when (_disposed) { }
+        catch (Exception ex) when (!_disposed) { Feedback(ex.Message, true); }
+        finally { _busy = false; }
+    }
+    private void Feedback(string text, bool error = false) { _feedback = text; _error = error; }
+    private void OnStateChanged(VehicleStateDto state) => _ = InvokeAsync(() =>
+    {
+        if (_disposed) return; _vehicles[state.Id] = state;
+        if (state.Id == _selectedId && !_positionDirty) _editPointCode = state.PointCode;
+        StateHasChanged();
+    });
+    private void OnVehiclesChanged(IReadOnlyList<VehicleStateDto> states) => _ = InvokeAsync(() =>
+    {
+        if (_disposed) return; ApplyFleet(states); StateHasChanged();
+    });
+    private void OnReconnected() => _ = InvokeAsync(async () => { if (!_disposed) { await RefreshAsync(); StateHasChanged(); } });
+    private static string PointText(VehicleStateDto car) => car.PointCode == "" ? "未定位" : car.PointCode;
+    private static string ModeText(VehicleStateDto car) => car.OperatingMode == RcsOperatingMode.Manual ? "手动" : "自动";
+    private static string StatusClass(VehicleStateDto car) => !car.IsEnabled ? "off" : car.Status.ToLowerInvariant();
+    private static string StatusText(VehicleStateDto car) => (car.Status switch { "Running" => "运行中", "Paused" => "已暂停", "Arrived" => "已到达", _ => "空闲" }) + (!car.IsEnabled ? " · 停用" : "");
+    public ValueTask DisposeAsync()
+    {
+        _disposed = true; _lifetime.Cancel();
+        Realtime.VehicleStateChanged -= OnStateChanged; Realtime.VehiclesChanged -= OnVehiclesChanged; Realtime.Reconnected -= OnReconnected;
+        _lifetime.Dispose(); return ValueTask.CompletedTask;
+    }
+}

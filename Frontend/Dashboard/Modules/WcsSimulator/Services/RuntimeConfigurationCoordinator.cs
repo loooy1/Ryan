@@ -29,7 +29,7 @@ public sealed class RuntimeConfigurationCoordinator
         _automation = automation;
     }
 
-    /// <summary>保存运行时配置，并执行受影响服务的即时刷新。</summary>
+    /// <summary>保存运行时配置，并在后台刷新受影响服务；连接刷新不能阻塞配置保存。</summary>
     public async Task SaveAsync(string? wcsUrl = null, string? grcsUrl = null, string? warehouse = null)
     {
         var wcsChanged = await SetIfChangedAsync(WcsEndpointKey, wcsUrl);
@@ -37,10 +37,22 @@ public sealed class RuntimeConfigurationCoordinator
         var warehouseChanged = await SetIfChangedAsync(WarehouseKey, warehouse);
 
         if (wcsChanged)
-            await _stage.RefreshConnectionAsync();
+            _ = RefreshStageInBackgroundAsync();
 
         if (wcsChanged || grcsChanged || warehouseChanged)
-            await _automation.RefreshNowAsync();
+            _ = RefreshAutomationInBackgroundAsync();
+    }
+
+    private async Task RefreshStageInBackgroundAsync()
+    {
+        try { await _stage.RefreshConnectionAsync().WaitAsync(TimeSpan.FromSeconds(3)); }
+        catch { /* 地址保存不应因旧连接断开或 SignalR 重连失败而失败 */ }
+    }
+
+    private async Task RefreshAutomationInBackgroundAsync()
+    {
+        try { await _automation.RefreshNowAsync().WaitAsync(TimeSpan.FromSeconds(5)); }
+        catch { /* 自动化状态会由常驻刷新循环继续更新 */ }
     }
 
     private async Task<bool> SetIfChangedAsync(string key, string? value)

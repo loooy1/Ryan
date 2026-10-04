@@ -62,11 +62,31 @@
             <div class="sub-scroll">
                 @foreach (var item in Nav.SubNavItems.Where(i => !i.Pinned))
                 {
-                    @* NavLink 自动根据当前 URL 高亮对应项 *@
-                    <NavLink class="sub-nav-btn" href="@item.Href" Match="NavLinkMatch.Prefix">
-                        <span class="nav-icon">@item.Icon</span>
-                        @item.Label
-                    </NavLink>
+                    @if (item.Children is { Count: > 0 } children)
+                    {
+                        var childActive = children.Any(child => IsCurrentRoute(child.Href));
+                        <button class="sub-nav-btn sub-nav-group @(childActive ? "active" : "")" @onclick="() => ToggleTaskMenu(item.Label)" aria-expanded="@GroupExpanded(item.Label, childActive)">
+                            <span class="nav-icon">@item.Icon</span><span>@item.Label</span><span class="sub-nav-chevron">@(GroupExpanded(item.Label, childActive) ? "⌄" : "›")</span>
+                        </button>
+                        @if (GroupExpanded(item.Label, childActive))
+                        {
+                            <div class="sub-nav-children">
+                                @foreach (var child in children)
+                                {
+                                    <NavLink class="sub-nav-btn sub-nav-child" href="@child.Href" Match="NavLinkMatch.Prefix">
+                                        <span class="nav-icon">@child.Icon</span>@child.Label
+                                    </NavLink>
+                                }
+                            </div>
+                        }
+                    }
+                    else
+                    {
+                        <NavLink class="sub-nav-btn" href="@item.Href" Match="NavLinkMatch.Prefix">
+                            <span class="nav-icon">@item.Icon</span>
+                            @item.Label
+                        </NavLink>
+                    }
                 }
             </div>
 
@@ -82,6 +102,10 @@
                 @if (Nav.ActiveFeature == "wcs")
                 {
                     <BackendStatus />
+                }
+                else if (Nav.ActiveFeature == "rcs")
+                {
+                    <RcsBackendStatus />
                 }
             </div>
         </nav>
@@ -104,6 +128,20 @@
 
 @code {
     // 组件初始化时订阅导航状态变化事件（后端探测已移到 BackendStatus 独立组件）
+    private readonly HashSet<string> _expandedGroups = new(StringComparer.Ordinal);
+    private readonly HashSet<string> _collapsedGroups = new(StringComparer.Ordinal);
+    private bool IsCurrentRoute(string href) => !string.IsNullOrWhiteSpace(href)
+        && NavManager.Uri.Contains("/" + href.TrimStart('/'), StringComparison.OrdinalIgnoreCase);
+    private bool GroupExpanded(string label, bool childActive) => !_collapsedGroups.Contains(label)
+        && (_expandedGroups.Contains(label) || childActive);
+    private void ToggleTaskMenu(string label)
+    {
+        if (GroupExpanded(label, Nav.SubNavItems.FirstOrDefault(item => item.Label == label)?.Children?.Any(child => IsCurrentRoute(child.Href)) == true))
+            _collapsedGroups.Add(label);
+        else { _collapsedGroups.Remove(label); _expandedGroups.Add(label); }
+        StateHasChanged();
+    }
+
     protected override async Task OnInitializedAsync()
     {
         await LocalStore.PreloadAsync(Js);
@@ -134,6 +172,7 @@
             new("GRCS 接口说明", "wcs-simulator/grcs-api-docs", "🔌"),
             new("异常记录", "wcs-simulator/exception-records", "⚠️", true),
             new("项目记录", "wcs-simulator/project-logs", "📋", true),
+            new("系统设置", "wcs-simulator/system-settings", "⚙️", true),
         });
         // 直接跳转到该功能的默认页面
         await EnsureWcsServicesAsync();
@@ -151,7 +190,18 @@
         Nav.SelectFeature("rcs", new List<SubNavItem>
         {
             new("RCS 地图", "rcs/map", "🗺️"),
+            new("编辑地图", "rcs/map-editor", "✏️"),
+            new("车辆管理", "rcs/vehicles", "🚗"),
+            new("货物", "", "📦", Children: [
+                new("货物 / 托盘模型", "rcs/inventory/models", "▤"),
+                new("货物 / 托盘实例", "rcs/inventory/instances", "◫")]),
+            new("任务", "", "▤", Children: [
+                new("上游原始任务", "rcs/tasks/upstream", "↙"),
+                new("RCS内部任务拆分", "rcs/tasks/internal", "↳")]),
+            new("系统设置", "rcs/settings", "⚙️", true),
         });
+        _expandedGroups.Remove("任务");
+        _collapsedGroups.Remove("任务");
         NavManager.NavigateTo("rcs/map");
     }
 

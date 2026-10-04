@@ -1285,7 +1285,7 @@
         var payload = new WcsTaskGroup
         {
             GroupId = _groupId,
-            MsgTime = DateTime.TryParse(_msgTime, out var dt) ? dt.ToString("O") : DateTime.Now.ToString("O"),
+            MsgTime = DateTime.TryParse(_msgTime, out var dt) ? dt.ToString("yyyy-MM-dd HH:mm:ss") : DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"),
             PriorityCode = _priority,
             Warehouse = _warehouse,
             Tasks = tasks
@@ -1411,7 +1411,7 @@
         // ── 构建请求体（场景名由后端按系统设置覆盖）──
         var payload = new VehicleOrderRequest
         {
-            CreateTime = DateTime.Now,
+            CreateTime = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"),
             SceneName = "",
             OrderType = "MOVE_ONLY",
             OrderId = _orderId,

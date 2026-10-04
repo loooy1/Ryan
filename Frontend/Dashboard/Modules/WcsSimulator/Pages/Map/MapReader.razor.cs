@@ -13,10 +13,6 @@ public partial class MapReader
 {
     internal bool IsSectionCollapsed(string key) => IsCollapsed(key);
 
-    internal string _warehouse = "Show";                  // 场景名称（持久化到浏览器）
-    internal string _grcsBaseUrl = "http://localhost:8224"; // GRCS 地址（持久化，所有模块共用）
-    internal string _wcsBaseUrl = "http://localhost:8230";  // WCS 后端地址（持久化，所有模块共用）
-    internal bool _warehouseSaved;                        // 保存成功提示
     internal bool _mapLoaded;                              // 地图读取成功提示
     internal string _mapError = "";                        // 接口读取失败提示
     internal List<MapStationLite> _stations = [];       // 全部站点列表（精简数据，可持久化）
@@ -28,6 +24,7 @@ public partial class MapReader
     internal MapStationLite? _alignmentAnchor;
     internal string _selectedCreatedCargoAreas = "";
     internal string _mapBuilderTool = "select";
+    internal bool _pointToolsExpanded;
     internal int _nextCreatedStationIndex = 1;
     internal bool _matrixDialogOpen;
     internal int _matrixStationType = MapStationTypeBits.StorageLocation;
@@ -46,6 +43,7 @@ public partial class MapReader
         _mapBuilderTool = tool;
         if (tool is not "align-x" and not "align-y") _alignmentAnchor = null;
     }
+    internal void TogglePointTools() => _pointToolsExpanded = !_pointToolsExpanded;
     internal void MarkMapEditorDirty() => _mapEditorDirty = true;
     internal void SaveCreatedMapPlaceholder() => ShowFeedback("ℹ️ 当前仅完成界面，保存到库存地图功能暂未实现");
     internal string NextCreatedStationMark()
@@ -318,19 +316,16 @@ public partial class MapReader
     //    基类 PageStateBase 提供，本页默认全折叠、不恢复上次展开状态）──
     protected override string CollapsedStoreKey => "grcs_mr_collapsed";
     internal Task ToggleFile() => Toggle("mr_file");
-    internal Task ToggleSettings() => Toggle("mr_settings");
     internal Task ToggleOverview() => Toggle("mr_overview");
     /// <summary>
-    /// 初始化：从内存缓存恢复上次的地图数据（grcs_map_stations）与界面状态
-    /// （同步读取，无 JS 边界）；恢复场景名与两个后端地址（共享键
-    /// grcs_warehouse / grcs_grcs_url / grcs_wcs_url）；
-    /// 折叠状态默认全部折叠、不恢复上次展开状态，避免进来即渲染大数据表。
+    /// 初始化：从内存缓存恢复上次的地图数据与界面状态（同步读取，无 JS 边界）。
+    /// 折叠状态默认全部折叠，避免进来即渲染大数据表。
     /// </summary>
-    // 页面初始化：从内存缓存恢复上次的地图数据与界面状态（同步读取，无 JS 边界）
     protected override async Task OnInitializedAsync()
     {
         try
         {
+            await LocalStore.PreloadAsync(Js);
             var json = LocalStore["grcs_map_stations"];
             if (!string.IsNullOrEmpty(json) && json != "null")
             {
@@ -347,33 +342,24 @@ public partial class MapReader
         }
         catch { /* 读取缓存失败时忽略，重新选择文件即可 */ }
 
-        // 恢复 localStorage 状态（内存缓存，同步读取）
+        // WCS 后端 KV 是共享地图缓存；优先用它刷新，离线时保留上面的浏览器缓存。
         try
         {
-            if (V("grcs_wcs_url") is string wcs) _wcsBaseUrl = wcs;
-            if (V("grcs_grcs_url") is string grcs) _grcsBaseUrl = grcs;
-            if (V("grcs_warehouse") is string wh && !string.IsNullOrEmpty(wh)) _warehouse = wh;
-            // 切到模块时始终折叠，不恢复之前展开状态
-        }
-        catch { }
-
-        // 系统设置以后端为准（/api/wcs/auto/settings，MySQL 持久化；未保存用默认值）
-        try
-        {
-            var s = await WcsApi.GetAsync<WcsSettingsDto>("/api/wcs/auto/settings");
-            if (s != null)
+            var cache = await WcsApi.GetAsync<MapCacheDto>("/api/wcs/map");
+            if (cache?.Stations is { Count: > 0 })
             {
-                if (!string.IsNullOrWhiteSpace(s.GrcsBaseUrl)) _grcsBaseUrl = s.GrcsBaseUrl;
-                if (!string.IsNullOrWhiteSpace(s.SceneName)) _warehouse = s.SceneName;
+                _stations = cache.Stations;
+                _pathsCount = cache.PathsCount;
+                await PersistMapCacheAsync(uploadBackend: false, savedAtOverride: cache.SavedAt);
             }
         }
-        catch { }
+        catch { /* WCS 不可用时继续显示浏览器中的地图缓存 */ }
     }
 
     /// <summary>
     /// 从 GRCS 下载地图 zip（经 WCS 后端代理 /api/wcs/grcs/map，场景名按系统设置），
-    /// 流式打开 zip 找到 map.json 条目（兼容根目录或嵌套路径），
-    /// 解析成功后写入 localStorage 缓存；失败清空站点并展示错误。
+    /// 流式打开 zip 找到 map.json 条目（兼容根目录或嵌套路径），解析成功后更新缓存；
+    /// 下载失败时保留已加载的 WCS/浏览器缓存，只显示错误。
     /// WCS/GRCS 后端未连接时由 WcsApiClient 统一弹窗告警。
     /// </summary>
     internal async Task LoadFromApi()
@@ -384,7 +370,6 @@ public partial class MapReader
             var (ok, error, bytes) = await WcsApi.GetMapZipAsync();
             if (!ok || bytes == null)
             {
-                _stations = [];
                 _mapError = error;
                 return;
             }
@@ -400,7 +385,6 @@ public partial class MapReader
         }
         catch (Exception ex)
         {
-            _stations = [];
             _mapError = ex.Message;
         }
         finally
@@ -463,11 +447,15 @@ public partial class MapReader
     /// 保存当前界面状态：本地 localStorage（本页与其余读旧键的页面立即用）+ 上传到后端
     /// （/api/wcs/map/upload，Skill E：自动化/其他标签页/换浏览器共用后端这一份）。
     /// </summary>
-    internal async Task SaveState()
+    internal Task SaveState() => PersistMapCacheAsync(uploadBackend: true);
+
+    private async Task PersistMapCacheAsync(bool uploadBackend, string? savedAtOverride = null)
     {
         var cache = new MapStationCache
         {
-            SavedAt = DateTime.Now.ToString("HH:mm:ss"),
+            SavedAt = string.IsNullOrWhiteSpace(savedAtOverride)
+                ? DateTime.Now.ToString("HH:mm:ss")
+                : savedAtOverride,
             PathsCount = _pathsCount,
             Stations = _stations,
             Filter = new MapReaderFilterState
@@ -478,8 +466,8 @@ public partial class MapReader
             }
         };
         await LocalStore.SetAsync(Js, "grcs_map_stations", JsonSerializer.Serialize(cache));
-        // 后端单一数据源：解析成功（非空站点集）即上传，自动化/其他标签页从 /api/wcs/map 读取
-        if (_stations.Count > 0)
+        // 从后端恢复时只更新浏览器缓存，避免把同一份数据再次上传。
+        if (uploadBackend && _stations.Count > 0)
         {
             _ = WcsApi.PostAsync("/api/wcs/map/upload", new MapUploadPayload
             {
@@ -514,33 +502,6 @@ public partial class MapReader
         2 => "仅空载",
         _ => "全部"
     };
-
-    /// <summary>保存系统设置（场景名 + GRCS 地址 + WCS 后端地址）：
-    /// 写入后端 /api/wcs/auto/settings（MySQL，全站 GRCS 调用与场景名的唯一数据源）
-    /// + 共享 localStorage 键兜底；保存后重读一次刷新显示。</summary>
-    internal async Task SaveWarehouse()
-    {
-        // 统一保存前端运行时配置，并触发受影响服务立即刷新。
-        await RuntimeConfig.SaveAsync(_wcsBaseUrl, _grcsBaseUrl, _warehouse);
-        // 场景名和 GRCS 地址仍由 WCS 后端持久化；后端不可达时本地配置仍保留。
-        await WcsApi.PutAsync<object, object>("/api/wcs/auto/settings", new { grcsBaseUrl = _grcsBaseUrl, sceneName = _warehouse });
-        // 保存后重读一次：后端为准（未保存过就用默认值）
-        try
-        {
-            var s = await WcsApi.GetAsync<WcsSettingsDto>("/api/wcs/auto/settings");
-            if (s != null)
-            {
-                if (!string.IsNullOrWhiteSpace(s.GrcsBaseUrl)) _grcsBaseUrl = s.GrcsBaseUrl;
-                if (!string.IsNullOrWhiteSpace(s.SceneName)) _warehouse = s.SceneName;
-            }
-        }
-        catch { }
-        _warehouseSaved = true;
-        StateHasChanged();
-        await Task.Delay(2000);
-        _warehouseSaved = false;
-        StateHasChanged();
-    }
 
     /// <summary>复制站点编码到剪贴板（调用 wwwroot 里注册的 grcsCopyText JS 函数）。</summary>
     internal async Task CopyMark(string? mark)

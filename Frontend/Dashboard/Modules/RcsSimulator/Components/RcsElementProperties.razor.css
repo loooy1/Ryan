@@ -1,0 +1,8 @@
+.rcs-element-properties{color:#94a3b8;font-size:.75rem}
+.property-title{color:#67e8f9;font-weight:700;padding-bottom:10px;border-bottom:1px solid #263650;margin-bottom:12px}
+.rcs-element-properties label{display:block;margin:10px 0}
+.rcs-element-properties input,.rcs-element-properties select{display:block;width:100%;box-sizing:border-box;margin-top:5px;border:1px solid #334155;border-radius:7px;background:#0b1425;color:#e2e8f0;padding:8px}
+.rcs-element-properties input[readonly],.rcs-element-properties select[disabled]{color:#7890ad;background:#0a1220}
+.property-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.property-grid label{min-width:0;margin:0}
+.property-endpoints,.property-empty{padding:12px;border:1px dashed #334155;border-radius:8px;overflow-wrap:anywhere;line-height:1.6}

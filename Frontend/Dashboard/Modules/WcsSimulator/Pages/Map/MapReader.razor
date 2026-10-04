@@ -1,7 +1,6 @@
 @namespace Dashboard.Modules.WcsSimulator.Pages
 @page "/wcs-simulator/map-reader"
 @inject WcsApiClient WcsApi
-@inject RuntimeConfigurationCoordinator RuntimeConfig
 @inherits Dashboard.Modules.WcsSimulator.Components.PageStateBase
 @using System.Text.Json
 @using System.IO.Compression
@@ -11,14 +10,14 @@
 
 @* ════════════════════════════════════════════════
    页面职责：WCS 模拟器的「地图信息」页 —— 地图数据的中转站
-   ① 接口读取：GET /api/Map/GetMap?sceneName=&getTypes=feMap 下载 zip，
-      解压出 map.json 解析；文件读取：直接选择本地 map.json
+   ① 页面进入时先读取 WCS 后端共享地图缓存；点击接口读取时再从 GRCS 下载地图 zip，
+      解压出 map.json 解析；也可直接选择本地 map.json
    ② 解析后把全量 MapFileData 精简为 MapStationLite 列表，连同筛选状态
       一起写入 localStorage 键 grcs_map_stations（MapStationCache），
       供任务下发/车辆移动/自动化任务等页面恢复复用，无需重复读文件
    ── 交互服务 ──
-   HttpClient：直连 GRCS 下载地图 zip
-   LocalStoreService：站点缓存与共享地址（场景名/GRCS/WCS 地址）的持久化
+   WcsApiClient：读取 WCS 后端地图缓存，或经 WCS 代理从 GRCS 下载地图 zip
+   LocalStoreService：浏览器站点缓存与界面状态
    ════════════════════════════════════════════════ *@
 <PageTitle>地图信息</PageTitle>
 
@@ -29,6 +28,20 @@
     .map-tool { display:flex; align-items:center; gap:9px; width:100%; margin-bottom:8px; padding:11px 10px; border:1px solid #334155; border-radius:10px; background:#16243a; color:#cbd5e1; cursor:pointer; transition:.16s ease; font-size:.78rem; }
     .map-tool:first-letter { color:#67e8f9; font-size:1.1rem; }
     .map-tool:hover, .map-tool.active { border-color:#22d3ee; background:linear-gradient(135deg,#164e63,#172554); color:#ecfeff; box-shadow:0 0 0 1px #22d3ee22,0 8px 18px #02061755; }
+    .point-group-toggle { justify-content:flex-start; gap:10px; padding:10px; }
+    .point-group-toggle .tool-leading-icon { display:grid; place-items:center; width:25px; height:25px; border-radius:7px; background:#164e63; color:#67e8f9; font-size:1.15rem; line-height:1; }
+    .point-group-toggle > span:nth-child(2) { display:flex; flex-direction:column; align-items:flex-start; gap:2px; }
+    .point-group-toggle b { color:#f8fafc; font-size:.78rem; font-weight:700; }
+    .point-group-toggle small { color:#7890ad; font-size:.62rem; }
+    .point-group-toggle em { margin-left:auto; color:#67e8f9; font-style:normal; font-size:1rem; }
+    .point-tools-panel { display:grid; grid-template-columns:1fr; gap:6px; margin:0 0 10px; padding:8px; border:1px solid #263650; border-radius:10px; background:#0b1425; }
+    .point-tool-card { display:flex; align-items:center; gap:7px; min-width:0; padding:8px 6px; border:1px solid #263650; border-radius:8px; background:#101c30; color:#cbd5e1; cursor:pointer; text-align:left; }
+    .point-tool-card:hover,.point-tool-card.active { border-color:#22d3ee; background:#164e6355; }
+    .point-tool-card > span:last-child { display:flex; flex-direction:column; min-width:0; gap:2px; }
+    .point-tool-card b { color:#e2e8f0; font-size:.66rem; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .point-tool-card small { color:#64748b; font-size:.55rem; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .point-card-icon { display:grid; place-items:center; flex:0 0 25px; width:25px; height:25px; border-radius:7px; font-size:1rem; font-weight:700; }
+    .point-card-icon.storage { color:#22d3ee; background:#164e6355; }.point-card-icon.transfer { color:#4ade80; background:#14532d55; }.point-card-icon.people { color:#f472b6; background:#83184355; }.point-card-icon.sorting { color:#a78bfa; background:#4c1d9555; }
     .map-tool.align-tool { color:#c4b5fd; }
     .map-tool.align-tool.active { border-color:#a78bfa; background:linear-gradient(135deg,#312e81,#1e1b4b); color:#ede9fe; }
     .map-builder-divider { height:1px; background:#263650; margin:16px 0; }
@@ -81,13 +94,6 @@
 </style>
 
 
-@* ════════════════════════════════════════════════
-   系统设置：GRCS 地址 + 场景名称 + WCS 后端地址（全局唯一配置入口）
-   ── 说明 ── 保存后写入后端（/api/wcs/auto/settings，MySQL 持久化），
-   所有页面（任务下发/车辆移动/库存/信号/自动化）的 GRCS 调用与场景名
-   都以后端这份设置为准；未保存用默认值（http://localhost:8224 / Show）。
-   保存后重读一次刷新显示。WCS 后端地址为本页自身的访问地址（localStorage）。
-   ════════════════════════════════════════════════ *@
 <CascadingValue Value="this">
     <MapLoad
         Collapsed='@IsCollapsed("mr_file")'
@@ -112,7 +118,6 @@
         SaveState="SaveState"
         CopyMark="CopyMark"
         LoadStateText="LoadStateText" />
-    <MapSettings />
     <MapCreation />
 </CascadingValue>
 

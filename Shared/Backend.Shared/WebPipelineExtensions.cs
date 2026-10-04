@@ -68,10 +68,10 @@ public static class WebPipelineExtensions
             }
         });
 
-    /// <summary>健康检查：/health/ready（当前配置数据库的连通性）。</summary>
-    public static IEndpointRouteBuilder MapGrcsHealthCheck(this IEndpointRouteBuilder endpoints)
+    /// <summary>健康检查：默认 /health/ready，宿主可指定路径（当前配置数据库的连通性）。</summary>
+    public static IEndpointRouteBuilder MapGrcsHealthCheck(this IEndpointRouteBuilder endpoints, string pattern = "/health/ready")
     {
-        endpoints.MapGet("/health/ready", async (IDbContextFactory<GrcsDbContext> factory) =>
+        endpoints.MapGet(pattern, async (IDbContextFactory<GrcsDbContext> factory) =>
         {
             try
             {

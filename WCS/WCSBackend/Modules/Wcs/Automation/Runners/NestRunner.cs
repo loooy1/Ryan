@@ -328,7 +328,7 @@ public class NestRunner
     {
         var payload = new VehicleOrderRequest
         {
-            CreateTime = DateTime.Now,
+            CreateTime = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"),
             SceneName = settings.SceneName,
             OrderType = "MOVE_ONLY",
             OrderId = $"NestHome_{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString("x").ToUpper()}_{vehicle.Name.GetHashCode():x}",

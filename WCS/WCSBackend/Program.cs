@@ -15,8 +15,8 @@ builder.AddSharedLogging();
 // 通过 Modules/<域>/XxxModuleExtensions.AddXxxModule() 在此挂接注册。
 // 共享设施（DbContext/仓储/管线）来自 Backend.Shared 类库。
 
-// 控制器 + NewtonsoftJson：GRCS 按 "yyyy-MM-dd HH:mm:ss.fff" 反序列化响应中的 MsgTime，
-// 序列化端必须用同一格式，否则 GRCS 解析失败会把外围作业置为异常。
+// 控制器 + NewtonsoftJson：GRCS 任务协议时间统一使用字符串 "yyyy-MM-dd HH:mm:ss"，
+// 精确到秒，不带 ISO 时区和毫秒；代理层在发往 GRCS 前会再次规范化。
 builder.Services.AddGrcsJson();
 
 // CORS：允许模拟器（浏览器 WASM）调试时直接访问本服务（生产环境用 CORS_ORIGIN 收紧）。

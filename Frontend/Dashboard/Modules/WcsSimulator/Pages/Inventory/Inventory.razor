@@ -20,7 +20,7 @@
     </div>
     @if (_manualSlots.Count == 0)
     {
-        <div class="hint-text" style="margin-top:10px;">请先到“地图信息”页读取地图。手工入库只允许框选已同步到 WCS 的空储位。</div>
+        <div class="hint-text" style="margin-top:10px;">@(_manualLoading ? "正在读取库存和地图位置..." : "请先到“地图信息”页读取地图。手工入库只允许框选已同步到 WCS 的空储位。")</div>
     }
     else
     {
@@ -233,7 +233,7 @@
     private bool _manualMapPendingMount;
     private bool _manualMapPendingUpdate;
     private bool _manualMapMounted;
-    private bool _manualLoading;
+    private bool _manualLoading = true;
     private bool _manualSubmitting;
     private List<TransitPalletPositionDto> _transitPositions = [];
     private string _transitLoadedAt = "";
@@ -283,7 +283,6 @@
         {
             _manualMapDotNetRef = DotNetObjectReference.Create(this);
             await RefreshManualSnapshot();
-            await LoadManualCargoSizes();
             await InvokeAsync(StateHasChanged);
             return;
         }
@@ -361,8 +360,11 @@
         _manualLoading = true;
         try
         {
-            var slots = await WcsService.GetWcsSlotsAsync();
-            var transitPositions = await WcsService.GetTransitPalletPositionsAsync();
+            await LocalStore.PreloadAsync(Js);
+            // WCS 储位快照只依赖 WCS 数据库；在途托盘位置依赖 GRCS，单独后台刷新，不能阻塞库存地图。
+            _ = RefreshTransitSnapshotAsync();
+            var slotsTask = WcsService.GetWcsSlotsAsync();
+            var slots = await slotsTask;
             _manualSlots.Clear();
             foreach (var slot in slots ?? []) _manualSlots[slot.Mark] = slot;
             _manualStations = _manualSlots.Values
@@ -372,14 +374,24 @@
             _manualFloors = _manualSlots.Values.Where(IsInventoryMapSlot)
                 .Select(slot => slot.Floor).Distinct().Order().ToList();
             if (!_manualFloors.Contains(_manualFloor)) _manualFloor = _manualFloors.FirstOrDefault();
-            _transitPositions = transitPositions ?? [];
-            _transitLoadedAt = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
             _manualSelectedMarks.RemoveWhere(mark => !IsManualMapSelectable(mark));
             _sortingSelectedMarks.RemoveWhere(mark => !IsSortingChildStation(mark));
             if (_manualMapMounted) _manualMapPendingUpdate = true;
             else _manualMapPendingMount = true;
         }
         finally { _manualLoading = false; }
+    }
+
+    private async Task RefreshTransitSnapshotAsync()
+    {
+        try
+        {
+            var transitPositions = await WcsService.GetTransitPalletPositionsAsync();
+            _transitPositions = transitPositions ?? [];
+            _transitLoadedAt = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
+            await InvokeAsync(StateHasChanged);
+        }
+        catch { /* 在途位置读取失败不影响 WCS 库存与地图显示 */ }
     }
 
     /// <summary>复用自动化任务的 Canvas 地图，在库存页面内常驻显示；库存状态仅从 WCS 快照读取。</summary>

@@ -306,7 +306,8 @@ public class WcsTaskItem
 /// <summary>车辆任务请求（/api/RawOrder/ChangeFloor，MOVE_ONLY 纯移动）。</summary>
 public class VehicleOrderRequest
 {
-    public DateTime CreateTime { get; set; } = DateTime.Now;
+    /// <summary>GRCS 协议要求：字符串格式 yyyy-MM-dd HH:mm:ss，精确到秒。</summary>
+    public string CreateTime { get; set; } = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
     public string SceneName { get; set; } = "";
     public string OrderType { get; set; } = "MOVE_ONLY";
     public string OrderId { get; set; } = "";

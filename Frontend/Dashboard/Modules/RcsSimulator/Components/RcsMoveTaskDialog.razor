@@ -1,0 +1,103 @@
+@using Contracts.Rcs.Map
+@using Contracts.Rcs.Vehicle
+@using Contracts.Rcs.Tasks
+@inject RcsApiClient Api
+@implements IDisposable
+
+<section class="move-task-dialog" role="dialog" aria-modal="false" aria-labelledby="move-task-title"
+         @onpointerdown:stopPropagation @onclick:stopPropagation @onwheel:stopPropagation @onkeydown="OnKeyDown">
+    <header><div><small>手动控制 · 车辆 @Vehicle.Id</small><h2 id="move-task-title">下发任务</h2></div><button class="close" @onclick="CloseAsync" disabled="@IsBusy" aria-label="关闭任务窗口">×</button></header>
+    <label class="scene-field">场景<input value="@_scene" readonly aria-readonly="true" /></label>
+    <p class="intro">输入站点编码，或点选地图上的站点；每个站点可单独指定动作。任务直接下发给该车，不进入调度队列。</p>
+    <div class="point-field @(_pickField == "start" ? "active start" : "")">
+        <label for="move-start-point"><span class="point-dot start"></span>起点站点</label>
+        <div class="point-input"><input id="move-start-point" aria-label="移动任务起点" list="move-task-stations" maxlength="128" placeholder="输入起点编码" @bind="_start" @bind:event="oninput" @bind:after="NotifyPointsChanged" @onfocus='() => ChooseField("start")' disabled="@IsBusy" /><button @onclick='() => ChooseField("start")' aria-label="点选起点" aria-pressed="@(_pickField == "start")" disabled="@IsBusy">◎ 点选</button></div>
+        <label class="action-field">动作<select @bind="_startAction" disabled="@IsBusy"><option value="move">移动</option><option value="fetch">取货</option><option value="put">放货</option></select></label>
+    </div>
+    <div class="point-field @(_pickField == "end" ? "active end" : "")">
+        <label for="move-end-point"><span class="point-dot end"></span>终点站点</label>
+        <div class="point-input"><input id="move-end-point" aria-label="移动任务终点" list="move-task-stations" maxlength="128" placeholder="输入终点编码" @bind="_end" @bind:event="oninput" @bind:after="NotifyPointsChanged" @onfocus='() => ChooseField("end")' disabled="@IsBusy" /><button @onclick='() => ChooseField("end")' aria-label="点选终点" aria-pressed="@(_pickField == "end")" disabled="@IsBusy">◎ 点选</button></div>
+        <label class="action-field">动作<select @bind="_endAction" disabled="@IsBusy"><option value="move">移动</option><option value="fetch">取货</option><option value="put">放货</option></select></label>
+    </div>
+    @if (RequiresContainer)
+    {
+        <label class="container-field">货物 / 托盘编码<input @bind="_containerCode" @bind:event="oninput" maxlength="128" placeholder="输入容器编码" disabled="@IsBusy" /></label>
+    }
+    <datalist id="move-task-stations">@foreach (var point in Points) { <option value="@point.PointCode">@point.PointName</option> }</datalist>
+    <div class="pick-hint"><span>◎</span>点击地图站点填写@(_pickField == "start" ? "起点" : "终点")</div>
+    @if (_error != "") { <div class="move-error" role="alert">@_error</div> }
+    @if (Vehicle.Status is "Running" or "Paused") { <div class="move-error">车辆正在执行任务，请先关闭窗口并停止当前任务。</div> }
+    <footer><button @onclick="CloseAsync" disabled="@IsBusy">取消</button><button class="primary" @onclick="SubmitAsync" disabled="@(IsBusy || !Vehicle.IsEnabled || Vehicle.Status is "Running" or "Paused" || string.IsNullOrWhiteSpace(_start) || string.IsNullOrWhiteSpace(_end))">@(_busy ? "下发中…" : "下发任务")</button></footer>
+</section>
+
+@code {
+    [Parameter, EditorRequired] public VehicleStateDto Vehicle { get; set; } = new();
+    [Parameter] public string Warehouse { get; set; } = "";
+    [Parameter] public IEnumerable<RcsMapNode> Points { get; set; } = [];
+    [Parameter] public bool Disabled { get; set; }
+    [Parameter] public EventCallback<RunVehicleRequest> PointsChanged { get; set; }
+    [Parameter] public EventCallback<bool> BusyChanged { get; set; }
+    [Parameter] public EventCallback<string> Completed { get; set; }
+    [Parameter] public EventCallback CloseRequested { get; set; }
+    private readonly CancellationTokenSource _lifetime = new();
+    private string _vehicleId = "", _start = "", _end = "", _pickField = "end", _error = "", _containerCode = "";
+    private string _startAction = "move", _endAction = "move", _scene = "";
+    private bool _busy, _disposed;
+    private bool IsBusy => _busy || Disabled;
+    private bool RequiresContainer => _startAction is "fetch" or "put" || _endAction is "fetch" or "put";
+    protected override void OnParametersSet()
+    {
+        _scene = Warehouse;
+        if (_vehicleId == Vehicle.Id) return;
+        _vehicleId = Vehicle.Id; _start = Vehicle.PointCode; _end = "";
+        _pickField = _start == "" ? "start" : "end";
+    }
+    private void ChooseField(string field) { if (!IsBusy) _pickField = field; }
+    private Task NotifyPointsChanged()
+    {
+        _error = "";
+        return PointsChanged.InvokeAsync(new() { StartPointCode = _start.Trim(), EndPointCode = _end.Trim() });
+    }
+    public async Task PickStationAsync(string code)
+    {
+        if (IsBusy || _disposed) return;
+        if (!Points.Any(p => p.PointCode == code)) { _error = "该站点已禁用，不能作为任务起终点。"; StateHasChanged(); return; }
+        if (_pickField == "start") { _start = code; _pickField = "end"; }
+        else _end = code;
+        await NotifyPointsChanged(); StateHasChanged();
+    }
+    private Task CloseAsync() => IsBusy ? Task.CompletedTask : CloseRequested.InvokeAsync();
+    private async Task OnKeyDown(KeyboardEventArgs args) { if (args.Key == "Escape") await CloseAsync(); }
+    private async Task SubmitAsync()
+    {
+        if (IsBusy || _disposed || !Vehicle.IsEnabled || Vehicle.Status is "Running" or "Paused") return;
+        var request = new RunVehicleRequest { StartPointCode = _start.Trim(), EndPointCode = _end.Trim() };
+        if (!Points.Any(p => p.PointCode == request.StartPointCode)) { _error = "起点不存在或已禁用。"; return; }
+        if (!Points.Any(p => p.PointCode == request.EndPointCode)) { _error = "终点不存在或已禁用。"; return; }
+        if (request.StartPointCode == request.EndPointCode) { _error = "起点和终点不能相同。"; return; }
+        if (RequiresContainer && string.IsNullOrWhiteSpace(_containerCode)) { _error = "起点或终点选择了取货/放货动作，请输入货物或托盘编码。"; return; }
+        if (string.IsNullOrWhiteSpace(_scene)) { _error = "当前没有已加载地图场景，无法下发任务。"; return; }
+        var id = Vehicle.Id; var token = _lifetime.Token;
+        _busy = true; _error = ""; string? message = null;
+        try
+        {
+            await BusyChanged.InvokeAsync(true);
+            var taskId = "Manual_" + Guid.NewGuid().ToString("N");
+            await Api.SubmitManualTaskAsync(new RcsTaskReceiveRequest
+            {
+                GroupId = taskId, MsgTime = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"), PriorityCode = 1,
+                Warehouse = _scene,
+                Tasks = [new RcsTaskRequest { TaskId = taskId, VehicleId = id, TaskType = "MANUAL",
+                    ContainerCode = _containerCode.Trim(), StationCode = [request.StartPointCode, request.EndPointCode],
+                    StationActions = [_startAction, _endAction], AreaCode = [] }]
+            }, token);
+            message = $"手动任务已直接下发给车辆 {id}：{request.StartPointCode}（{ActionText(_startAction)}）→ {request.EndPointCode}（{ActionText(_endAction)}）。";
+        }
+        catch (OperationCanceledException) when (_disposed) { }
+        catch (Exception ex) when (!_disposed) { _error = ex.Message; }
+        finally { _busy = false; if (!_disposed) await BusyChanged.InvokeAsync(false); }
+        if (message is not null && !_disposed) await Completed.InvokeAsync(message);
+    }
+    private static string ActionText(string action) => action switch { "fetch" => "取货", "put" => "放货", _ => "移动" };
+    public void Dispose() { _disposed = true; _lifetime.Cancel(); _lifetime.Dispose(); }
+}

@@ -1,0 +1,164 @@
+@using Contracts.Rcs.Inventory
+@using Contracts.Rcs.Map
+@inject RcsApiClient Api
+
+<section class="station-stock-panel">
+    <div class="station-stock-heading">
+        <strong>站点库存</strong>
+        <span class="stock-summary">
+            <i class="pallet">托盘 @Items.Count(x => x.ItemType == RcsInventoryItemTypes.Pallet)</i>
+            <i class="cargo">货物 @Items.Count(x => x.ItemType == RcsInventoryItemTypes.Cargo)</i>
+        </span>
+    </div>
+    @if (_loading) { <div class="station-stock-empty">读取中…</div> }
+    else if (Items.Count == 0) { <div class="station-stock-empty">本站点没有货物或托盘。</div> }
+    else
+    {
+        <div class="station-stock-list">
+            @foreach (var item in Items)
+            {
+                <div class="station-stock-row">
+                    <span class="stock-type @(item.ItemType == RcsInventoryItemTypes.Pallet ? "pallet" : "cargo")">@(item.ItemType == RcsInventoryItemTypes.Pallet ? "托盘" : "货物")</span>
+                    <span class="stock-code"><b>@item.InstanceCode</b><small>@(item.ParentInstanceCode.Length > 0 ? $"装在 {item.ParentInstanceCode}" : item.ModelCode)</small></span>
+                    <select value="@_moveTargets.GetValueOrDefault(item.Id, "")" @onchange="e => SetMoveTarget(item.Id, e.Value?.ToString())" disabled="@_busy" aria-label="目标站点">
+                        <option value="">移动到…</option>
+                        @foreach (var point in Points.Where(x => x.PointCode != Point.PointCode))
+                        { <option value="@point.PointCode">@point.PointCode</option> }
+                    </select>
+                    <button class="stock-move" @onclick="() => MoveAsync(item)" disabled="@_busy">移动</button>
+                    <button class="stock-delete" @onclick="() => DeleteAsync(item)" disabled="@_busy">删除</button>
+                </div>
+            }
+        </div>
+    }
+    <div class="station-stock-add">
+        <div class="station-stock-add-title">添加到 @Point.PointCode</div>
+        @if (HasLooseCargo)
+        {
+            <div class="station-stock-occupied-hint">该储位已放有独立货物。请先移动或删除它，再放置其他库存。</div>
+        }
+        else
+        {
+            <div class="station-stock-add-grid">
+                @if (PalletsAtPoint.Any())
+                {
+                    <div class="station-stock-type-fixed">货物 · 装入托盘</div>
+                }
+                else
+                {
+                    <select @bind="_newType" @bind:after="TypeChanged" disabled="@_busy">
+                        <option value="PALLET">托盘</option><option value="CARGO">货物</option>
+                    </select>
+                }
+                <select @bind="_newModelCode" disabled="@_busy">
+                    <option value="">选择模型</option>
+                    @foreach (var model in _models.Where(x => x.ItemType == (PalletsAtPoint.Any() ? RcsInventoryItemTypes.Cargo : _newType) && x.IsEnabled))
+                    { <option value="@model.ModelCode">@model.ModelCode</option> }
+                </select>
+                <input @bind="_newInstanceCode" disabled="@_busy" placeholder="实例编码" maxlength="128" />
+                @if (PalletsAtPoint.Any())
+                {
+                    <select @bind="_newParent" disabled="@_busy">
+                        @foreach (var pallet in PalletsAtPoint) { <option value="@pallet.InstanceCode">装入 @pallet.InstanceCode</option> }
+                    </select>
+                }
+                <button @onclick="AddAsync" disabled="@_busy">＋ 添加</button>
+            </div>
+        }
+    </div>
+    @if (!string.IsNullOrWhiteSpace(_message)) { <div class="station-stock-message @(_error ? "error" : "")">@_message</div> }
+</section>
+
+@code {
+    [Parameter, EditorRequired] public string MapCode { get; set; } = "";
+    [Parameter, EditorRequired] public RcsMapPointDto Point { get; set; } = new();
+    [Parameter] public IReadOnlyList<RcsMapPointDto> Points { get; set; } = [];
+    [Parameter] public EventCallback Changed { get; set; }
+    private List<RcsInventoryInstanceDto> Items { get; set; } = [];
+    private List<RcsInventoryModelDto> _models = [];
+    private Dictionary<long, string> _moveTargets = [];
+    private string _loadedKey = "";
+    private string _newType = RcsInventoryItemTypes.Pallet, _newModelCode = "", _newInstanceCode = "", _newParent = "";
+    private string _message = "";
+    private bool _loading, _busy, _error;
+    private IEnumerable<RcsInventoryInstanceDto> PalletsAtPoint => Items.Where(x => x.ItemType == RcsInventoryItemTypes.Pallet && x.ParentInstanceCode.Length == 0);
+    private bool HasLooseCargo => Items.Any(x => x.ItemType == RcsInventoryItemTypes.Cargo && x.ParentInstanceCode.Length == 0);
+
+    protected override async Task OnParametersSetAsync()
+    {
+        var key = MapCode + "\n" + Point.PointCode;
+        if (_loadedKey == key) return;
+        _loadedKey = key;
+        _newParent = "";
+        await LoadAsync();
+    }
+    private void TypeChanged() { _newModelCode = _models.FirstOrDefault(x => x.ItemType == _newType && x.IsEnabled)?.ModelCode ?? ""; _newParent = ""; }
+    private void SetMoveTarget(long id, string? value) => _moveTargets[id] = value ?? "";
+    private async Task LoadAsync()
+    {
+        _loading = true;
+        try
+        {
+            Items = (await Api.GetInventoryInstancesAsync(mapCode: MapCode, pointCode: Point.PointCode)).ToList();
+            _models = (await Api.GetInventoryModelsAsync()).ToList();
+            _newParent = PalletsAtPoint.FirstOrDefault()?.InstanceCode ?? "";
+            if (PalletsAtPoint.Any()) _newType = RcsInventoryItemTypes.Cargo;
+            _moveTargets = Items.ToDictionary(x => x.Id, _ => "");
+            var effectiveType = PalletsAtPoint.Any() ? RcsInventoryItemTypes.Cargo : _newType;
+            if (!_models.Any(x => x.ItemType == effectiveType && x.ModelCode == _newModelCode))
+                _newModelCode = _models.FirstOrDefault(x => x.ItemType == effectiveType && x.IsEnabled)?.ModelCode ?? "";
+            _message = "";
+        }
+        catch (Exception ex) { _message = $"读取站点库存失败：{ex.Message}"; _error = true; }
+        finally { _loading = false; }
+    }
+    private async Task AddAsync()
+    {
+        if (string.IsNullOrWhiteSpace(_newInstanceCode) || string.IsNullOrWhiteSpace(_newModelCode))
+        { _message = "请选择模型并填写实例编码。"; _error = true; return; }
+        _busy = true;
+        try
+        {
+            var created = await Api.CreateInventoryInstanceAsync(new()
+            {
+                ItemType = _newType, InstanceCode = _newInstanceCode.Trim(), ModelCode = _newModelCode,
+                MapCode = string.IsNullOrEmpty(_newParent) ? MapCode : "",
+                PointCode = string.IsNullOrEmpty(_newParent) ? Point.PointCode : "",
+                ParentInstanceCode = _newParent
+            });
+            if (created is null) throw new InvalidOperationException("后端没有确认创建结果。");
+            _newInstanceCode = ""; _message = "实例已添加。"; _error = false; await LoadAsync(); await Changed.InvokeAsync();
+        }
+        catch (Exception ex) { _message = $"添加失败：{ex.Message}"; _error = true; }
+        finally { _busy = false; }
+    }
+    private async Task MoveAsync(RcsInventoryInstanceDto item)
+    {
+        var target = _moveTargets.GetValueOrDefault(item.Id);
+        if (string.IsNullOrWhiteSpace(target)) { _message = "先选择目标站点。"; _error = true; return; }
+        _busy = true;
+        try
+        {
+            await Api.MoveInventoryInstanceAsync(item.Id, new() { MapCode = MapCode, PointCode = target });
+            _message = item.ItemType == RcsInventoryItemTypes.Pallet ? "托盘及其货物已移动。" : "实例已移动。";
+            _error = false; await LoadAsync(); await Changed.InvokeAsync();
+        }
+        catch (Exception ex) { _message = $"移动失败：{ex.Message}"; _error = true; }
+        finally { _busy = false; }
+    }
+    private async Task DeleteAsync(RcsInventoryInstanceDto item)
+    {
+        _busy = true;
+        try
+        {
+            await Api.DeleteInventoryInstanceAsync(item.Id);
+            _message = "实例已删除。"; _error = false; await LoadAsync(); await Changed.InvokeAsync();
+        }
+        catch (Exception ex) { _message = $"删除失败：{ex.Message}"; _error = true; }
+        finally { _busy = false; }
+    }
+}
+
+<style>
+.station-stock-panel{margin-top:16px;padding-top:13px;border-top:1px solid #2a3b56}.station-stock-heading{display:flex;justify-content:space-between;align-items:center;color:#dceaff;font-size:13px;margin-bottom:9px}.stock-summary{display:flex;gap:5px!important;color:#8299ba;font-size:10px}.stock-summary i{font-style:normal;border:1px solid #304562;border-radius:999px;padding:3px 7px}.stock-summary i.pallet{color:#67e8f9;background:#0a2d38;border-color:#155568}.stock-summary i.cargo{color:#fde047;background:#33290e;border-color:#76601e}.station-stock-heading>span:not(.stock-summary),.station-stock-empty{color:#8299ba;font-size:11px}.station-stock-empty{padding:9px 0}.station-stock-list{display:flex;flex-direction:column;gap:6px;max-height:220px;overflow:auto}.station-stock-row{display:grid;grid-template-columns:auto minmax(60px,1fr) 92px auto auto;align-items:center;gap:5px;padding:7px;background:#0a1525;border:1px solid #263a59;border-radius:7px}.stock-type{font-size:10px;border-radius:8px;padding:3px 6px}.stock-type.pallet{color:#67e8f9;background:#073340}.stock-type.cargo{color:#fde047;background:#3b2e0b}.stock-code{min-width:0;display:flex;flex-direction:column;overflow:hidden}.stock-code b,.stock-code small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:10px}.stock-code small{color:#8197b5}.station-stock-row select,.station-stock-add-grid select,.station-stock-add-grid input{min-width:0;width:100%;box-sizing:border-box;background:#081323;border:1px solid #304562;border-radius:6px;color:#dceaff;padding:6px;font-size:10px}.station-stock-type-fixed{display:flex;align-items:center;padding:6px 8px;border:1px solid #155568;border-radius:6px;background:#073340;color:#67e8f9;font-size:10px;white-space:nowrap}.station-stock-occupied-hint{padding:8px 10px;border:1px solid #6b4b16;border-radius:7px;background:#29210f;color:#fcd34d;font-size:11px;line-height:1.5}.station-stock-row button,.station-stock-add-grid button{border:1px solid #304562;border-radius:6px;background:#13243a;color:#c5d7ee;padding:6px;font-size:10px;cursor:pointer}.station-stock-row .stock-delete{color:#fb7185}.station-stock-add{margin-top:12px}.station-stock-add-title{color:#89a0bf;font-size:11px;margin-bottom:6px}.station-stock-add-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px}.station-stock-add-grid button{background:#087f9c;color:white;border-color:#0e9cbb}.station-stock-message{font-size:11px;color:#6ee7b7;margin-top:7px}.station-stock-message.error{color:#fda4af}
+</style>
