@@ -27,6 +27,7 @@ public sealed class RcsRealtimePublisher : IHostedService
         _vehicles.VehiclesChanged += OnVehiclesChanged;
         _tasks.TaskChanged += OnTaskChanged;
         _execution.VehicleStateChanged += OnStateChanged;
+        _execution.InventoryChanged += OnInventoryChanged;
         _logs.EventAdded += OnLogAdded;
     }
 
@@ -35,6 +36,7 @@ public sealed class RcsRealtimePublisher : IHostedService
     public Task StopAsync(CancellationToken cancellationToken)
     {
         _execution.VehicleStateChanged -= OnStateChanged;
+        _execution.InventoryChanged -= OnInventoryChanged;
         _vehicles.VehiclesChanged -= OnVehiclesChanged;
         _tasks.TaskChanged -= OnTaskChanged;
         _logs.EventAdded -= OnLogAdded;
@@ -43,6 +45,8 @@ public sealed class RcsRealtimePublisher : IHostedService
 
     private void OnStateChanged(global::Contracts.Rcs.Vehicle.VehicleStateDto state) =>
         _ = _hub.Clients.All.SendAsync("VehicleStateChanged", state);
+
+    private void OnInventoryChanged() => _ = _hub.Clients.All.SendAsync("InventoryChanged");
 
     private void OnVehiclesChanged(IReadOnlyList<VehicleStateDto> states) =>
         _ = _hub.Clients.All.SendAsync("VehiclesChanged", _execution.GetVehicles());

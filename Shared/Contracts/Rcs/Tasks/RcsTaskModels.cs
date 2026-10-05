@@ -53,6 +53,32 @@ public static class RcsTaskStatus
     public const string Interrupted = "INTERRUPTED";
 }
 
+public static class RcsTaskExecutionStageStatus
+{
+    public const string Waiting = "WAITING";
+    public const string Running = "RUNNING";
+    public const string Completed = "COMPLETED";
+    public const string Failed = "FAILED";
+    public const string Cancelled = "CANCELLED";
+}
+
+/// <summary>一个上游任务在 RCS 内部执行的持久化阶段。</summary>
+public sealed record RcsTaskExecutionStageDto
+{
+    public int Sequence { get; init; }
+    public string StageCode { get; init; } = "";
+    public string Name { get; init; } = "";
+    public string Status { get; init; } = RcsTaskExecutionStageStatus.Waiting;
+    public string FromPointCode { get; init; } = "";
+    public string ToPointCode { get; init; } = "";
+    public string Action { get; init; } = "";
+    public string VehicleId { get; init; } = "";
+    public string CommandId { get; init; } = "";
+    public string Message { get; init; } = "";
+    public string? StartedAt { get; init; }
+    public string? FinishedAt { get; init; }
+}
+
 public sealed class RcsTaskDto
 {
     public string TaskId { get; init; } = "";
@@ -72,6 +98,8 @@ public sealed class RcsTaskDto
     public string MapCode { get; init; } = "";
     public int MapVersion { get; init; }
     public IReadOnlyList<string> RoutePointCodes { get; init; } = [];
+    public IReadOnlyList<RcsTaskExecutionStageDto> ExecutionStages { get; init; } = [];
+    public string OriginalRequestJson { get; init; } = "";
     public string Message { get; init; } = "";
     public string CreatedAt { get; init; } = "";
     public string? StartedAt { get; init; }

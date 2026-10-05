@@ -195,13 +195,9 @@
             new("货物", "", "📦", Children: [
                 new("货物 / 托盘模型", "rcs/inventory/models", "▤"),
                 new("货物 / 托盘实例", "rcs/inventory/instances", "◫")]),
-            new("任务", "", "▤", Children: [
-                new("上游原始任务", "rcs/tasks/upstream", "↙"),
-                new("RCS内部任务拆分", "rcs/tasks/internal", "↳")]),
+            new("任务管理", "rcs/tasks/upstream", "▤"),
             new("系统设置", "rcs/settings", "⚙️", true),
         });
-        _expandedGroups.Remove("任务");
-        _collapsedGroups.Remove("任务");
         NavManager.NavigateTo("rcs/map");
     }
 

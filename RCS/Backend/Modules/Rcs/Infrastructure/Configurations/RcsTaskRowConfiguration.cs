@@ -29,6 +29,8 @@ public sealed class RcsTaskRowConfiguration : IEntityTypeConfiguration<RcsTaskRo
         builder.Property(x => x.MapCode).HasColumnName("map_code").HasMaxLength(128).IsRequired();
         builder.Property(x => x.MapVersion).HasColumnName("map_version");
         builder.Property(x => x.RouteJson).HasColumnName("route_json").IsRequired();
+        builder.Property(x => x.ExecutionStagesJson).HasColumnName("execution_stages_json").HasColumnType("longtext").IsRequired();
+        builder.Property(x => x.OriginalRequestJson).HasColumnName("original_request_json").HasColumnType("longtext").IsRequired();
         builder.Property(x => x.Message).HasColumnName("message").IsRequired();
         builder.Property(x => x.CreatedAt).HasColumnName("created_at");
         builder.Property(x => x.UpdatedAt).HasColumnName("updated_at");

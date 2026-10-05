@@ -24,6 +24,8 @@ public sealed class RcsTaskRow
     public string MapCode { get; set; } = "";
     public int MapVersion { get; set; }
     public string RouteJson { get; set; } = "[]";
+    public string ExecutionStagesJson { get; set; } = "[]";
+    public string OriginalRequestJson { get; set; } = "";
     public string Message { get; set; } = "";
     public DateTime CreatedAt { get; set; }
     public DateTime UpdatedAt { get; set; }
@@ -38,7 +40,9 @@ public sealed class RcsTaskRow
         StationActions = JsonSerializer.Deserialize<string[]>(StationActionsJson) ?? [],
         AreaCode = JsonSerializer.Deserialize<string[]>(AreaCodesJson) ?? [],
         Status = Status, Source = Source, VehicleId = VehicleId, RequestedVehicleId = RequestedVehicleId, MapCode = MapCode, MapVersion = MapVersion,
-        RoutePointCodes = JsonSerializer.Deserialize<string[]>(RouteJson) ?? [], Message = Message,
+        RoutePointCodes = JsonSerializer.Deserialize<string[]>(RouteJson) ?? [],
+        ExecutionStages = JsonSerializer.Deserialize<RcsTaskExecutionStageDto[]>(ExecutionStagesJson) ?? [], Message = Message,
+        OriginalRequestJson = OriginalRequestJson,
         CreatedAt = LocalTime(CreatedAt),
         StartedAt = StartedAt.HasValue ? LocalTime(StartedAt.Value) : null,
         FinishedAt = FinishedAt.HasValue ? LocalTime(FinishedAt.Value) : null

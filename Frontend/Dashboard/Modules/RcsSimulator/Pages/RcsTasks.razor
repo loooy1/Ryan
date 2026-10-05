@@ -5,29 +5,23 @@
 @using Contracts.Rcs.Vehicle
 @inject RcsApiClient Api
 @inject RcsRealtimeHubClient Realtime
-@inject NavigationManager Navigation
 @inject IJSRuntime Js
 @implements IAsyncDisposable
 
-<PageTitle>@(InternalView ? "RCS 内部任务拆分" : "上游原始任务")</PageTitle>
+<PageTitle>RCS 任务管理</PageTitle>
 
 <div class="rcs-tasks-page">
     <header class="tasks-header">
-        <div><div class="tasks-kicker">RCS / TASK FLOW</div><h1>@(InternalView ? "RCS 内部任务拆分" : "上游原始任务")</h1>
-            <p>@(InternalView ? "查看每个上游任务在 RCS 内的分配、行驶和站点动作进度。" : "按上游任务组查看收到的原始字段及 RCS 拆分出的子任务。")</p></div>
+        <div><div class="tasks-kicker">RCS / TASK FLOW</div><h1>任务管理</h1>
+            <p>统一查看上游任务信息、车辆分配和 RCS 执行阶段。</p></div>
         <div class="tasks-header-actions"><button class="tasks-refresh" @onclick="RefreshAsync" disabled="@_loading">↻ 刷新</button></div>
     </header>
 
-    <nav class="tasks-tabs" aria-label="任务模块子页面">
-        <a class="@(!InternalView ? "selected" : "")" href="rcs/tasks/upstream">↙ 上游原始任务</a>
-        <a class="@(InternalView ? "selected" : "")" href="rcs/tasks/internal">↳ RCS内部任务拆分</a>
-    </nav>
-
     <section class="tasks-metrics">
-        <div><span>上游任务组</span><strong>@UpstreamGroupCount</strong></div>
-        <div><span>RCS 子任务</span><strong>@UpstreamTasks.Count</strong></div>
-        <div><span>待分配</span><strong>@UpstreamTasks.Count(x => x.Status == RcsTaskStatus.Waiting)</strong></div>
-        <div><span>执行中</span><strong>@UpstreamTasks.Count(x => x.Status is RcsTaskStatus.Running or RcsTaskStatus.Paused or RcsTaskStatus.Cancelling)</strong></div>
+        <div><span>任务组</span><strong>@UpstreamGroupCount</strong></div>
+        <div><span>RCS 子任务</span><strong>@UpstreamTasksCount</strong></div>
+        <div><span>待分配</span><strong>@_tasks.Values.Count(x => x.Status == RcsTaskStatus.Waiting)</strong></div>
+        <div><span>执行中</span><strong>@_tasks.Values.Count(x => x.Status is RcsTaskStatus.Running or RcsTaskStatus.Paused or RcsTaskStatus.Cancelling)</strong></div>
     </section>
 
     <div class="tasks-toolbar">
@@ -38,52 +32,65 @@
 
     @if (_error != "") { <div class="tasks-error" role="alert">@_error</div> }
     @if (_loading && _tasks.Count == 0) { <div class="tasks-empty">正在读取 RCS 任务…</div> }
-    else if (VisibleGroups.Count == 0) { <div class="tasks-empty">@(_tasks.Count == 0 ? "当前没有已接收的 RCS 任务。" : "没有符合搜索条件的任务。")</div> }
-    else if (!InternalView)
-    {
-        <div class="upstream-list">
-            @foreach (var group in VisibleGroups)
-            {
-                <details class="upstream-card" @key="group.Key">
-                    <summary><span class="group-mark">↙</span><span class="group-main"><strong>@group.GroupId</strong><small>@group.Warehouse · @group.MsgTime</small></span><span class="group-count">@group.Tasks.Length 个子任务</span><span class="task-status @StatusClass(GroupStatus(group.Tasks))">@StatusText(GroupStatus(group.Tasks))</span><span class="group-toggle">⌄</span></summary>
-                    <div class="group-content">
-                        <h2>上游原始任务字段</h2>
-                        <pre>@RawRequest(group)</pre>
-                        <div class="group-subtasks"><strong>RCS 已拆分 @group.Tasks.Length 个子任务</strong><a href="rcs/tasks/internal">查看执行阶段 →</a></div>
-                        <div class="raw-task-list">
-                            @foreach (var task in group.Tasks.OrderBy(x => x.CreatedAt, StringComparer.Ordinal))
-                            {
-                                <div><span>@task.TaskId</span><span>@task.TaskType</span><span>@(task.StationCode.Count == 0 ? "无站点" : string.Join(" → ", task.StationCode))</span><span class="task-status @StatusClass(task.Status)">@StatusText(task.Status)</span></div>
-                            }
-                        </div>
-                    </div>
-                </details>
-            }
-        </div>
-    }
+    else if (VisibleTasks.Count == 0) { <div class="tasks-empty">@(_tasks.Count == 0 ? "当前没有已接收的 RCS 任务。" : "没有符合搜索条件的任务。")</div> }
     else
     {
-        <div class="internal-list">
-            @foreach (var group in VisibleGroups)
+        <div class="unified-task-list">
+            @foreach (var task in VisibleTasks)
             {
-                <section class="internal-group" @key="group.Key">
-                    <header><span><small>任务组</small><strong>@group.GroupId</strong></span><span>@group.Warehouse · @group.MsgTime</span><span class="group-count">@group.Tasks.Length 个子任务</span></header>
-                    @foreach (var task in group.Tasks.OrderBy(x => x.CreatedAt, StringComparer.Ordinal))
+                var vehicle = _vehicles.GetValueOrDefault(task.VehicleId);
+                var start = task.StationCode.FirstOrDefault() ?? "—";
+                var end = task.StationCode.LastOrDefault() ?? "—";
+                <details class="unified-task-card" @key="task.TaskId">
+                    <summary class="unified-task-summary">
+                        <div class="unified-task-id"><small>@(task.Source == RcsTaskSource.Manual ? "手动任务" : "上游原始任务") · @task.TaskType</small><strong title="@task.TaskId">@task.TaskId</strong></div>
+                        <div class="summary-route"><small>起点 → 终点</small><strong title="@start → @end">@start <span>→</span> @end</strong></div>
+                        <div class="summary-fact"><small>货物 / 托盘</small><strong title="@task.ContainerCode">@(task.ContainerCode == "" ? "—" : task.ContainerCode)</strong></div>
+                        <div class="summary-fact"><small>执行车辆</small><strong>@(task.VehicleId == "" ? "待分配" : task.VehicleId)</strong></div>
+                        <span class="task-status @StatusClass(task.Status)">@StatusText(task.Status)</span>
+                        <span class="task-expand-mark" aria-hidden="true">⌄</span>
+                    </summary>
+                    <div class="unified-task-content">
+                    @if (task.ExecutionStages.Count > 0)
                     {
-                        var vehicle = _vehicles.GetValueOrDefault(task.VehicleId);
-                        <article class="internal-task">
-                            <div class="internal-task-heading"><div><small>RCS 子任务</small><h2>@task.TaskId</h2></div><span class="task-status @StatusClass(task.Status)">@StatusText(task.Status)</span></div>
-                            <div class="task-facts"><span>来源 <b>@(task.Source == RcsTaskSource.Manual ? "手动" : "上游自动")</b></span><span>类型 <b>@task.TaskType</b></span><span>容器 <b>@(task.ContainerCode == "" ? "—" : task.ContainerCode)</b></span><span>车辆 <b>@(task.VehicleId == "" ? "待分配" : task.VehicleId)</b></span><span>站点 <b>@(task.StationCode.Count == 0 ? "—" : string.Join(" → ", task.StationCode))</b></span></div>
+                        <div class="unified-stage-section"><div class="section-caption">RCS 执行阶段 <span>@task.ExecutionStages.Count 个阶段</span></div>
+                            <ol class="task-execution-stages">
+                                @foreach (var stage in task.ExecutionStages.OrderBy(x => x.Sequence))
+                                {
+                                    <li class="@StageClass(stage.Status)">
+                                        <div class="stage-mark">@(stage.Status == RcsTaskExecutionStageStatus.Completed ? "✓" : stage.Status == RcsTaskExecutionStageStatus.Failed ? "!" : stage.Sequence.ToString())</div>
+                                        <div class="stage-main"><div class="stage-heading"><strong>@stage.Sequence · @stage.Name</strong><span class="task-status @StageStatusClass(stage.Status)">@StageStatusText(stage.Status)</span></div>
+                                            <div class="stage-route">@stage.FromPointCode → @stage.ToPointCode @if (stage.Action != "") { <b>· @ActionText(stage.Action)</b> }</div>
+                                            <small>车辆 @stage.VehicleId @if (stage.CommandId != "") { <span>· 命令 @stage.CommandId</span> }</small>
+                                            <small>@if (stage.StartedAt is not null) { <span>开始 @stage.StartedAt</span> } @if (stage.FinishedAt is not null) { <span> · 结束 @stage.FinishedAt</span> }</small>
+                                            @if (stage.Message != "") { <small class="stage-message">@stage.Message</small> }
+                                        </div>
+                                    </li>
+                                }
+                            </ol>
+                        </div>
+                    }
+                    else
+                    {
+                        <div class="unified-stage-section"><div class="section-caption">任务进度 <span>实时状态</span></div>
                             <ol class="task-timeline">
                                 @foreach (var step in Timeline(task, vehicle))
                                 {
                                     <li class="@step.State"><span class="timeline-node">@(step.State == "done" ? "✓" : step.State == "failed" ? "!" : step.Number.ToString())</span><span class="timeline-copy"><strong>@step.Title</strong><small>@step.Detail</small></span></li>
                                 }
                             </ol>
-                            @if (task.Message != "") { <div class="internal-message">@task.Message</div> }
-                        </article>
+                        </div>
                     }
-                </section>
+                    @if (task.Message != "")
+                    {
+                        <div class="internal-message">@task.Message</div>
+                    }
+                    <section class="original-payload">
+                        <div class="section-caption">@(task.Source == RcsTaskSource.Manual ? "手动任务参数" : "上游系统原始报文")</div>
+                        <pre>@TaskParameterJson(task)</pre>
+                    </section>
+                    </div>
+                </details>
             }
         </div>
     }
@@ -96,17 +103,15 @@
     private readonly Dictionary<string, VehicleStateDto> _vehicles = new(StringComparer.OrdinalIgnoreCase);
     private string _search = "", _statusFilter = "", _error = "";
     private bool _loading, _disposed;
-    private bool InternalView => Navigation.Uri.Contains("/rcs/tasks/internal", StringComparison.OrdinalIgnoreCase);
     private List<TaskGroup> TaskGroups => _tasks.Values
         .GroupBy(x => (x.GroupId, x.MsgTime))
         .Select(group => new TaskGroup($"{group.Key.GroupId}|{group.Key.MsgTime}", group.Key.GroupId, group.Key.MsgTime,
             group.OrderBy(x => x.CreatedAt, StringComparer.Ordinal).ToArray()))
         .OrderByDescending(group => group.Tasks.Max(x => x.CreatedAt), StringComparer.Ordinal).ToList();
-    private List<RcsTaskDto> UpstreamTasks => _tasks.Values.Where(task => task.Source == RcsTaskSource.Upstream).ToList();
-    private int UpstreamGroupCount => TaskGroups.Count(group => group.Tasks.Any(task => task.Source == RcsTaskSource.Upstream));
-    private List<TaskGroup> VisibleGroups => TaskGroups.Select(group => group with
-        { Tasks = group.Tasks.Where(task => task.Source == RcsTaskSource.Upstream && Matches(task)).ToArray() })
-        .Where(group => group.Tasks.Length > 0).ToList();
+    private int UpstreamGroupCount => TaskGroups.Count;
+    private int UpstreamTasksCount => _tasks.Count;
+    private List<RcsTaskDto> VisibleTasks => _tasks.Values.Where(Matches)
+        .OrderByDescending(x => x.CreatedAt, StringComparer.Ordinal).ToList();
 
     protected override async Task OnInitializedAsync()
     {
@@ -126,9 +131,12 @@
         _loading = true; _error = "";
         try
         {
-            var tasks = await Api.GetTasksAsync(500, _lifetime.Token);
-            var vehicles = await Api.GetVehiclesAsync(_lifetime.Token);
+            var tasksRequest = Api.GetTasksAsync(500, _lifetime.Token);
+            var vehiclesRequest = Api.GetVehiclesAsync(_lifetime.Token);
+            var tasks = await tasksRequest;
             _tasks.Clear(); foreach (var task in tasks) _tasks[task.TaskId] = task;
+            await InvokeAsync(StateHasChanged);
+            var vehicles = await vehiclesRequest;
             _vehicles.Clear(); foreach (var vehicle in vehicles) _vehicles[vehicle.Id] = vehicle;
             if (!Realtime.IsConnected) { Realtime.SetBaseUrl(Api.BaseUrl); try { await Realtime.StartAsync(); } catch { } }
         }
@@ -152,28 +160,6 @@
             task.ContainerCode, task.Warehouse, task.TaskType, string.Join(' ', task.StationCode), string.Join(' ', task.AreaCode))
             .Contains(_search.Trim(), StringComparison.OrdinalIgnoreCase));
 
-    private static string RawRequest(TaskGroup group) => JsonSerializer.Serialize(new
-    {
-        GroupId = group.GroupId,
-        MsgTime = group.MsgTime,
-        PriorityCode = group.Tasks.FirstOrDefault()?.PriorityCode ?? 1,
-        Warehouse = group.Warehouse,
-        Tasks = group.Tasks.Select(task => new
-        {
-            task.TaskId,
-            VehicleId = task.RequestedVehicleId,
-            task.TaskType,
-            task.ContainerCode,
-            StationCode = task.StationCode,
-            AreaCode = task.AreaCode
-        })
-    }, PrettyJson);
-
-    private static string GroupStatus(IReadOnlyList<RcsTaskDto> tasks) => tasks.All(x => x.Status == RcsTaskStatus.Completed) ? RcsTaskStatus.Completed
-        : tasks.Any(x => x.Status == RcsTaskStatus.Failed) ? RcsTaskStatus.Failed
-        : tasks.Any(x => x.Status is RcsTaskStatus.Running or RcsTaskStatus.Paused or RcsTaskStatus.Cancelling) ? RcsTaskStatus.Running
-        : tasks.All(x => x.Status is RcsTaskStatus.Cancelled or RcsTaskStatus.Interrupted) ? tasks[0].Status
-        : RcsTaskStatus.Waiting;
     private static string StatusText(string status) => status switch
     {
         RcsTaskStatus.Waiting => "待分配", RcsTaskStatus.Running => "执行中", RcsTaskStatus.Paused => "已暂停",
@@ -186,6 +172,58 @@
         RcsTaskStatus.Failed or RcsTaskStatus.Cancelled or RcsTaskStatus.Interrupted => "status-error",
         RcsTaskStatus.Paused or RcsTaskStatus.Cancelling => "status-paused", _ => "status-running"
     };
+
+    private static string StageStatusText(string status) => status switch
+    {
+        RcsTaskExecutionStageStatus.Waiting => "待执行", RcsTaskExecutionStageStatus.Running => "执行中",
+        RcsTaskExecutionStageStatus.Completed => "已确认", RcsTaskExecutionStageStatus.Failed => "失败",
+        RcsTaskExecutionStageStatus.Cancelled => "已取消", _ => status
+    };
+    private static string StageStatusClass(string status) => status switch
+    {
+        RcsTaskExecutionStageStatus.Waiting => "status-waiting", RcsTaskExecutionStageStatus.Running => "status-running",
+        RcsTaskExecutionStageStatus.Completed => "status-done", _ => "status-error"
+    };
+    private static string StageClass(string status) => status switch
+    {
+        RcsTaskExecutionStageStatus.Completed => "stage-done", RcsTaskExecutionStageStatus.Running => "stage-current",
+        RcsTaskExecutionStageStatus.Failed or RcsTaskExecutionStageStatus.Cancelled => "stage-failed", _ => "stage-waiting"
+    };
+    private static string ActionText(string action) => action switch { "fetch" => "取货", "put" => "放货", _ => "移动" };
+    private static string ActionCodeAt(RcsTaskDto task, int index, bool isEnd)
+    {
+        if (index < task.StationActions.Count && !string.IsNullOrWhiteSpace(task.StationActions[index]))
+            return task.StationActions[index];
+        if (task.TaskType is "INBOUND" or "OUTBOUND")
+            return isEnd ? "put" : "fetch";
+        return "move";
+    }
+
+    private static string TaskParameterJson(RcsTaskDto task)
+    {
+        if (task.Source != RcsTaskSource.Manual)
+            return string.IsNullOrWhiteSpace(task.OriginalRequestJson)
+                ? "该任务创建于原始报文留存功能启用前，数据库中没有保存上游原始报文。"
+                : task.OriginalRequestJson;
+
+        var startIndex = 0;
+        var endIndex = Math.Max(0, task.StationCode.Count - 1);
+        return JsonSerializer.Serialize(new
+        {
+            GroupId = task.GroupId,
+            TaskId = task.TaskId,
+            MsgTime = task.MsgTime,
+            PriorityCode = task.PriorityCode,
+            Warehouse = task.Warehouse,
+            VehicleId = string.IsNullOrWhiteSpace(task.RequestedVehicleId) ? task.VehicleId : task.RequestedVehicleId,
+            TaskType = task.TaskType,
+            ContainerCode = task.ContainerCode,
+            StartStationCode = task.StationCode.FirstOrDefault() ?? "",
+            StartAction = ActionCodeAt(task, startIndex, isEnd: false),
+            EndStationCode = task.StationCode.LastOrDefault() ?? "",
+            EndAction = ActionCodeAt(task, endIndex, isEnd: true)
+        }, PrettyJson);
+    }
 
     private static IReadOnlyList<TimelineStep> Timeline(RcsTaskDto task, VehicleStateDto? vehicle)
     {

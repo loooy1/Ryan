@@ -7,6 +7,11 @@ public sealed record VehicleStateDto
     public string Protocol { get; init; } = "VIRTUAL";
     public string OperatingMode { get; init; } = "AUTO";
     public bool IsEnabled { get; init; } = true;
+    public bool IsOnline { get; init; } = true;
+    public DateTimeOffset? LastHeartbeatAt { get; init; }
+    public double? BatteryPercent { get; init; }
+    public string ErrorCode { get; init; } = "";
+    public string ErrorMessage { get; init; } = "";
     public string InitialPointCode { get; init; } = "";
     public string TaskId { get; init; } = "";
     public string CommandId { get; init; } = "";

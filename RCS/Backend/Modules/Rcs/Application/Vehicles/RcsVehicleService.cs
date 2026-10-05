@@ -16,6 +16,15 @@ public sealed class RcsVehicleService(IRcsVehicleStore store, RcsVehicleRegistry
     IRcsTaskStore taskStore, IRcsTaskService tasks, RcsDispatchLock dispatchLock, RcsMapCache maps,
     IMultiVehicleTrafficCoordinator traffic, ILogger<RcsVehicleService> logger)
 {
+    public IReadOnlyList<VehicleProtocolInfoDto> SupportedProtocols => registry.SupportedProtocols;
+
+    public async Task<VehicleStateDto> ReceiveHeartbeatAsync(string id, ReadOnlyMemory<byte> payload,
+        CancellationToken token = default)
+    {
+        await registry.InitializeAsync(token);
+        return registry.ReceiveHeartbeat(id, payload);
+    }
+
     public async Task<IReadOnlyList<VehicleStateDto>> ListAsync(CancellationToken token = default)
     {
         await registry.InitializeAsync(token);
@@ -48,10 +57,12 @@ public sealed class RcsVehicleService(IRcsVehicleStore store, RcsVehicleRegistry
             if (registry.Contains(request.Id)) throw new RcsTaskConflictException("车辆编号已存在。");
             if (request.PointCode != "" && maps.Current?.Points.ContainsKey(request.PointCode) != true)
                 throw new ArgumentException("初始站点不存在或已禁用。");
+            var protocol = NormalizeProtocol(request.Protocol);
+            EnsureProtocolSupported(protocol);
             var now = DateTime.UtcNow;
             var operatingMode = NormalizeOperatingMode(request.OperatingMode);
             var row = new RcsVehicleRow { VehicleId = request.Id, Name = request.Name.Trim(), InitialPointCode = request.PointCode,
-                OperatingMode = operatingMode, IsEnabled = request.IsEnabled, CreatedAt = now, UpdatedAt = now };
+                Protocol = protocol, OperatingMode = operatingMode, IsEnabled = request.IsEnabled, CreatedAt = now, UpdatedAt = now };
             if (row.Name == "") row.Name = row.VehicleId;
             if (!traffic.TryAcquirePosition(row.VehicleId, "", row.InitialPointCode,
                 out var positionLease, out var conflictingVehicle))
@@ -76,10 +87,19 @@ public sealed class RcsVehicleService(IRcsVehicleStore store, RcsVehicleRegistry
         try
         {
             var row = registry.GetDefinition(id);
+            var protocol = string.IsNullOrWhiteSpace(request.Protocol) ? row.Protocol : NormalizeProtocol(request.Protocol);
+            EnsureProtocolSupported(protocol);
+            if (!string.Equals(protocol, row.Protocol, StringComparison.OrdinalIgnoreCase))
+            {
+                var current = registry.GetStates().Single(x => string.Equals(x.Id, id, StringComparison.OrdinalIgnoreCase));
+                if (tasks.IsVehicleBusy(id) || current.Status is "Running" or "Paused" || current.LoadedContainerCode != "")
+                    throw new RcsTaskConflictException("车辆执行任务或载有托盘时不能切换协议。");
+                row.InitialPointCode = current.PointCode;
+            }
             var operatingMode = string.IsNullOrWhiteSpace(request.OperatingMode)
                 ? row.OperatingMode : NormalizeOperatingMode(request.OperatingMode);
             row.Name = request.Name.Trim() == "" ? row.VehicleId : request.Name.Trim();
-            row.OperatingMode = operatingMode; row.IsEnabled = request.IsEnabled; row.UpdatedAt = DateTime.UtcNow;
+            row.Protocol = protocol; row.OperatingMode = operatingMode; row.IsEnabled = request.IsEnabled; row.UpdatedAt = DateTime.UtcNow;
             await store.UpdateAsync(row, token); registry.Update(row); tasks.NotifyWork();
             Log(row.IsEnabled ? $"车辆配置已保存，运行模式={row.OperatingMode}" : "车辆已停用，当前任务继续执行，后续任务不再分配", row.VehicleId);
             return registry.GetStates().Single(x => x.Id == row.VehicleId);
@@ -141,6 +161,13 @@ public sealed class RcsVehicleService(IRcsVehicleStore store, RcsVehicleRegistry
         RcsOperatingMode.Manual => RcsOperatingMode.Manual,
         _ => throw new ArgumentException("车辆运行模式只能是 AUTO 或 MANUAL。")
     };
+    private static string NormalizeProtocol(string? protocol) => string.IsNullOrWhiteSpace(protocol)
+        ? "VIRTUAL" : protocol.Trim().ToUpperInvariant();
+    private void EnsureProtocolSupported(string protocol)
+    {
+        if (!registry.SupportsProtocol(protocol))
+            throw new ArgumentException($"未注册车辆协议 {protocol}。请先实现并注册对应的协议适配器。");
+    }
     private void Log(string message, string id)
     {
         using var scope = logger.BeginScope(new Dictionary<string, object?> { ["LogCategory"] = LogCategory.System.ToString() });

@@ -29,9 +29,11 @@ public static class RcsModuleExtensions
         services.AddSingleton<IRcsVehicleStore, RcsVehicleStore>();
         services.AddSingleton<RcsVehicleRegistry>();
         services.AddSingleton<RcsVehicleService>();
-        services.AddSingleton<IVehicleCommandChannel, InProcessVehicleCommandChannel>();
+        services.AddSingleton<IVehicleCommandChannel, VehicleCommandChannel>();
+        services.AddSingleton<IVehicleProtocolAdapter, VirtualVehicleProtocolAdapter>();
         services.AddSingleton<RcsTaskRoutePlanner>();
         services.AddSingleton<RcsAlgorithmSettingsService>();
+        services.AddSingleton<RcsInventoryTransferService>();
         services.AddSingleton<MultiVehicleTrafficCoordinator>();
         services.AddSingleton<IMultiVehicleTrafficCoordinator>(sp => sp.GetRequiredService<MultiVehicleTrafficCoordinator>());
         services.AddSingleton<IRcsTaskStore, RcsTaskStore>();
@@ -43,6 +45,7 @@ public static class RcsModuleExtensions
         services.AddSingleton<RcsMapCache>();
         services.AddSingleton<RcsRealtimePublisher>();
         services.AddHostedService(sp => sp.GetRequiredService<RcsRealtimePublisher>());
+        services.AddHostedService<RcsVehicleHeartbeatMonitor>();
         services.AddHostedService<RcsTaskDispatchWorker>();
         return services;
     }

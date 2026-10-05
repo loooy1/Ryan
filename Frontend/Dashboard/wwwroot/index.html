@@ -259,6 +259,14 @@
                     ctx.fillStyle = color; ctx.strokeStyle = '#ecfeff'; ctx.lineWidth = 2;
                     ctx.beginPath(); ctx.roundRect(-10, -9, 20, 18, 5); ctx.fill(); ctx.stroke();
                     ctx.fillStyle = '#083344'; ctx.font = 'bold 10px sans-serif'; ctx.textAlign = 'center'; ctx.fillText('V', 0, 4);
+                    if (vehicle.LoadedContainerCode) {
+                        // 随车绘制青色托盘标识；其坐标依附车辆，因此会与车辆同步移动。
+                        ctx.fillStyle = '#06b6d4'; ctx.strokeStyle = '#cffafe'; ctx.lineWidth = 1.5;
+                        ctx.beginPath(); ctx.roundRect(8, -17, 13, 13, 3); ctx.fill(); ctx.stroke();
+                        ctx.fillStyle = '#facc15'; ctx.fillRect(11, -14, 7, 5);
+                        ctx.strokeStyle = '#083344'; ctx.lineWidth = 1;
+                        ctx.beginPath(); ctx.moveTo(10, -7); ctx.lineTo(19, -7); ctx.stroke();
+                    }
                     ctx.font = '10px sans-serif';
                     if (vehicle.Id === config.SelectedVehicleId) {
                         const labelWidth = ctx.measureText(vehicle.Id).width + 10;

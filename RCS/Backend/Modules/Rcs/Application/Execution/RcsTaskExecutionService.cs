@@ -1,5 +1,6 @@
 using Contracts.Rcs.Protocol;
 using Contracts.Rcs.Algorithm;
+using Contracts.Rcs.Tasks;
 using Contracts.Rcs.Vehicle;
 using Rcs.Algorithms;
 using Rcs.Algorithms.Traffic;
@@ -16,24 +17,33 @@ public sealed class RcsTaskExecutionService : IRcsTaskExecutionService, IDisposa
     private readonly RcsAlgorithmSettingsService _algorithmSettings;
     private readonly IMultiVehicleTrafficCoordinator _traffic;
     private readonly IVehicleCommandChannel _channel;
+    private readonly RcsInventoryTransferService _inventory;
     private readonly ILogger<RcsTaskExecutionService> _logger;
     private readonly object _gate = new();
     private readonly Dictionary<string, Execution> _current = new(StringComparer.OrdinalIgnoreCase);
     private event Action<VehicleStateDto>? _vehicleStateChanged;
+    private event Action? _inventoryChanged;
 
     public RcsTaskExecutionService(RcsMapCache maps, RcsTaskRoutePlanner planner,
         RcsAlgorithmSettingsService algorithmSettings, IMultiVehicleTrafficCoordinator traffic,
-        IVehicleCommandChannel channel, ILogger<RcsTaskExecutionService> logger)
+        IVehicleCommandChannel channel, RcsInventoryTransferService inventory, ILogger<RcsTaskExecutionService> logger)
     {
         _maps = maps; _planner = planner; _algorithmSettings = algorithmSettings;
-        _traffic = traffic; _channel = channel; _logger = logger;
+        _traffic = traffic; _channel = channel; _inventory = inventory; _logger = logger;
         _channel.StateChanged += OnVehicleStateChanged;
+        _inventory.InventoryChanged += OnInventoryChanged;
     }
 
     public event Action<VehicleStateDto>? VehicleStateChanged
     {
         add => _vehicleStateChanged += value;
         remove => _vehicleStateChanged -= value;
+    }
+
+    public event Action? InventoryChanged
+    {
+        add => _inventoryChanged += value;
+        remove => _inventoryChanged -= value;
     }
 
     public IReadOnlyList<VehicleStateDto> GetVehicles()
@@ -54,12 +64,26 @@ public sealed class RcsTaskExecutionService : IRcsTaskExecutionService, IDisposa
         var map = _maps.Current ?? throw new InvalidOperationException("当前地图未加载。");
         EnsureMap(map.MapCode, map.SceneName, request.MapCode, request.Warehouse);
         var stops = RcsTaskRoutePlanner.CreateStops(request);
-        _traffic.SetVehicleGoals(state.Id, stops.Select(x => x.PointCode).ToArray());
         try
         {
+            var fetchIndex = stops.ToList().FindIndex(x => x.Action == VehiclePointAction.Fetch);
+            var putIndex = stops.ToList().FindIndex(x => x.Action == VehiclePointAction.Put);
+            var hasInventoryActions = fetchIndex >= 0 || putIndex >= 0;
+            var syncInventory = fetchIndex >= 0 && putIndex > fetchIndex
+                && stops.Count(x => x.Action == VehiclePointAction.Fetch) == 1
+                && stops.Count(x => x.Action == VehiclePointAction.Put) == 1;
+            if (hasInventoryActions && (!syncInventory || string.IsNullOrWhiteSpace(request.ContainerCode)))
+                throw new ArgumentException("库存搬运任务必须先取货再放货，且只能各执行一次，并指定货物或托盘编码。");
+            var stagedTransfer = syncInventory;
+            var activeStops = stagedTransfer ? stops.Take(fetchIndex + 1).ToArray() : stops;
+            var deferredStops = stagedTransfer ? stops.Skip(fetchIndex + 1).ToArray() : Array.Empty<RcsTaskStop>();
+            // Traffic coordination must only know the active stage's goal. The destination remains
+            // deferred until the vehicle confirms the pickup action at the source station.
+            _traffic.SetVehicleGoals(state.Id, activeStops.Select(x => x.PointCode).ToArray());
             return new(request.TaskId, request.VehicleId, map,
-                _planner.Plan(map, _traffic.GetPlanningContext(state.Id), state.PointCode, stops,
-                    _algorithmSettings.Current), stops, request.ContainerCode);
+                _planner.Plan(map, _traffic.GetPlanningContext(state.Id), state.PointCode, activeStops,
+                    _algorithmSettings.Current), activeStops, request.ContainerCode, SyncInventory: syncInventory,
+                DeferredStops: deferredStops, AllStops: stops);
         }
         catch
         {
@@ -70,26 +94,24 @@ public sealed class RcsTaskExecutionService : IRcsTaskExecutionService, IDisposa
 
     public void ClearVehiclePlanningGoal(string vehicleId) => _traffic.SetVehicleGoals(vehicleId, []);
 
-    public async Task ExecuteAsync(RcsTaskExecutionPlan plan, bool startPaused, CancellationToken token)
+    private async Task ExecuteCurrentStageAsync(Execution execution, bool startPaused, CancellationToken token)
     {
-        Vehicle(plan.VehicleId);
-        token.ThrowIfCancellationRequested();
-        var execution = new Execution(plan, Guid.NewGuid().ToString("N"), token);
-        var accepted = false;
-        lock (_gate)
-        {
-            if (!_current.TryAdd(plan.VehicleId, execution)) throw new InvalidOperationException("该车辆已有执行任务。");
-        }
+        execution.CommandId = Guid.NewGuid().ToString("N");
+        execution.SegmentIndex = 0;
+        execution.RouteVersion = execution.Plan.RouteVersion;
+        execution.RouteUpdateError = null;
+        await execution.WindowGate.WaitAsync(token);
         try
         {
-            await execution.WindowGate.WaitAsync(token);
-            try
+            var firstSegment = GetFirstSegment(execution.Plan.RoutePlan);
+            _logger.LogInformation("开始下发车辆路径阶段 TaskId={TaskId} Vehicle={Vehicle} RouteVersion={Version} From={From} To={To} Points={Points}",
+                execution.Plan.TaskId, execution.Plan.VehicleId, execution.Plan.RouteVersion,
+                Vehicle(execution.Plan.VehicleId).PointCode, execution.Plan.Stops.LastOrDefault()?.PointCode ?? "",
+                execution.Plan.RoutePointCodes.Count);
+            var lockLease = await AcquireFirstWindowAsync(execution, firstSegment, token);
+            firstSegment = GetFirstSegment(execution.Plan.RoutePlan);
+            using (lockLease)
             {
-                var firstSegment = GetFirstSegment(execution.Plan.RoutePlan);
-                var lockLease = await AcquireFirstWindowAsync(execution, firstSegment, token);
-                firstSegment = GetFirstSegment(execution.Plan.RoutePlan);
-                using (lockLease)
-                {
                 await SendCheckedAsync(new VehicleCommand
                 {
                     CommandId = execution.CommandId, VehicleId = execution.Plan.VehicleId, TaskId = execution.Plan.TaskId,
@@ -98,22 +120,88 @@ public sealed class RcsTaskExecutionService : IRcsTaskExecutionService, IDisposa
                     HasMorePoints = HasNextSegment(execution.Plan.RoutePlan, 0),
                     ContainerCode = execution.Plan.ContainerCode, Points = firstSegment.Points, StartPaused = startPaused
                 }, token);
-                accepted = true;
+                execution.HasAcceptedCommand = true;
                 lockLease.Commit();
+                _logger.LogInformation("车辆已确认接收路径阶段 TaskId={TaskId} Vehicle={Vehicle} RouteVersion={Version} CommandId={CommandId}",
+                    execution.Plan.TaskId, execution.Plan.VehicleId, execution.Plan.RouteVersion, execution.CommandId);
                 PublishCurrentState(execution.Plan.VehicleId);
-                }
             }
-            finally { execution.WindowGate.Release(); }
-            var result = await _channel.WaitForCompletionAsync(plan.VehicleId, execution.CommandId, token);
-            if (execution.RouteUpdateError is { } routeError)
-                throw new InvalidOperationException($"路径分段下发失败：{routeError.Message}", routeError);
+        }
+        finally { execution.WindowGate.Release(); }
+
+        var commandId = execution.CommandId;
+        var result = await _channel.WaitForCompletionAsync(execution.Plan.VehicleId, commandId, token);
+        if (execution.RouteUpdateError is { } routeError)
+            throw new InvalidOperationException($"路径分段下发失败：{routeError.Message}", routeError);
+        token.ThrowIfCancellationRequested();
+        if (result.Status != "COMPLETED") throw new InvalidOperationException(result.Message);
+    }
+
+    public async Task ExecuteAsync(RcsTaskExecutionPlan plan, bool startPaused,
+        Func<RcsTaskExecutionStageDto, Task>? stageChanged, CancellationToken token)
+    {
+        Vehicle(plan.VehicleId);
+        token.ThrowIfCancellationRequested();
+        var execution = new Execution(plan, Guid.NewGuid().ToString("N"), token);
+        lock (_gate)
+        {
+            if (!_current.TryAdd(plan.VehicleId, execution)) throw new InvalidOperationException("该车辆已有执行任务。");
+        }
+        try
+        {
+            await _inventory.ReserveAsync(plan, token);
+            if (!plan.SyncInventory)
+            {
+                await ExecuteCurrentStageAsync(execution, startPaused, token);
+                return;
+            }
+
+            var fetch = plan.TaskStops.Single(stop => stop.Action == VehiclePointAction.Fetch);
+            var put = plan.TaskStops.Single(stop => stop.Action == VehiclePointAction.Put);
+            var stage1From = Vehicle(plan.VehicleId).PointCode;
+            await RunReportedStageAsync(stageChanged,
+                Stage(1, "VEHICLE_TO_PICKUP", "叫车任务", stage1From, fetch.PointCode, "", plan.VehicleId),
+                async () => { await ExecuteCurrentStageAsync(execution, startPaused, token); return execution.CommandId; });
+
+            await RunReportedStageAsync(stageChanged,
+                Stage(2, "PICKUP_ACTION", "取货命令", fetch.PointCode, fetch.PointCode, fetch.Action, plan.VehicleId),
+                () => ExecuteStationActionAsync(execution, fetch, token));
+
             token.ThrowIfCancellationRequested();
-            if (result.Status != "COMPLETED") throw new InvalidOperationException(result.Message);
+            var stateAtPickup = Vehicle(plan.VehicleId);
+            if (stateAtPickup.Status != "Arrived" || stateAtPickup.TaskId != plan.TaskId
+                || stateAtPickup.PointCode != fetch.PointCode
+                || !stateAtPickup.CompletedStepIds.Contains(fetch.StepId, StringComparer.Ordinal))
+                throw new InvalidOperationException("车辆尚未确认在取货点完成取货动作，不能规划去终点的路径。");
+
+            var pendingStops = plan.RemainingStageStops;
+            var currentMap = _maps.Current;
+            EnsureMap(plan.Map.MapCode, plan.Map.SceneName, currentMap?.MapCode ?? "", currentMap?.SceneName ?? "");
+            _traffic.SetVehicleGoals(plan.VehicleId, pendingStops.Select(stop => stop.PointCode).ToArray());
+            _logger.LogInformation("开始计算取货后的目标路径 TaskId={TaskId} Vehicle={Vehicle} From={Point} To={Destination}",
+                plan.TaskId, plan.VehicleId, stateAtPickup.PointCode, put.PointCode);
+            var nextRoute = _planner.Plan(plan.Map, _traffic.GetPlanningContext(plan.VehicleId),
+                stateAtPickup.PointCode, pendingStops, _algorithmSettings.Current, retainAnchor: true);
+            var nextRouteVersion = checked(execution.RouteVersion + 1);
+            execution.Plan = execution.Plan with
+            {
+                RoutePlan = nextRoute, Stops = pendingStops, DeferredStops = [], RouteVersion = nextRouteVersion
+            };
+            _logger.LogInformation("取货已确认，第二段路径已生成 TaskId={TaskId} Vehicle={Vehicle} From={Point} To={Destination}",
+                plan.TaskId, plan.VehicleId, stateAtPickup.PointCode, put.PointCode);
+
+            await RunReportedStageAsync(stageChanged,
+                Stage(3, "VEHICLE_TO_DROPOFF", "放货任务", fetch.PointCode, put.PointCode, "", plan.VehicleId),
+                async () => { await ExecuteCurrentStageAsync(execution, false, token); return execution.CommandId; });
+            await RunReportedStageAsync(stageChanged,
+                Stage(4, "DROPOFF_ACTION", "放货命令", put.PointCode, put.PointCode, put.Action, plan.VehicleId),
+                () => ExecuteStationActionAsync(execution, put, token));
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested)
         {
             // 取消等待不代表车已停。发送 STOP 并确认完成后，任务服务才能释放车辆。
-            if (accepted)
+            var state = Vehicle(plan.VehicleId);
+            if (execution.HasAcceptedCommand && state.TaskId == plan.TaskId && state.Status is "Running" or "Paused")
             {
                 await execution.WindowGate.WaitAsync(CancellationToken.None);
                 try
@@ -133,6 +221,7 @@ public sealed class RcsTaskExecutionService : IRcsTaskExecutionService, IDisposa
                     _current.Remove(plan.VehicleId);
             }
             _traffic.SetVehicleGoals(plan.VehicleId, []);
+            _inventory.Release(plan.TaskId);
         }
     }
 
@@ -251,56 +340,74 @@ public sealed class RcsTaskExecutionService : IRcsTaskExecutionService, IDisposa
         catch (OperationCanceledException) when (execution.Token.IsCancellationRequested) { return; }
         try
         {
-            if (execution.Token.IsCancellationRequested) return;
-            var state = Vehicle(execution.Plan.VehicleId);
-            if (state.Status != "Running" || state.TaskId != execution.Plan.TaskId
-                || state.RouteVersion != execution.RouteVersion || state.RouteIndex < 1) return;
-            var currentIndex = state.RouteIndex - 1;
-            if (!HasNextSegment(execution.Plan.RoutePlan, execution.SegmentIndex)) return;
-            var nextSegmentIndex = execution.SegmentIndex + 1;
-            var nextSegment = execution.Plan.RoutePlan.Segments[nextSegmentIndex];
-            // The algorithm encodes the configured advance threshold in the next segment's offset.
-            if (currentIndex < nextSegment.StartPointOffset) return;
-            var nextVersion = checked(execution.RouteVersion + 1);
-            IAlgorithmRouteLease lockLease;
-            if (!_traffic.TryAcquireRouteWindow(execution.Plan.Map, execution.Plan.VehicleId, execution.Plan.TaskId,
-                nextSegment.Points, nextSegment.StartPointOffset, nextVersion, out var immediateLease, out _))
+            for (var attempt = 0; attempt < 3; attempt++)
             {
-                if (await TryAutomaticReplanAsync(execution, state)) return;
-                lockLease = await _traffic.AcquireRouteWindowAsync(execution.Plan.Map, execution.Plan.VehicleId,
-                    execution.Plan.TaskId, nextSegment.Points, nextSegment.StartPointOffset, nextVersion, execution.Token);
-            }
-            else lockLease = immediateLease!;
-            using (lockLease)
-            {
-            var command = new VehicleCommand
-            {
-                CommandId = Guid.NewGuid().ToString("N"), VehicleId = execution.Plan.VehicleId,
-                TaskId = execution.Plan.TaskId, Type = VehicleCommandType.SlideRoute, RouteVersion = nextVersion,
-                RoutePointOffset = nextSegment.StartPointOffset, TotalRoutePoints = execution.Plan.Points.Count,
-                HasMorePoints = HasNextSegment(execution.Plan.RoutePlan, nextSegmentIndex),
-                ContainerCode = execution.Plan.ContainerCode, ExpectedPointCode = state.PointCode, Points = nextSegment.Points
-            };
-            var ack = await _channel.SendAsync(command, execution.Token);
-            if (!ack.Accepted)
-            {
-                var latest = Vehicle(execution.Plan.VehicleId);
-                if (latest.Status == "Running" && latest.TaskId == execution.Plan.TaskId
-                    && latest.RouteVersion == execution.RouteVersion && latest.RouteIndex != state.RouteIndex)
+                if (execution.Token.IsCancellationRequested) return;
+                var state = Vehicle(execution.Plan.VehicleId);
+                if (state.Status != "Running" || state.TaskId != execution.Plan.TaskId
+                    || state.RouteVersion != execution.RouteVersion || state.RouteIndex < 1) return;
+                var currentIndex = state.RouteIndex - 1;
+                if (!HasNextSegment(execution.Plan.RoutePlan, execution.SegmentIndex)) return;
+                var nextSegmentIndex = execution.SegmentIndex + 1;
+                var nextSegment = execution.Plan.RoutePlan.Segments[nextSegmentIndex];
+                // The algorithm's segment offset is the advance threshold. If the vehicle has already
+                // passed that anchor, rebase the same size window on its latest confirmed point.
+                if (currentIndex < nextSegment.StartPointOffset) return;
+                var windowPoints = execution.Plan.Points.Skip(currentIndex).Take(nextSegment.Points.Count).ToArray();
+                if (windowPoints.Length == 0) return;
+                var nextVersion = checked(execution.RouteVersion + 1);
+                IAlgorithmRouteLease lockLease;
+                if (!_traffic.TryAcquireRouteWindow(execution.Plan.Map, execution.Plan.VehicleId, execution.Plan.TaskId,
+                    windowPoints, currentIndex, nextVersion, out var immediateLease, out _))
                 {
-                    // The vehicle advanced during transport. A fresh state event will send a window anchored at its newer point.
+                    if (await TryAutomaticReplanAsync(execution, state)) return;
+                    lockLease = await _traffic.AcquireRouteWindowAsync(execution.Plan.Map, execution.Plan.VehicleId,
+                        execution.Plan.TaskId, windowPoints, currentIndex, nextVersion, execution.Token);
+                }
+                else lockLease = immediateLease!;
+                using (lockLease)
+                {
+                    // Acquiring traffic locks can wait while this vehicle continues on its current
+                    // window. Never send a continuation whose anchor is stale by the time it is ready.
+                    var latest = Vehicle(execution.Plan.VehicleId);
+                    if (latest.Status != "Running" || latest.TaskId != execution.Plan.TaskId
+                        || latest.RouteVersion != execution.RouteVersion) return;
+                    if (latest.RouteIndex != state.RouteIndex || latest.PointCode != state.PointCode)
+                        continue;
+
+                    var command = new VehicleCommand
+                    {
+                        CommandId = Guid.NewGuid().ToString("N"), VehicleId = execution.Plan.VehicleId,
+                        TaskId = execution.Plan.TaskId, Type = VehicleCommandType.SlideRoute, RouteVersion = nextVersion,
+                        RoutePointOffset = currentIndex, TotalRoutePoints = execution.Plan.Points.Count,
+                        HasMorePoints = currentIndex + windowPoints.Length < execution.Plan.Points.Count,
+                        ContainerCode = execution.Plan.ContainerCode, ExpectedPointCode = state.PointCode, Points = windowPoints
+                    };
+                    var ack = await _channel.SendAsync(command, execution.Token);
+                    if (!ack.Accepted)
+                    {
+                        var afterSend = Vehicle(execution.Plan.VehicleId);
+                        if (afterSend.Status == "Running" && afterSend.TaskId == execution.Plan.TaskId
+                            && afterSend.RouteVersion == execution.RouteVersion
+                            && (afterSend.RouteIndex != state.RouteIndex || afterSend.PointCode != state.PointCode))
+                        {
+                            // The vehicle advanced during transport; retry using its confirmed point.
+                            continue;
+                        }
+                        throw new InvalidOperationException(ack.Message);
+                    }
+                    lockLease.Commit();
+                    PublishCurrentState(execution.Plan.VehicleId);
+                    execution.SegmentIndex = nextSegmentIndex;
+                    execution.RouteVersion = nextVersion;
+                    _logger.LogInformation("算法路径段已续发 TaskId={TaskId} Vehicle={Vehicle} RouteVersion={Version} Segment={Segment}/{Count} Offset={Offset} Points={Points}",
+                        execution.Plan.TaskId, execution.Plan.VehicleId, nextVersion, nextSegmentIndex + 1,
+                        execution.Plan.RoutePlan.Segments.Count, currentIndex, windowPoints.Length);
                     return;
                 }
-                throw new InvalidOperationException(ack.Message);
             }
-            lockLease.Commit();
-            PublishCurrentState(execution.Plan.VehicleId);
-            execution.SegmentIndex = nextSegmentIndex;
-            execution.RouteVersion = nextVersion;
-            _logger.LogInformation("算法路径段已续发 TaskId={TaskId} Vehicle={Vehicle} RouteVersion={Version} Segment={Segment}/{Count} Offset={Offset} Points={Points}",
-                execution.Plan.TaskId, execution.Plan.VehicleId, nextVersion, nextSegmentIndex + 1,
-                execution.Plan.RoutePlan.Segments.Count, nextSegment.StartPointOffset, nextSegment.Points.Count);
-            }
+            _logger.LogDebug("续发时车辆连续前进，等待新位置事件 TaskId={TaskId} Vehicle={Vehicle}",
+                execution.Plan.TaskId, execution.Plan.VehicleId);
         }
         catch (OperationCanceledException) when (execution.Token.IsCancellationRequested) { }
         catch (Exception ex)
@@ -318,6 +425,84 @@ public sealed class RcsTaskExecutionService : IRcsTaskExecutionService, IDisposa
         }
         finally { execution.WindowGate.Release(); }
     }
+
+    private async Task<string?> ExecuteStationActionAsync(Execution execution, RcsTaskStop stop, CancellationToken token)
+    {
+        var commandId = Guid.NewGuid().ToString("N");
+        execution.CommandId = commandId;
+        execution.RouteUpdateError = null;
+        await execution.WindowGate.WaitAsync(token);
+        try
+        {
+            var state = Vehicle(execution.Plan.VehicleId);
+            if (state.Status != "Arrived" || state.TaskId != execution.Plan.TaskId || state.PointCode != stop.PointCode)
+                throw new InvalidOperationException($"车辆未确认到达动作站点 {stop.PointCode}。");
+            await SendCheckedAsync(new VehicleCommand
+            {
+                CommandId = commandId, VehicleId = execution.Plan.VehicleId, TaskId = execution.Plan.TaskId,
+                Type = VehicleCommandType.ExecuteAction, RouteVersion = execution.RouteVersion,
+                Action = stop.Action, ActionStepId = stop.StepId, ExpectedPointCode = stop.PointCode,
+                ContainerCode = execution.Plan.ContainerCode
+            }, token);
+            execution.HasAcceptedCommand = true;
+            PublishCurrentState(execution.Plan.VehicleId);
+        }
+        finally { execution.WindowGate.Release(); }
+
+        var result = await _channel.WaitForCompletionAsync(execution.Plan.VehicleId, commandId, token);
+        if (result.Status != "COMPLETED") throw new InvalidOperationException(result.Message);
+        var confirmed = Vehicle(execution.Plan.VehicleId);
+        if (confirmed.TaskId != execution.Plan.TaskId || confirmed.PointCode != stop.PointCode
+            || !confirmed.CompletedStepIds.Contains(stop.StepId, StringComparer.Ordinal)
+            || confirmed.LastAction != stop.Action)
+            throw new InvalidOperationException($"车辆未确认在 {stop.PointCode} 完成 {stop.Action} 命令。");
+
+        // Persist inventory only after the protocol reports the action completed.
+        await _inventory.ApplyCompletedActionAsync(execution.Plan, stop, token);
+        PublishCurrentState(execution.Plan.VehicleId);
+        return commandId;
+    }
+
+    private static RcsTaskExecutionStageDto Stage(int sequence, string code, string name, string from,
+        string to, string action, string vehicleId) => new()
+    {
+        Sequence = sequence, StageCode = code, Name = name,
+        FromPointCode = from, ToPointCode = to, Action = action, VehicleId = vehicleId
+    };
+
+    private static async Task RunReportedStageAsync(Func<RcsTaskExecutionStageDto, Task>? stageChanged,
+        RcsTaskExecutionStageDto stage, Func<Task<string?>> execute)
+    {
+        var startedAt = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss", System.Globalization.CultureInfo.InvariantCulture);
+        if (stageChanged is not null)
+            await stageChanged(stage with { Status = RcsTaskExecutionStageStatus.Running, StartedAt = startedAt, Message = "执行中" });
+        try
+        {
+            var commandId = await execute();
+            if (stageChanged is not null)
+                await stageChanged(stage with
+                {
+                    Status = RcsTaskExecutionStageStatus.Completed, CommandId = commandId ?? "",
+                    StartedAt = startedAt,
+                    FinishedAt = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss", System.Globalization.CultureInfo.InvariantCulture),
+                    Message = "车辆已确认完成"
+                });
+        }
+        catch (Exception ex)
+        {
+            if (stageChanged is not null)
+                await stageChanged(stage with
+                {
+                    Status = ex is OperationCanceledException ? RcsTaskExecutionStageStatus.Cancelled : RcsTaskExecutionStageStatus.Failed,
+                    StartedAt = startedAt,
+                    FinishedAt = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss", System.Globalization.CultureInfo.InvariantCulture),
+                    Message = ex.Message
+                });
+            throw;
+        }
+    }
+
+    private void OnInventoryChanged() => _inventoryChanged?.Invoke();
 
     private VehicleStateDto Vehicle(string id) => _channel.GetStates().FirstOrDefault(x => string.Equals(x.Id, id, StringComparison.OrdinalIgnoreCase))
         ?? throw new ArgumentException($"车辆 {id} 不存在。");
@@ -488,16 +673,21 @@ public sealed class RcsTaskExecutionService : IRcsTaskExecutionService, IDisposa
     private static bool HasNextSegment(AlgorithmRoutePlanDto routePlan, int currentSegmentIndex) =>
         currentSegmentIndex + 1 < routePlan.Segments.Count;
 
-    public void Dispose() => _channel.StateChanged -= OnVehicleStateChanged;
+    public void Dispose()
+    {
+        _channel.StateChanged -= OnVehicleStateChanged;
+        _inventory.InventoryChanged -= OnInventoryChanged;
+    }
 
     private sealed class Execution(RcsTaskExecutionPlan plan, string commandId, CancellationToken token)
     {
         public RcsTaskExecutionPlan Plan { get; set; } = plan;
-        public string CommandId { get; } = commandId;
+        public string CommandId { get; set; } = commandId;
         public CancellationToken Token { get; } = token;
         public SemaphoreSlim WindowGate { get; } = new(1, 1);
         public int SegmentIndex { get; set; }
         public int RouteVersion { get; set; } = plan.RouteVersion;
+        public bool HasAcceptedCommand { get; set; }
         public Exception? RouteUpdateError { get; set; }
     }
 }

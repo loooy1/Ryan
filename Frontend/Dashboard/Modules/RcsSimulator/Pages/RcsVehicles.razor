@@ -53,6 +53,10 @@
                 <section class="detail-section">
                     <h3>车辆配置</h3>
                     <label>车辆名称<input @bind="_editName" @bind:event="oninput" @bind:after="MarkDirty" maxlength="128" disabled="@_busy" /></label>
+                    <label>车辆协议<select @bind="_editProtocol" @bind:after="MarkDirty" disabled="@_busy">
+                        @foreach (var protocol in _protocols) { <option value="@protocol.Code">@protocol.Name (@protocol.Code)</option> }
+                    </select></label>
+                    @if (_editProtocol != car.Protocol) { <small class="protocol-hint">切换协议会重建车辆会话；仅空闲且未载货时可保存。</small> }
                     <label>当前位置<select @bind="_editPointCode" @bind:after="MarkPositionDirty" disabled="@(_busy || car.Status is "Running" or "Paused")"><option value="">未定位</option>@foreach (var point in MapPoints) { <option value="@point.PointCode">@point.PointCode · @point.PointName</option> }</select></label>
                     <button class="wide position-save" @onclick="SetCurrentPositionAsync" disabled="@(_busy || !_positionDirty || car.Status is "Running" or "Paused")">设置当前位置</button>
                     <label class="check-label"><input type="checkbox" @bind="_editEnabled" @bind:after="MarkDirty" disabled="@_busy" />允许分配新任务</label>
@@ -77,6 +81,7 @@
                 <p class="modal-intro">每台车辆独立执行任务，可选择初始地图站点。</p>
                 <label>车辆编号<input @bind="_newId" @bind:event="oninput" placeholder="例如 V-02" maxlength="64" disabled="@_busy" /></label>
                 <label>车辆名称<input @bind="_newName" @bind:event="oninput" placeholder="例如 虚拟车 02" maxlength="128" disabled="@_busy" /></label>
+                <label>车辆协议<select @bind="_newProtocol" disabled="@_busy">@foreach (var protocol in _protocols) { <option value="@protocol.Code">@protocol.Name (@protocol.Code)</option> }</select></label>
                 <label>当前位置<select @bind="_newPoint" disabled="@_busy"><option value="">未定位</option>@foreach (var point in MapPoints) { <option value="@point.PointCode">@point.PointCode · @point.PointName</option> }</select></label>
                 <label class="check-label"><input type="checkbox" @bind="_newEnabled" disabled="@_busy" />允许分配任务</label>
                 @if (_modalError != "") { <div class="fleet-feedback error" role="alert">@_modalError</div> }
@@ -89,8 +94,10 @@
 @code {
     private readonly CancellationTokenSource _lifetime = new();
     private readonly Dictionary<string, VehicleStateDto> _vehicles = new(StringComparer.OrdinalIgnoreCase);
+    private IReadOnlyList<VehicleProtocolInfoDto> _protocols = [];
     private RcsMapSnapshot? _map;
     private string _selectedId = "", _editName = "", _editPointCode = "";
+    private string _editProtocol = "VIRTUAL", _newProtocol = "VIRTUAL";
     private string _newId = "", _newName = "", _newPoint = "", _feedback = "", _modalError = "";
     private bool _editEnabled = true, _newEnabled = true, _loading, _busy, _error, _showAdd, _confirmDelete, _dirty, _positionDirty, _disposed;
     private VehicleStateDto? Selected => _vehicles.GetValueOrDefault(_selectedId);
@@ -113,6 +120,8 @@
         try
         {
             ApplyFleet(await Api.GetVehiclesAsync(_lifetime.Token));
+            _protocols = await Api.GetVehicleProtocolsAsync(_lifetime.Token);
+            if (_protocols.Count > 0 && !_protocols.Any(x => x.Code == _newProtocol)) _newProtocol = _protocols[0].Code;
             try { _map = await Api.GetMapAsync(_lifetime.Token); } catch { _map = null; }
             if (!_disposed && !Realtime.IsConnected)
             {
@@ -130,21 +139,21 @@
         if (!_vehicles.ContainsKey(_selectedId)) SelectVehicle(OrderedVehicles.FirstOrDefault()?.Id ?? "");
         else if (Selected is { } car)
         {
-            if (!_dirty) { _editName = car.Name; _editEnabled = car.IsEnabled; }
+            if (!_dirty) { _editName = car.Name; _editEnabled = car.IsEnabled; _editProtocol = car.Protocol; }
             if (!_positionDirty) _editPointCode = car.PointCode;
         }
     }
     private void SelectVehicle(string id)
     {
         _selectedId = id; _confirmDelete = false; _dirty = false; _positionDirty = false;
-        if (Selected is { } car) { _editName = car.Name; _editEnabled = car.IsEnabled; _editPointCode = car.PointCode; }
+        if (Selected is { } car) { _editName = car.Name; _editEnabled = car.IsEnabled; _editPointCode = car.PointCode; _editProtocol = car.Protocol; }
     }
     private void MarkDirty() => _dirty = true;
     private void MarkPositionDirty() => _positionDirty = true;
     private void OpenAdd()
     {
         var number = 1; while (_vehicles.ContainsKey($"V-{number:00}")) number++;
-        _newId = $"V-{number:00}"; _newName = $"虚拟车 {number:00}"; _newPoint = ""; _newEnabled = true; _modalError = ""; _showAdd = true;
+        _newId = $"V-{number:00}"; _newName = $"虚拟车 {number:00}"; _newPoint = ""; _newEnabled = true; _newProtocol = _protocols.FirstOrDefault()?.Code ?? "VIRTUAL"; _modalError = ""; _showAdd = true;
     }
     private void CloseAdd() { if (!_busy) _showAdd = false; }
     private async Task AddAsync()
@@ -153,7 +162,7 @@
         _busy = true; _modalError = "";
         try
         {
-            var state = await Api.AddVehicleAsync(new() { Id = _newId.Trim(), Name = _newName.Trim(), PointCode = _newPoint, IsEnabled = _newEnabled }, _lifetime.Token)
+            var state = await Api.AddVehicleAsync(new() { Id = _newId.Trim(), Name = _newName.Trim(), PointCode = _newPoint, IsEnabled = _newEnabled, Protocol = _newProtocol }, _lifetime.Token)
                 ?? throw new InvalidOperationException("RCS 未返回新车辆。");
             _showAdd = false; _vehicles[state.Id] = state; SelectVehicle(state.Id); Feedback($"车辆 {state.Id} 已添加。");
         }
@@ -163,7 +172,7 @@
     }
     private async Task SaveDefinitionAsync() => await ActAsync(async () =>
     {
-        var state = await Api.UpdateVehicleAsync(_selectedId, new() { Name = _editName, IsEnabled = _editEnabled }, _lifetime.Token);
+        var state = await Api.UpdateVehicleAsync(_selectedId, new() { Name = _editName, IsEnabled = _editEnabled, Protocol = _editProtocol }, _lifetime.Token);
         _dirty = false; if (state is not null) _vehicles[state.Id] = state; Feedback("车辆配置已保存。");
     });
     private async Task SetCurrentPositionAsync() => await ActAsync(async () =>
@@ -203,7 +212,7 @@
     private static string PointText(VehicleStateDto car) => car.PointCode == "" ? "未定位" : car.PointCode;
     private static string ModeText(VehicleStateDto car) => car.OperatingMode == RcsOperatingMode.Manual ? "手动" : "自动";
     private static string StatusClass(VehicleStateDto car) => !car.IsEnabled ? "off" : car.Status.ToLowerInvariant();
-    private static string StatusText(VehicleStateDto car) => (car.Status switch { "Running" => "运行中", "Paused" => "已暂停", "Arrived" => "已到达", _ => "空闲" }) + (!car.IsEnabled ? " · 停用" : "");
+    private static string StatusText(VehicleStateDto car) => (car.Status switch { "Running" => "运行中", "Paused" => "已暂停", "Arrived" => "已到达", "ProtocolUnavailable" => "协议未注册", _ => "空闲" }) + (!car.IsEnabled ? " · 停用" : "");
     public ValueTask DisposeAsync()
     {
         _disposed = true; _lifetime.Cancel();

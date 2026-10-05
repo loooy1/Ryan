@@ -3,6 +3,7 @@ namespace Contracts.Rcs.Protocol;
 public static class VehicleCommandType
 {
     public const string Move = "MOVE";
+    public const string ExecuteAction = "EXECUTE_ACTION";
     public const string UpdateRoute = "UPDATE_ROUTE";
     public const string SlideRoute = "SLIDE_ROUTE";
     public const string Stop = "STOP";
@@ -36,6 +37,9 @@ public sealed record VehicleCommand
     public string VehicleId { get; init; } = "V-01";
     public string TaskId { get; init; } = "";
     public string Type { get; init; } = VehicleCommandType.Move;
+    /// <summary>Standalone station action; used only with EXECUTE_ACTION, never embedded in path points.</summary>
+    public string Action { get; init; } = "";
+    public string ActionStepId { get; init; } = "";
     public int RouteVersion { get; init; }
     /// <summary>Zero-based index of Points[0] in the complete planned route.</summary>
     public int RoutePointOffset { get; init; }

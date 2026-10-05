@@ -36,7 +36,7 @@
                 <svg aria-hidden="true"></svg>
                 @if (_showMoveDialog && SelectedVehicle is { } movingCar)
                 {
-                    <RcsMoveTaskDialog @key="movingCar.Id" @ref="_moveTaskDialog" Vehicle="movingCar" Warehouse="@(_editor?.SceneName ?? "")" Points="VehiclePoints" Disabled="@(_saving || _dirty)"
+                    <RcsMoveTaskDialog @key="movingCar.Id" @ref="_moveTaskDialog" Vehicle="movingCar" Warehouse="@(_editor?.SceneName ?? "")" MapCode="@(_editor?.MapCode ?? "")" Points="VehiclePoints" Disabled="@(_saving || _dirty)"
                         PointsChanged="OnMovePointsChanged" BusyChanged="OnVehicleBusyChanged" Completed="OnMoveCompleted" CloseRequested="CloseMoveDialog" />
                 }
                 @if (_pickMenuOpen)
@@ -150,6 +150,7 @@
         Realtime.VehicleStateChanged += OnVehicleStateChanged;
         Realtime.VehiclesChanged += OnVehiclesChanged;
         Realtime.TaskChanged += OnTaskChanged;
+        Realtime.InventoryChanged += OnInventoryChangedRealtime;
         Realtime.Reconnected += OnReconnected;
         await RefreshVehiclesAsync();
         await RefreshTasksAsync();
@@ -264,6 +265,11 @@
         _canvasDirty = true;
         StateHasChanged();
     }
+    private void OnInventoryChangedRealtime() => _ = InvokeAsync(async () =>
+    {
+        if (_disposed) return;
+        await OnInventoryChanged();
+    });
     private async Task RefreshInventoryAsync()
     {
         _inventoryError = "";
@@ -449,13 +455,13 @@
     {
         _feedback = message; _feedbackError = false; await RefreshVehiclesAsync();
     }
-    private static string VehicleStatus(VehicleStateDto vehicle) => (vehicle.Status switch { "Running" => "运行中", "Paused" => "已暂停", "Arrived" => "已到达", _ => "空闲" }) + (vehicle.IsEnabled ? "" : " · 停用");
+    private static string VehicleStatus(VehicleStateDto vehicle) => (vehicle.Status switch { "Running" => "运行中", "Paused" => "已暂停", "Arrived" => "已到达", "ProtocolUnavailable" => "协议未注册", _ => "空闲" }) + (vehicle.IsEnabled ? "" : " · 停用");
     private Task ZoomIn() => Js.InvokeVoidAsync("grcsMapEditorZoomHost", HostId, 1.2).AsTask();
     private Task ZoomOut() => Js.InvokeVoidAsync("grcsMapEditorZoomHost", HostId, 1 / 1.2).AsTask();
     private Task FitMap() => Js.InvokeVoidAsync("grcsMapEditorFitHost", HostId).AsTask();
     public async ValueTask DisposeAsync()
     {
-        _disposed = true; Realtime.VehicleStateChanged -= OnVehicleStateChanged;
+        _disposed = true; Realtime.VehicleStateChanged -= OnVehicleStateChanged; Realtime.InventoryChanged -= OnInventoryChangedRealtime;
         Realtime.VehiclesChanged -= OnVehiclesChanged;
         Realtime.TaskChanged -= OnTaskChanged;
         Realtime.Reconnected -= OnReconnected;

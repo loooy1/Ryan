@@ -1,6 +1,7 @@
 using Contracts.Rcs.Tasks;
 using Microsoft.AspNetCore.Mvc;
 using RCSBackend.Modules.Rcs.Application.Tasks;
+using System.Text.Json;
 
 namespace RCSBackend.Modules.Rcs.Api;
 
@@ -8,8 +9,21 @@ namespace RCSBackend.Modules.Rcs.Api;
 public sealed class RcsTasksController(IRcsTaskService tasks) : ControllerBase
 {
     [HttpPost("/api/v1/task_receive")]
-    public async Task<ActionResult<RcsTaskReceiveResponse>> Receive([FromBody] RcsUpstreamTaskReceiveRequest request, CancellationToken token)
+    public async Task<ActionResult<RcsTaskReceiveResponse>> Receive([FromBody] JsonDocument payload, CancellationToken token)
     {
+        var originalRequestJson = payload.RootElement.GetRawText();
+        RcsUpstreamTaskReceiveRequest? request;
+        try
+        {
+            request = JsonSerializer.Deserialize<RcsUpstreamTaskReceiveRequest>(
+                originalRequestJson, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+        }
+        catch (JsonException ex)
+        {
+            return BadRequest(Error($"请求 JSON 格式无效：{ex.Message}"));
+        }
+        if (request is null) return BadRequest(Error("请求正文不能为空。"));
+
         var normalized = new RcsTaskReceiveRequest
         {
             GroupId = request.GroupId,
@@ -25,7 +39,7 @@ public sealed class RcsTasksController(IRcsTaskService tasks) : ControllerBase
                 AreaCode = task.AreaCode
             }).ToList() ?? []
         };
-        try { return Ok(await tasks.ReceiveAsync(normalized, token)); }
+        try { return Ok(await tasks.ReceiveAsync(normalized, originalRequestJson, token)); }
         catch (ArgumentException ex) { return BadRequest(Error(ex.Message)); }
         catch (RcsTaskConflictException ex) { return Conflict(Error(ex.Message)); }
     }

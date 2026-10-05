@@ -12,6 +12,13 @@ namespace RCSBackend.Modules.Rcs.Api;
 public sealed class RcsVehiclesController(RcsVehicleService vehicles, IRcsTaskService tasks,
     RcsSimulationService simulation) : ControllerBase
 {
+    [HttpGet("protocols")]
+    public async Task<ActionResult<IReadOnlyList<VehicleProtocolInfoDto>>> Protocols(CancellationToken token)
+    {
+        await vehicles.ListAsync(token);
+        return Ok(vehicles.SupportedProtocols);
+    }
+
     [HttpGet]
     public async Task<ActionResult<IReadOnlyList<VehicleStateDto>>> List(CancellationToken token)
     {

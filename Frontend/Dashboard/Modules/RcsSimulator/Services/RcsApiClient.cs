@@ -97,6 +97,12 @@ public sealed class RcsApiClient
         return await response.Content.ReadFromJsonAsync<VehicleStateDto[]>(cancellationToken: token)
             ?? throw new InvalidOperationException("RCS 未返回有效车辆列表。");
     }
+    public async Task<IReadOnlyList<VehicleProtocolInfoDto>> GetVehicleProtocolsAsync(CancellationToken token = default)
+    {
+        using var response = await _http.GetAsync(U("/api/rcs/vehicles/protocols"), token);
+        await EnsureSuccessAsync(response, token);
+        return await response.Content.ReadFromJsonAsync<VehicleProtocolInfoDto[]>(cancellationToken: token) ?? [];
+    }
     public async Task<IReadOnlyList<RcsTaskDto>> GetTasksAsync(int limit = 500, CancellationToken token = default)
     {
         using var response = await _http.GetAsync(U($"/api/rcs/tasks?limit={Math.Clamp(limit, 1, 500)}"), token);

@@ -14,6 +14,7 @@ public sealed class RcsRealtimeHubClient : IAsyncDisposable
     public event Action<VehicleStateDto>? VehicleStateChanged;
     public event Action<IReadOnlyList<VehicleStateDto>>? VehiclesChanged;
     public event Action<RcsTaskDto>? TaskChanged;
+    public event Action? InventoryChanged;
     public event Action? Reconnected;
 
     public void SetBaseUrl(string url) => _baseUrl = url.Trim().TrimEnd('/');
@@ -45,6 +46,7 @@ public sealed class RcsRealtimeHubClient : IAsyncDisposable
         _connection.On<VehicleStateDto>("VehicleStateChanged", state => VehicleStateChanged?.Invoke(state));
         _connection.On<VehicleStateDto[]>("VehiclesChanged", states => VehiclesChanged?.Invoke(states));
         _connection.On<RcsTaskDto>("TaskChanged", task => TaskChanged?.Invoke(task));
+        _connection.On("InventoryChanged", () => InventoryChanged?.Invoke());
         _connection.Reconnected += _ => { Reconnected?.Invoke(); return Task.CompletedTask; };
         _connectedUrl = url;
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));

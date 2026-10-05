@@ -1,6 +1,7 @@
 @using Contracts.Rcs.Map
 @using Contracts.Rcs.Vehicle
 @using Contracts.Rcs.Tasks
+@using Contracts.Rcs.Inventory
 @inject RcsApiClient Api
 @implements IDisposable
 
@@ -11,8 +12,8 @@
     <p class="intro">输入站点编码，或点选地图上的站点；每个站点可单独指定动作。任务直接下发给该车，不进入调度队列。</p>
     <div class="point-field @(_pickField == "start" ? "active start" : "")">
         <label for="move-start-point"><span class="point-dot start"></span>起点站点</label>
-        <div class="point-input"><input id="move-start-point" aria-label="移动任务起点" list="move-task-stations" maxlength="128" placeholder="输入起点编码" @bind="_start" @bind:event="oninput" @bind:after="NotifyPointsChanged" @onfocus='() => ChooseField("start")' disabled="@IsBusy" /><button @onclick='() => ChooseField("start")' aria-label="点选起点" aria-pressed="@(_pickField == "start")" disabled="@IsBusy">◎ 点选</button></div>
-        <label class="action-field">动作<select @bind="_startAction" disabled="@IsBusy"><option value="move">移动</option><option value="fetch">取货</option><option value="put">放货</option></select></label>
+        <div class="point-input"><input id="move-start-point" aria-label="移动任务起点" list="move-task-stations" maxlength="128" placeholder="输入起点编码" @bind="_start" @bind:event="oninput" @bind:after="OnStartChangedAsync" @onfocus='() => ChooseField("start")' disabled="@IsBusy" /><button @onclick='() => ChooseField("start")' aria-label="点选起点" aria-pressed="@(_pickField == "start")" disabled="@IsBusy">◎ 点选</button></div>
+        <label class="action-field">动作<select @bind="_startAction" @bind:after="OnStartActionChangedAsync" disabled="@IsBusy"><option value="move">移动</option><option value="fetch">取货</option><option value="put">放货</option></select></label>
     </div>
     <div class="point-field @(_pickField == "end" ? "active end" : "")">
         <label for="move-end-point"><span class="point-dot end"></span>终点站点</label>
@@ -21,7 +22,16 @@
     </div>
     @if (RequiresContainer)
     {
-        <label class="container-field">货物 / 托盘编码<input @bind="_containerCode" @bind:event="oninput" maxlength="128" placeholder="输入容器编码" disabled="@IsBusy" /></label>
+        @if (_startAction == "fetch")
+        {
+            <label class="container-field">起点库存<select value="@_selectedItemCode" @onchange="SelectInventoryItem" disabled="@(IsBusy || _loadingInventory)">
+                <option value="">@(_loadingInventory ? "正在读取库存…" : "选择起点货物或托盘")</option>
+                @foreach (var item in _availableItems) { <option value="@item.Instance.InstanceCode">@item.Label</option> }
+            </select></label>
+            @if (!_loadingInventory && Points.Any(p => p.PointCode == _start) && _availableItems.Count == 0)
+            { <div class="move-error">起点没有可用货物或托盘，请先在库存实例中放置库存。</div> }
+        }
+        <label class="container-field">货物 / 托盘编码<input @bind="_containerCode" @bind:event="oninput" maxlength="128" placeholder="选择起点库存后自动填写" readonly="@(_selectedItemCode != "")" disabled="@IsBusy" /></label>
     }
     <datalist id="move-task-stations">@foreach (var point in Points) { <option value="@point.PointCode">@point.PointName</option> }</datalist>
     <div class="pick-hint"><span>◎</span>点击地图站点填写@(_pickField == "start" ? "起点" : "终点")</div>
@@ -33,6 +43,7 @@
 @code {
     [Parameter, EditorRequired] public VehicleStateDto Vehicle { get; set; } = new();
     [Parameter] public string Warehouse { get; set; } = "";
+    [Parameter] public string MapCode { get; set; } = "";
     [Parameter] public IEnumerable<RcsMapNode> Points { get; set; } = [];
     [Parameter] public bool Disabled { get; set; }
     [Parameter] public EventCallback<RunVehicleRequest> PointsChanged { get; set; }
@@ -42,15 +53,18 @@
     private readonly CancellationTokenSource _lifetime = new();
     private string _vehicleId = "", _start = "", _end = "", _pickField = "end", _error = "", _containerCode = "";
     private string _startAction = "move", _endAction = "move", _scene = "";
-    private bool _busy, _disposed;
+    private IReadOnlyList<InventoryOption> _availableItems = [];
+    private string _inventoryContextKey = "", _selectedItemCode = "";
+    private bool _busy, _disposed, _loadingInventory;
     private bool IsBusy => _busy || Disabled;
     private bool RequiresContainer => _startAction is "fetch" or "put" || _endAction is "fetch" or "put";
-    protected override void OnParametersSet()
+    protected override async Task OnParametersSetAsync()
     {
         _scene = Warehouse;
         if (_vehicleId == Vehicle.Id) return;
         _vehicleId = Vehicle.Id; _start = Vehicle.PointCode; _end = "";
         _pickField = _start == "" ? "start" : "end";
+        await LoadAvailableInventoryAsync(force: true);
     }
     private void ChooseField(string field) { if (!IsBusy) _pickField = field; }
     private Task NotifyPointsChanged()
@@ -58,11 +72,58 @@
         _error = "";
         return PointsChanged.InvokeAsync(new() { StartPointCode = _start.Trim(), EndPointCode = _end.Trim() });
     }
+    private async Task OnStartChangedAsync()
+    {
+        _selectedItemCode = ""; _containerCode = "";
+        await NotifyPointsChanged();
+        await LoadAvailableInventoryAsync(force: true);
+    }
+    private async Task OnStartActionChangedAsync()
+    {
+        if (_startAction != "fetch") { _selectedItemCode = ""; _containerCode = ""; }
+        else await LoadAvailableInventoryAsync();
+    }
+    private async Task LoadAvailableInventoryAsync(bool force = false)
+    {
+        var context = $"{MapCode}\u001f{_start}";
+        if (!force && _inventoryContextKey == context && _availableItems.Count > 0) return;
+        _inventoryContextKey = context;
+        _availableItems = [];
+        if (string.IsNullOrWhiteSpace(MapCode) || string.IsNullOrWhiteSpace(_start)
+            || !Points.Any(p => string.Equals(p.PointCode, _start, StringComparison.OrdinalIgnoreCase))) return;
+        _loadingInventory = true;
+        try
+        {
+            var items = await Api.GetInventoryInstancesAsync(mapCode: MapCode, pointCode: _start, token: _lifetime.Token);
+            if (_disposed) return;
+            var topLevel = items.Where(x => x.Status == "AVAILABLE" && string.IsNullOrWhiteSpace(x.ParentInstanceCode)).ToArray();
+            _availableItems = topLevel.OrderBy(x => x.InstanceCode, StringComparer.OrdinalIgnoreCase).Select(item =>
+            {
+                if (item.ItemType == RcsInventoryItemTypes.Cargo)
+                    return new InventoryOption(item, $"散货 · {item.InstanceCode} · {item.ModelCode}");
+                var cargoCount = items.Count(x => x.ItemType == RcsInventoryItemTypes.Cargo
+                    && string.Equals(x.ParentInstanceCode, item.InstanceCode, StringComparison.OrdinalIgnoreCase));
+                return new InventoryOption(item, cargoCount > 0
+                    ? $"带货托盘（{cargoCount}件） · {item.InstanceCode} · {item.ModelCode}"
+                    : $"空托盘 · {item.InstanceCode} · {item.ModelCode}");
+            }).ToArray();
+        }
+        catch (OperationCanceledException) when (_disposed) { }
+        catch (Exception ex) { if (!_disposed) _error = $"读取起点库存失败：{ex.Message}"; }
+        finally { _loadingInventory = false; }
+    }
+    private void SelectInventoryItem(ChangeEventArgs args)
+    {
+        _selectedItemCode = args.Value?.ToString() ?? "";
+        _containerCode = _selectedItemCode;
+        if (_selectedItemCode != "") { _startAction = "fetch"; _endAction = "put"; }
+        _error = "";
+    }
     public async Task PickStationAsync(string code)
     {
         if (IsBusy || _disposed) return;
         if (!Points.Any(p => p.PointCode == code)) { _error = "该站点已禁用，不能作为任务起终点。"; StateHasChanged(); return; }
-        if (_pickField == "start") { _start = code; _pickField = "end"; }
+        if (_pickField == "start") { _start = code; _pickField = "end"; _selectedItemCode = ""; _containerCode = ""; await LoadAvailableInventoryAsync(force: true); }
         else _end = code;
         await NotifyPointsChanged(); StateHasChanged();
     }
@@ -76,6 +137,7 @@
         if (!Points.Any(p => p.PointCode == request.EndPointCode)) { _error = "终点不存在或已禁用。"; return; }
         if (request.StartPointCode == request.EndPointCode) { _error = "起点和终点不能相同。"; return; }
         if (RequiresContainer && string.IsNullOrWhiteSpace(_containerCode)) { _error = "起点或终点选择了取货/放货动作，请输入货物或托盘编码。"; return; }
+        if (RequiresContainer && (_startAction != "fetch" || _endAction != "put")) { _error = "库存搬运必须在起点取货，并在终点放货。"; return; }
         if (string.IsNullOrWhiteSpace(_scene)) { _error = "当前没有已加载地图场景，无法下发任务。"; return; }
         var id = Vehicle.Id; var token = _lifetime.Token;
         _busy = true; _error = ""; string? message = null;
@@ -99,5 +161,6 @@
         if (message is not null && !_disposed) await Completed.InvokeAsync(message);
     }
     private static string ActionText(string action) => action switch { "fetch" => "取货", "put" => "放货", _ => "移动" };
+    private sealed record InventoryOption(RcsInventoryInstanceDto Instance, string Label);
     public void Dispose() { _disposed = true; _lifetime.Cancel(); _lifetime.Dispose(); }
 }

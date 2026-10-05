@@ -5,7 +5,7 @@ using Rcs.Algorithms;
 
 namespace RCSBackend.Modules.Rcs.Application.Execution;
 
-/// <summary>使用缓存图引用计算路径，再将节点转换为车辆协议点。</summary>
+/// <summary>使用缓存图引用计算纯移动路径；站点取放动作由协议层独立下发。</summary>
 public sealed class RcsTaskRoutePlanner(IPathPlanningAlgorithm algorithm)
 {
     public static IReadOnlyList<RcsTaskStop> CreateStops(RcsTaskExecutionRequest request)
@@ -26,7 +26,12 @@ public sealed class RcsTaskRoutePlanner(IPathPlanningAlgorithm algorithm)
     {
         var route = algorithm.Plan(map, fleet, current,
             stops.Select(x => new AlgorithmRouteStopDto(x.PointCode)).ToArray(), settings, retainAnchor);
-        var points = route.TotalPath.ToArray();
+        var points = route.TotalPath.Select(point => point with
+        {
+            Action = VehiclePointAction.Move,
+            StepId = ""
+        }).ToArray();
+
         var searchFrom = 0;
         foreach (var stop in stops)
         {
@@ -34,11 +39,10 @@ public sealed class RcsTaskRoutePlanner(IPathPlanningAlgorithm algorithm)
                 point => string.Equals(point.PointCode, stop.PointCode, StringComparison.OrdinalIgnoreCase));
             if (index < 0)
                 throw new InvalidOperationException($"算法返回的路径没有经过目标站点 {stop.PointCode}。");
-            points[index] = points[index] with { Action = stop.Action, StepId = stop.StepId };
             searchFrom = index + 1;
         }
 
-        // The algorithm owns route geometry and segmentation; RCS overlays business actions afterward.
+        // Path commands contain only movement points. RCS sends station actions as separate commands.
         var segments = route.Segments.Select(segment => segment with
         {
             Points = points.Skip(segment.StartPointOffset).Take(segment.Points.Count).ToArray()

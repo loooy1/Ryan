@@ -60,13 +60,15 @@ public sealed class VirtualVehicleSimulator(string vehicleId = "V-01") : IVirtua
                     case VehicleCommandType.Move:
                         ValidateRoute(command);
                         if (_active is not null) throw new InvalidOperationException("车辆忙碌，不能用新 MOVE 覆盖当前任务。");
+                        var continuingTask = string.Equals(_taskId, command.TaskId, StringComparison.OrdinalIgnoreCase);
                         start = _active = new Run(command, receipt.Completion);
                         _taskId = command.TaskId; _commandId = command.CommandId;
                         _routeVersion = command.RouteVersion; _routeOffset = command.RoutePointOffset;
                         _routeLength = command.Points.Count; _routeIndex = 0;
                         _totalRouteLength = command.TotalRoutePoints == 0 ? command.Points.Count : command.TotalRoutePoints;
                         _lockPointCode = command.Points[^1].PointCode;
-                        _completedSteps.Clear(); _status = command.StartPaused ? "Paused" : "Running";
+                        if (!continuingTask) _completedSteps.Clear();
+                        _status = command.StartPaused ? "Paused" : "Running";
                         break;
                     case VehicleCommandType.UpdateRoute:
                         ValidateRoute(command);
@@ -88,6 +90,42 @@ public sealed class VirtualVehicleSimulator(string vehicleId = "V-01") : IVirtua
                         _routeLength = command.Points.Count; _routeIndex = 0;
                         _totalRouteLength = command.TotalRoutePoints == 0 ? command.Points.Count : command.TotalRoutePoints;
                         _lockPointCode = command.Points[^1].PointCode;
+                        break;
+                    case VehicleCommandType.ExecuteAction:
+                        if (_active is not null) throw new InvalidOperationException("车辆仍在移动，不能执行站点动作。");
+                        if (command.TaskId != _taskId) throw new InvalidOperationException("动作任务与车辆当前任务不一致。");
+                        if (_point is null || command.ExpectedPointCode != _point.PointCode)
+                            throw new InvalidOperationException("车辆未到达动作指定站点。");
+                        if (command.Action is not (VehiclePointAction.Fetch or VehiclePointAction.Put)
+                            || string.IsNullOrWhiteSpace(command.ActionStepId) || string.IsNullOrWhiteSpace(command.ContainerCode))
+                            throw new ArgumentException("独立动作命令必须包含 fetch/put、步骤编号和容器编码。");
+                        if (_completedSteps.TryGetValue(command.ActionStepId, out var completedAction))
+                        {
+                            if (completedAction.PointCode != _point.PointCode || completedAction.Action != command.Action)
+                                throw new InvalidOperationException("动作步骤已完成，但站点或动作与重复命令不一致。");
+                        }
+                        else
+                        {
+                            if (command.Action == VehiclePointAction.Fetch)
+                            {
+                                if (_cargo != "") throw new InvalidOperationException($"车上已有容器 {_cargo}，不能再次取货。");
+                                _cargo = command.ContainerCode;
+                            }
+                            else
+                            {
+                                if (_cargo != command.ContainerCode) throw new InvalidOperationException("车上容器与放货要求不一致。");
+                                _cargo = "";
+                            }
+                            _currentPointAction = _lastAction = command.Action;
+                            _currentPointStepId = command.ActionStepId;
+                            _completedSteps.Add(command.ActionStepId, new VehicleRoutePoint
+                            {
+                                PointCode = _point.PointCode, X = _point.X, Y = _point.Y, Z = _point.Z,
+                                Floor = _point.Floor, Action = command.Action, StepId = command.ActionStepId
+                            });
+                        }
+                        _commandId = command.CommandId;
+                        _status = "Arrived";
                         break;
                     case VehicleCommandType.SlideRoute:
                         ValidateRoute(command);
