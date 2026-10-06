@@ -35,7 +35,7 @@ public sealed class RcsMapStore
         if (map == null) return Task.FromResult<RcsMapSnapshot?>(null);
         var pointRows = uow.Repository<RcsMapPointRow>().Query().Where(x => x.MapCode == map.MapCode && x.IsEnabled).ToList();
         var points = pointRows.ToDictionary(x => x.PointCode,
-            x => new RcsMapNode(x.PointCode, x.PointName, x.PointType, x.X, x.Y, x.Z),
+            x => new RcsMapNode(x.PointCode, x.PointType, x.X, x.Y, x.Z),
             StringComparer.OrdinalIgnoreCase);
         var adjacency = points.Keys.ToDictionary(x => x, _ => new List<RcsMapEdge>(), StringComparer.OrdinalIgnoreCase);
         foreach (var line in uow.Repository<RcsMapLineRow>().Query().Where(x => x.MapCode == map.MapCode && x.IsEnabled).ToList())
@@ -100,7 +100,7 @@ public sealed class RcsMapStore
         foreach (var point in dto.Points)
             await points.AddAsync(new RcsMapPointRow
             {
-                MapCode = dto.MapCode, PointCode = point.PointCode, PointName = point.PointName,
+                MapCode = dto.MapCode, PointCode = point.PointCode,
                 PointType = point.PointType, X = point.X, Y = point.Y, Z = point.Z,
                 IsEnabled = point.IsEnabled, MetadataJson = point.MetadataJson,
                 CreatedAt = now, UpdatedAt = now
@@ -124,7 +124,7 @@ public sealed class RcsMapStore
         Description = map.Description,
         Points = points.Select(x => new RcsMapPointDto
         {
-            PointCode = x.PointCode, PointName = x.PointName, PointType = x.PointType,
+            PointCode = x.PointCode, PointType = x.PointType,
             X = x.X, Y = x.Y, Z = x.Z, IsEnabled = x.IsEnabled, MetadataJson = x.MetadataJson
         }).ToList(),
         Lines = lines.Select(x => new RcsMapLineDto

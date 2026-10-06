@@ -8,7 +8,7 @@ namespace RCSBackend.Modules.Rcs.Application.Execution;
 public sealed record RcsTaskExecutionPlan(string TaskId, string VehicleId, RcsMapSnapshot Map,
     AlgorithmRoutePlanDto RoutePlan, IReadOnlyList<RcsTaskStop> Stops, string ContainerCode, int RouteVersion = 1,
     bool SyncInventory = false, IReadOnlyList<RcsTaskStop>? DeferredStops = null,
-    IReadOnlyList<RcsTaskStop>? AllStops = null)
+    IReadOnlyList<RcsTaskStop>? AllStops = null, string Warehouse = "")
 {
     public IReadOnlyList<VehicleRoutePoint> Points => RoutePlan.TotalPath;
     public IReadOnlyList<string> RoutePointCodes => Points.Select(x => x.PointCode).ToArray();

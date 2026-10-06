@@ -308,11 +308,6 @@ namespace RCSBackend.Migrations
                         .HasColumnType("longtext")
                         .HasColumnName("point_code");
 
-                    b.Property<string>("PointName")
-                        .IsRequired()
-                        .HasColumnType("longtext")
-                        .HasColumnName("point_name");
-
                     b.Property<string>("PointType")
                         .IsRequired()
                         .HasColumnType("longtext")
@@ -608,6 +603,34 @@ namespace RCSBackend.Migrations
                     b.HasKey("VehicleId");
 
                     b.ToTable("rcs_vehicles", (string)null);
+                });
+            modelBuilder.Entity("RCSBackend.Modules.Rcs.Infrastructure.Entities.RcsStationBusinessRuleRow", b =>
+                {
+                    b.Property<long>("Id").ValueGeneratedOnAdd().HasColumnType("bigint").HasColumnName("id");
+                    MySqlPropertyBuilderExtensions.UseMySqlIdentityColumn(b.Property<long>("Id"));
+                    b.Property<string>("ActionType").IsRequired().HasMaxLength(32).HasColumnType("varchar(32)").HasColumnName("action_type");
+                    b.Property<DateTime>("CreatedAt").HasColumnType("datetime(6)").HasColumnName("created_at");
+                    b.Property<string>("DenyMessagePath").IsRequired().HasMaxLength(256).HasColumnType("varchar(256)").HasColumnName("deny_message_path");
+                    b.Property<string>("Event").IsRequired().HasMaxLength(32).HasColumnType("varchar(32)").HasColumnName("event");
+                    b.Property<string>("ExecutionMode").IsRequired().HasMaxLength(32).HasColumnType("varchar(32)").HasColumnName("execution_mode");
+                    b.Property<string>("HeadersJson").IsRequired().HasColumnType("json").HasColumnName("headers_json");
+                    b.Property<bool>("IsEnabled").HasColumnType("tinyint(1)").HasColumnName("is_enabled");
+                    b.Property<string>("HttpMethod").IsRequired().HasMaxLength(16).HasColumnType("varchar(16)").HasColumnName("http_method");
+                    b.Property<string>("MapCode").IsRequired().HasMaxLength(128).HasColumnType("varchar(128)").HasColumnName("map_code");
+                    b.Property<string>("Name").IsRequired().HasMaxLength(128).HasColumnType("varchar(128)").HasColumnName("name");
+                    b.Property<string>("PermitResponsePath").IsRequired().HasMaxLength(256).HasColumnType("varchar(256)").HasColumnName("permit_response_path");
+                    b.Property<string>("PointCode").IsRequired().HasMaxLength(128).HasColumnType("varchar(128)").HasColumnName("point_code");
+                    b.Property<string>("WaitPointCode").IsRequired().HasMaxLength(128).HasColumnType("varchar(128)").HasColumnName("wait_point_code");
+                    b.Property<int>("RetryCount").HasColumnType("int").HasColumnName("retry_count");
+                    b.Property<int>("RetryDelayMs").HasColumnType("int").HasColumnName("retry_delay_ms");
+                    b.Property<string>("RequestBodyTemplate").IsRequired().HasColumnType("json").HasColumnName("request_body_template");
+                    b.Property<int>("SortOrder").HasColumnType("int").HasColumnName("sort_order");
+                    b.Property<int>("TimeoutMs").HasColumnType("int").HasColumnName("timeout_ms");
+                    b.Property<DateTime>("UpdatedAt").HasColumnType("datetime(6)").HasColumnName("updated_at");
+                    b.Property<string>("Url").IsRequired().HasMaxLength(2048).HasColumnType("varchar(2048)").HasColumnName("url");
+                    b.HasKey("Id");
+                    b.HasIndex("MapCode", "PointCode", "Event", "SortOrder");
+                    b.ToTable("rcs_station_business_rules", (string)null);
                 });
 #pragma warning restore 612, 618
         }

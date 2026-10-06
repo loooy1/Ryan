@@ -13,6 +13,7 @@ using RCSBackend.Modules.Rcs.Application.Scheduling;
 using RCSBackend.Modules.Rcs.Application.Execution;
 using RCSBackend.Modules.Rcs.Protocol;
 using RCSBackend.Modules.Rcs.Application.Vehicles;
+using RCSBackend.Modules.Rcs.Application.StationBusiness;
 
 namespace RCSBackend.Modules.Rcs;
 
@@ -46,6 +47,8 @@ public static class RcsModuleExtensions
         services.AddSingleton<IVehicleProtocolAdapter, VirtualVehicleProtocolAdapter>();
         services.AddSingleton<RcsTaskRoutePlanner>();
         services.AddSingleton<RcsAlgorithmSettingsService>();
+        services.AddHttpClient("station-business");
+        services.AddSingleton<RcsStationBusinessRuleService>();
         services.AddSingleton<RcsInventoryTransferService>();
         services.AddSingleton<MultiVehicleTrafficCoordinator>();
         services.AddSingleton<IMultiVehicleTrafficCoordinator>(sp => sp.GetRequiredService<MultiVehicleTrafficCoordinator>());

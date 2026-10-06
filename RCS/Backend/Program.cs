@@ -57,6 +57,7 @@ app.Use(async (context, next) =>
 
 await app.InitializeSharedDatabaseAsync();
 await app.Services.GetRequiredService<RCSBackend.Modules.Rcs.Application.Execution.RcsAlgorithmSettingsService>().InitializeAsync();
+await app.Services.GetRequiredService<RCSBackend.Modules.Rcs.Application.StationBusiness.RcsStationBusinessRuleService>().InitializeAsync();
 await app.Services.GetRequiredService<RCSBackend.Modules.Rcs.Application.Simulation.RcsSimulationService>().ReloadMapAsync();
 
 app.UseCors();

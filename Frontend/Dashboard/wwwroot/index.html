@@ -117,7 +117,7 @@
             if (typeof host.__grcsMapDispose === 'function') host.__grcsMapDispose();
             const canvas = host.querySelector('canvas'), overlay = host.querySelector('svg');
             const ctx = canvas.getContext('2d');
-            let config = { ...JSON.parse(mapJson || '{}'), ...JSON.parse(configJson || '{}') }, view = { x: 0, y: 0, w: 1200, h: 700 }, drag = null, hover = null;
+            let config = { ...JSON.parse(mapJson || '{}'), ...JSON.parse(configJson || '{}') }, view = { x: 0, y: 0, w: 1200, h: 700 }, fittedViewWidth = 0, drag = null, hover = null;
             let spatial = { cellSize: 1, pointBuckets: new Map(), lineBuckets: new Map(), stationsByMark: new Map(), stations: [], lines: [], globalLines: [] };
             let routePairs=new Set(),lockedPoints=new Set(),lockedLines=new Set(),selectedMarks=new Set(),inventoryByMark=new Map();
             const iconPaths = {
@@ -188,10 +188,11 @@
                 return true;
             };
             const nice = (rough) => { const p = Math.pow(10, Math.floor(Math.log10(Math.max(rough, 1e-6)))); const n = rough / p; return (n < 1.5 ? 1 : n < 3.5 ? 2 : n < 7.5 ? 5 : 10) * p; };
-            const drawInventoryIcon = (x, y, kind, count) => {
+            const drawInventoryIcon = (x, y, kind, count, scale=1) => {
                 const palletColor='#22d3ee', cargoColor='#facc15', tile=23;
+                ctx.save(); ctx.translate(x+tile/2,y+tile/2); ctx.scale(scale,scale); ctx.translate(-(x+tile/2),-(y+tile/2));
                 const border=kind==='pallet'?palletColor:kind==='cargo'?cargoColor:'#e2e8f0';
-                ctx.save(); ctx.fillStyle='rgba(5,14,27,.98)'; ctx.strokeStyle=border; ctx.lineWidth=1.5;
+                ctx.fillStyle='rgba(5,14,27,.98)'; ctx.strokeStyle=border; ctx.lineWidth=1.5;
                 ctx.beginPath(); ctx.roundRect(x,y,tile,tile,5); ctx.fill(); ctx.stroke();
                 ctx.lineWidth=1.6; ctx.lineCap='round'; ctx.lineJoin='round';
                 if(kind==='pallet') {
@@ -209,6 +210,30 @@
                 if(count>1) { ctx.fillStyle=border;ctx.beginPath();ctx.arc(x+tile-1,y+1,6,0,Math.PI*2);ctx.fill();ctx.fillStyle='#08111f';ctx.font='bold 7px sans-serif';ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText(String(Math.min(count,99)),x+tile-1,y+1); }
                 ctx.restore();
             };
+            const drawDirectionArrow = (p, q, direction, color, scale=1) => {
+                if (config.ShowLineDirections !== true) return;
+                const dx=q.x-p.x, dy=q.y-p.y, length=Math.hypot(dx,dy);
+                if (length < 28*scale) return;
+                const ux=dx/length, uy=dy/length, px=-uy, py=ux, mx=(p.x+q.x)/2, my=(p.y+q.y)/2;
+                const mode=String(direction||'').toUpperCase();
+                if (mode!=='FORWARD' && mode!=='BIDIRECTIONAL') return;
+                const dark='#075985', light='#e0f2fe';
+                const drawMark=(strokeStyle,lineWidth,fillStyle) => {
+                    ctx.strokeStyle=strokeStyle; ctx.lineWidth=lineWidth; ctx.lineCap='round'; ctx.lineJoin='round'; ctx.fillStyle=fillStyle;
+                    const shaftStart=(mode==='BIDIRECTIONAL'?-6:-7)*scale, shaftEnd=(mode==='BIDIRECTIONAL'?6:2)*scale;
+                    ctx.beginPath(); ctx.moveTo(mx+ux*shaftStart,my+uy*shaftStart); ctx.lineTo(mx+ux*shaftEnd,my+uy*shaftEnd); ctx.stroke();
+                    const head=(sign) => {
+                        const tipX=mx+ux*sign*9*scale, tipY=my+uy*sign*9*scale, baseX=mx+ux*sign*2.5*scale, baseY=my+uy*sign*2.5*scale;
+                        ctx.beginPath(); ctx.moveTo(tipX,tipY); ctx.lineTo(baseX+px*4.5*scale,baseY+py*4.5*scale); ctx.lineTo(baseX-px*4.5*scale,baseY-py*4.5*scale); ctx.closePath(); ctx.fill();
+                    };
+                    head(1);
+                    if(mode==='BIDIRECTIONAL') head(-1);
+                };
+                ctx.save();
+                drawMark(light,Math.max(1.4,5*scale),light);
+                drawMark(dark,Math.max(1,2.5*scale),dark);
+                ctx.restore();
+            };
             function draw() {
                 const w = host.clientWidth, h = host.clientHeight, dpr = devicePixelRatio || 1; if (!w || !h) return;
                 ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, w, h); ctx.fillStyle = '#08111f'; ctx.fillRect(0, 0, w, h);
@@ -217,10 +242,30 @@
                 for (let y = Math.floor(view.y / step) * step; y <= view.y + view.h; y += step) { const sy = (y - view.y) / view.h * h; ctx.moveTo(0, Math.round(sy)+.5); ctx.lineTo(w, Math.round(sy)+.5); } ctx.stroke();
                 const ax = (0 - view.x) / view.w * w, ay = (700 - view.y) / view.h * h; ctx.strokeStyle = 'rgba(34,211,238,.45)'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(ax,0); ctx.lineTo(ax,h); ctx.moveTo(0,ay); ctx.lineTo(w,ay); ctx.stroke();
                 ctx.font = '10px Consolas, monospace'; ctx.textAlign = 'left'; ctx.fillStyle = '#67e8f9'; if (ax > 0 && ax < w) ctx.fillText('X 0', ax + 5, Math.max(14, ay - 6)); if (ay > 0 && ay < h) ctx.fillText('Y 0', 6, ay - 6);
-                const stations=spatial.stationsByMark, bounds=visibleBounds(40);
-                for (const l of queryBuckets(spatial.lineBuckets,bounds,spatial.globalLines)) { const a=stations.get(l.FromPointCode), b=stations.get(l.ToPointCode); if(!a||!b) continue; const p=toScreen(point(a)),q=toScreen(point(b)); ctx.save(); const lineSelected = l.LineCode===config.SelectedLineCode || (config.SelectedLineCodes||[]).includes(l.LineCode); const inRoute = routePairs.has(l.FromPointCode + '>' + l.ToPointCode); const locked=lockedLines.has(l.LineCode); ctx.strokeStyle=lineSelected?'#fbbf24':locked?'#c084fc':inRoute?'#f59e0b':(l.IsEnabled===false?'#475569':'#38bdf8'); ctx.globalAlpha=lineSelected||locked?1:.72; ctx.lineWidth=lineSelected||locked?5:inRoute?4:2.5; ctx.beginPath();ctx.moveTo(p.x,p.y);ctx.lineTo(q.x,q.y);ctx.stroke();ctx.restore(); }
-                const stationScale=Math.max(.45,Math.min(1,Number(config.StationVisualScale)||1));
-                for (const s of queryBuckets(spatial.pointBuckets,bounds)) { const p = toScreen(point(s)); if (p.x < -30 || p.x > w+30 || p.y < -30 || p.y > h+30) continue; const selected = selectedMarks.has(s.Mark), anchor = s.Mark === config.AnchorMark, lockPoint = s.Mark === config.LockPointMark, locked = lockedPoints.has(s.Mark); const color = selected ? '#fbbf24' : colorFor(s); const stock=inventoryByMark.get(s.Mark);
+                const stations=spatial.stationsByMark, bounds=visibleBounds(40), baseStationScale=Math.max(.35,Math.min(1,Number(config.StationVisualScale)||1));
+                const zoomScale=config.ShowLineDirections===true&&fittedViewWidth>0?Math.max(.22,Math.min(1.35,fittedViewWidth/view.w)):1;
+                const stationScale=config.ShowLineDirections===true?Math.max(.22,Math.min(1.35,baseStationScale*zoomScale)):baseStationScale;
+                const stationSize=28*stationScale;
+                const pathSize=stationSize*.72;
+                for (const l of queryBuckets(spatial.lineBuckets,bounds,spatial.globalLines)) {
+                    const a=stations.get(l.FromPointCode), b=stations.get(l.ToPointCode); if(!a||!b) continue;
+                    const p=toScreen(point(a)),q=toScreen(point(b));
+                    ctx.save();
+                    const lineSelected=l.LineCode===config.SelectedLineCode||(config.SelectedLineCodes||[]).includes(l.LineCode);
+                    const inRoute=routePairs.has(l.FromPointCode+'>'+l.ToPointCode), locked=lockedLines.has(l.LineCode);
+                    const lineColor=lineSelected?'#fbbf24':locked?'#c084fc':inRoute?'#f59e0b':(l.IsEnabled===false?'#475569':'#38bdf8');
+                    ctx.globalAlpha=lineSelected||locked?1:.72;
+                    ctx.lineCap=config.ShowLineDirections===true?'round':'butt';
+                    if(config.ShowLineDirections===true) {
+                        ctx.strokeStyle='rgba(3,12,24,.82)'; ctx.lineWidth=pathSize+Math.max(1,2*zoomScale); ctx.beginPath(); ctx.moveTo(p.x,p.y); ctx.lineTo(q.x,q.y); ctx.stroke();
+                        ctx.strokeStyle=lineColor; ctx.lineWidth=pathSize; ctx.beginPath(); ctx.moveTo(p.x,p.y); ctx.lineTo(q.x,q.y); ctx.stroke();
+                    } else {
+                        ctx.strokeStyle=lineColor; ctx.lineWidth=lineSelected||locked?5:inRoute?4:2.5; ctx.beginPath(); ctx.moveTo(p.x,p.y); ctx.lineTo(q.x,q.y); ctx.stroke();
+                    }
+                    if(config.ShowLineDirections===true) drawDirectionArrow(p,q,l.Direction,lineColor,Math.max(.28,Math.min(.9,zoomScale*.68)));
+                    ctx.restore();
+                }
+                for (const s of queryBuckets(spatial.pointBuckets,bounds)) { const p = toScreen(point(s)); if (p.x < -30 || p.x > w+30 || p.y < -30 || p.y > h+30) continue; const selected = selectedMarks.has(s.Mark), anchor = s.Mark === config.AnchorMark, lockPoint = s.Mark === config.LockPointMark, locked = lockedPoints.has(s.Mark); const color = selected ? '#fbbf24' : config.ShowLineDirections===true&&s.StaEnable===false ? '#64748b' : colorFor(s); const stock=inventoryByMark.get(s.Mark);
                     const nestedCargo=stock?.NestedCargoCount||0, looseCargo=stock?.StandaloneCargoCount||0, loadedPallets=stock?.LoadedPalletCount||0, pallets=stock?.PurePalletCount||0;
                     ctx.save(); ctx.globalAlpha = s.StaEnable === false ? .45 : 1; ctx.translate(p.x,p.y); ctx.scale(stationScale,stationScale); ctx.fillStyle = selected ? '#164e63' : '#0e293b'; ctx.strokeStyle = color; ctx.lineWidth = selected ? 2.5 : 1.2; ctx.beginPath(); ctx.roundRect(-14,-14,28,28,6); ctx.fill(); ctx.stroke();
                     if(nestedCargo===0 && looseCargo===0 && loadedPallets===0 && pallets===0) { ctx.save(); ctx.translate(-12,-12); ctx.fillStyle = color; ctx.fill(iconFor(s)); ctx.restore(); }
@@ -229,8 +274,10 @@
                     if(nestedCargo>0) stockIcons.push(['loaded',loadedPallets||nestedCargo]);
                     if(pallets>0) stockIcons.push(['pallet',pallets]);
                     if(looseCargo>0) stockIcons.push(['cargo',looseCargo]);
-                    const firstStockIconX=p.x-(stockIcons.length*24-1)/2;
-                    stockIcons.forEach(([kind,count],index)=>drawInventoryIcon(firstStockIconX+index*24,p.y-11,kind,count));
+                    const inventoryScale=config.ShowLineDirections===true?Math.max(.22,Math.min(1,zoomScale*.82)):1;
+                    const inventoryWidth=stockIcons.length?(stockIcons.length-1)*24*inventoryScale+23*inventoryScale:0;
+                    const firstStockCenterX=p.x-inventoryWidth/2+11.5*inventoryScale;
+                    stockIcons.forEach(([kind,count],index)=>drawInventoryIcon(firstStockCenterX+index*24*inventoryScale-11.5,p.y-11.5,kind,count,inventoryScale));
                     if (selected || hover === s) { ctx.fillStyle='#e2e8f0'; ctx.font='11px Consolas, monospace'; ctx.textAlign='center'; ctx.fillText(s.Mark,p.x,p.y-22); }
                     if (anchor) { ctx.save(); ctx.strokeStyle='#a78bfa'; ctx.setLineDash([4,3]); ctx.lineWidth=2; ctx.beginPath(); ctx.arc(p.x,p.y,25*stationScale,0,Math.PI*2); ctx.stroke(); ctx.restore(); }
                     if (locked && !lockPoint) { ctx.save(); ctx.strokeStyle='#c084fc'; ctx.lineWidth=2.5; ctx.beginPath(); ctx.arc(p.x,p.y,22*stationScale,0,Math.PI*2); ctx.stroke(); ctx.restore(); }
@@ -285,7 +332,7 @@
                 for(const s of nodes){minX=Math.min(minX,s.X);maxX=Math.max(maxX,s.X);minY=Math.min(minY,s.Y);maxY=Math.max(maxY,s.Y);}
                 const ratio=host.clientWidth/Math.max(1,host.clientHeight),width=Math.max(120,maxX-minX+100),height=Math.max(120,maxY-minY+100);
                 const fittedWidth=Math.max(width,height*ratio),fittedHeight=fittedWidth/Math.max(.01,ratio);
-                view={x:(minX+maxX)/2-fittedWidth/2,y:700-(minY+maxY)/2-fittedHeight/2,w:fittedWidth,h:fittedHeight};draw();return true;
+                view={x:(minX+maxX)/2-fittedWidth/2,y:700-(minY+maxY)/2-fittedHeight/2,w:fittedWidth,h:fittedHeight};fittedViewWidth=fittedWidth;draw();return true;
             };
             const updateMap = (json) => { try { config={...config,...JSON.parse(json||'{}')}; buildSpatialIndex(); draw(); } catch(e){} };
             const update = (json) => { try { const next=JSON.parse(json||'{}'),mapChanged=Object.hasOwn(next,'Stations')||Object.hasOwn(next,'Lines');config={...config,...next};if(mapChanged)buildSpatialIndex();refreshDynamicIndexes();draw(); } catch(e){} };

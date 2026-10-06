@@ -6,6 +6,8 @@ using Rcs.Algorithms;
 using Rcs.Algorithms.Traffic;
 using RCSBackend.Modules.Rcs.Infrastructure.Stores;
 using RCSBackend.Modules.Rcs.Protocol;
+using RCSBackend.Modules.Rcs.Application.StationBusiness;
+using Contracts.Rcs.StationBusiness;
 
 namespace RCSBackend.Modules.Rcs.Application.Execution;
 
@@ -18,18 +20,20 @@ public sealed class RcsTaskExecutionService : IRcsTaskExecutionService, IDisposa
     private readonly IMultiVehicleTrafficCoordinator _traffic;
     private readonly IVehicleCommandChannel _channel;
     private readonly RcsInventoryTransferService _inventory;
+    private readonly RcsStationBusinessRuleService _stationRules;
     private readonly ILogger<RcsTaskExecutionService> _logger;
     private readonly object _gate = new();
     private readonly Dictionary<string, Execution> _current = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, string> _lastObservedPoints = new(StringComparer.OrdinalIgnoreCase);
     private event Action<VehicleStateDto>? _vehicleStateChanged;
     private event Action? _inventoryChanged;
 
     public RcsTaskExecutionService(RcsMapCache maps, RcsTaskRoutePlanner planner,
         RcsAlgorithmSettingsService algorithmSettings, IMultiVehicleTrafficCoordinator traffic,
-        IVehicleCommandChannel channel, RcsInventoryTransferService inventory, ILogger<RcsTaskExecutionService> logger)
+        IVehicleCommandChannel channel, RcsInventoryTransferService inventory, RcsStationBusinessRuleService stationRules, ILogger<RcsTaskExecutionService> logger)
     {
         _maps = maps; _planner = planner; _algorithmSettings = algorithmSettings;
-        _traffic = traffic; _channel = channel; _inventory = inventory; _logger = logger;
+        _traffic = traffic; _channel = channel; _inventory = inventory; _stationRules = stationRules; _logger = logger;
         _channel.StateChanged += OnVehicleStateChanged;
         _inventory.InventoryChanged += OnInventoryChanged;
     }
@@ -104,7 +108,7 @@ public sealed class RcsTaskExecutionService : IRcsTaskExecutionService, IDisposa
             return new(request.TaskId, request.VehicleId, map,
                 _planner.Plan(map, _traffic.GetPlanningContext(state.Id), state.PointCode, activeStops,
                     _algorithmSettings.Current), activeStops, request.ContainerCode, SyncInventory: syncInventory,
-                DeferredStops: deferredStops, AllStops: stops);
+                DeferredStops: deferredStops, AllStops: stops, Warehouse: request.Warehouse);
         }
         catch
         {
@@ -125,12 +129,24 @@ public sealed class RcsTaskExecutionService : IRcsTaskExecutionService, IDisposa
         try
         {
             var firstSegment = GetFirstSegment(execution.Plan.RoutePlan);
+            ValidateWaitPointGates(execution);
+            execution.AuthorizedEntryIndices.Clear();
+            execution.CheckedEntryIndices.Clear();
+            await WaitForGateAtCurrentPointAsync(execution, 0, token);
+            firstSegment = firstSegment with { Points = LimitWindowAtWaitPoint(execution, firstSegment.StartPointOffset, firstSegment.Points) };
+            await RunBeforeLeaveAsync(execution, Vehicle(execution.Plan.VehicleId).PointCode, token);
+            await RunBeforeEnterForSegmentAsync(execution, firstSegment.Points, firstSegment.StartPointOffset, token);
             _logger.LogInformation("开始下发车辆路径阶段 TaskId={TaskId} Vehicle={Vehicle} RouteVersion={Version} From={From} To={To} Points={Points}",
                 execution.Plan.TaskId, execution.Plan.VehicleId, execution.Plan.RouteVersion,
                 Vehicle(execution.Plan.VehicleId).PointCode, execution.Plan.Stops.LastOrDefault()?.PointCode ?? "",
                 execution.Plan.RoutePointCodes.Count);
             var lockLease = await AcquireFirstWindowAsync(execution, firstSegment, token);
-            firstSegment = GetFirstSegment(execution.Plan.RoutePlan);
+            ValidateWaitPointGates(execution);
+            await WaitForGateAtCurrentPointAsync(execution, 0, token);
+            var refreshedSegment = GetFirstSegment(execution.Plan.RoutePlan);
+            firstSegment = refreshedSegment with
+            { Points = LimitWindowAtWaitPoint(execution, refreshedSegment.StartPointOffset, refreshedSegment.Points) };
+            await RunBeforeEnterForSegmentAsync(execution, firstSegment.Points, firstSegment.StartPointOffset, token);
             using (lockLease)
             {
                 await SendCheckedAsync(new VehicleCommand
@@ -138,7 +154,7 @@ public sealed class RcsTaskExecutionService : IRcsTaskExecutionService, IDisposa
                     CommandId = execution.CommandId, VehicleId = execution.Plan.VehicleId, TaskId = execution.Plan.TaskId,
                     Type = VehicleCommandType.Move, RouteVersion = execution.Plan.RouteVersion,
                     RoutePointOffset = firstSegment.StartPointOffset, TotalRoutePoints = execution.Plan.Points.Count,
-                    HasMorePoints = HasNextSegment(execution.Plan.RoutePlan, 0),
+                    HasMorePoints = firstSegment.StartPointOffset + firstSegment.Points.Count < execution.Plan.Points.Count,
                     ContainerCode = execution.Plan.ContainerCode, Points = firstSegment.Points, StartPaused = startPaused
                 }, token);
                 execution.HasAcceptedCommand = true;
@@ -175,6 +191,8 @@ public sealed class RcsTaskExecutionService : IRcsTaskExecutionService, IDisposa
             DeferredStops = [],
             RouteVersion = nextVersion
         };
+        execution.AuthorizedEntryIndices.Clear();
+        execution.CheckedEntryIndices.Clear();
     }
 
     private string ConfirmVehicleAtPoint(Execution execution, RcsTaskStop stop)
@@ -186,10 +204,15 @@ public sealed class RcsTaskExecutionService : IRcsTaskExecutionService, IDisposa
         return execution.CommandId;
     }
 
-    private Task<string?> ExecutePointActionAsync(Execution execution, RcsTaskStop stop, CancellationToken token) =>
-        stop.Action is VehiclePointAction.Fetch or VehiclePointAction.Put
-            ? ExecuteStationActionAsync(execution, stop, token)
-            : Task.FromResult<string?>(ConfirmVehicleAtPoint(execution, stop));
+    private async Task<string?> ExecutePointActionAsync(Execution execution, RcsTaskStop stop, CancellationToken token)
+    {
+        await RunStationRuleAsync(execution, stop.PointCode, RcsStationEvents.BeforeAction, stop.Action, token);
+        var command = stop.Action is VehiclePointAction.Fetch or VehiclePointAction.Put
+            ? await ExecuteStationActionAsync(execution, stop, token)
+            : ConfirmVehicleAtPoint(execution, stop);
+        await RunStationRuleAsync(execution, stop.PointCode, RcsStationEvents.AfterAction, stop.Action, token);
+        return command;
+    }
 
     public async Task ExecuteAsync(RcsTaskExecutionPlan plan, bool startPaused,
         Func<RcsTaskExecutionStageDto, Task>? stageChanged, CancellationToken token)
@@ -326,23 +349,34 @@ public sealed class RcsTaskExecutionService : IRcsTaskExecutionService, IDisposa
                     remaining, _algorithmSettings.Current, retainAnchor: true),
                 RouteVersion = checked(state.RouteVersion + 1)
             };
-            var firstSegment = GetFirstSegment(plan.RoutePlan);
-            using var lockLease = await _traffic.AcquireRouteWindowAsync(plan.Map, plan.VehicleId, plan.TaskId,
-                firstSegment.Points, firstSegment.StartPointOffset, plan.RouteVersion, token);
-            await SendCheckedAsync(new VehicleCommand
+            execution.Plan = plan;
+            try
             {
-                CommandId = Guid.NewGuid().ToString("N"), VehicleId = plan.VehicleId, TaskId = taskId,
-                Type = VehicleCommandType.UpdateRoute, RouteVersion = plan.RouteVersion,
-                RoutePointOffset = firstSegment.StartPointOffset, TotalRoutePoints = plan.Points.Count,
-                HasMorePoints = HasNextSegment(plan.RoutePlan, 0),
-                ContainerCode = plan.ContainerCode, Points = firstSegment.Points,
-                ExpectedPointCode = state.PointCode
-            }, token);
-            lockLease.Commit();
-            PublishCurrentState(plan.VehicleId);
-            execution.Plan = plan; execution.SegmentIndex = 0;
-            execution.RouteVersion = plan.RouteVersion; execution.RouteUpdateError = null;
-            return plan;
+                ValidateWaitPointGates(execution);
+                execution.AuthorizedEntryIndices.Clear(); execution.CheckedEntryIndices.Clear();
+                await WaitForGateAtCurrentPointAsync(execution, 0, token);
+                var rawSegment = GetFirstSegment(plan.RoutePlan);
+                var firstSegment = rawSegment with { Points = LimitWindowAtWaitPoint(execution, rawSegment.StartPointOffset, rawSegment.Points) };
+                await RunBeforeLeaveAsync(execution, state.PointCode, token);
+                await RunBeforeEnterForSegmentAsync(execution, firstSegment.Points, firstSegment.StartPointOffset, token);
+                using var lockLease = await _traffic.AcquireRouteWindowAsync(plan.Map, plan.VehicleId, plan.TaskId,
+                    firstSegment.Points, firstSegment.StartPointOffset, plan.RouteVersion, token);
+                await SendCheckedAsync(new VehicleCommand
+                {
+                    CommandId = Guid.NewGuid().ToString("N"), VehicleId = plan.VehicleId, TaskId = taskId,
+                    Type = VehicleCommandType.UpdateRoute, RouteVersion = plan.RouteVersion,
+                    RoutePointOffset = firstSegment.StartPointOffset, TotalRoutePoints = plan.Points.Count,
+                    HasMorePoints = firstSegment.StartPointOffset + firstSegment.Points.Count < plan.Points.Count,
+                    ContainerCode = plan.ContainerCode, Points = firstSegment.Points,
+                    ExpectedPointCode = state.PointCode
+                }, token);
+                lockLease.Commit();
+                PublishCurrentState(plan.VehicleId);
+                execution.SegmentIndex = 0;
+                execution.RouteVersion = plan.RouteVersion; execution.RouteUpdateError = null;
+                return plan;
+            }
+            catch { execution.Plan = oldPlan; throw; }
         }
         finally { execution.WindowGate.Release(); }
     }
@@ -376,6 +410,17 @@ public sealed class RcsTaskExecutionService : IRcsTaskExecutionService, IDisposa
 
     private void OnVehicleStateChanged(VehicleStateDto state)
     {
+        string? previousPoint;
+        lock (_gate) { _lastObservedPoints.TryGetValue(state.Id, out previousPoint); if (!string.IsNullOrWhiteSpace(state.PointCode)) _lastObservedPoints[state.Id] = state.PointCode; }
+        if (!string.IsNullOrWhiteSpace(previousPoint) && !string.Equals(previousPoint, state.PointCode, StringComparison.OrdinalIgnoreCase))
+        {
+            Execution? observed; lock (_gate) _current.TryGetValue(state.Id, out observed);
+            if (observed is not null && observed.Plan.TaskId == state.TaskId)
+            {
+                _ = RunStationRuleSafelyAsync(observed, previousPoint, RcsStationEvents.AfterLeave, "", CancellationToken.None);
+                _ = RunStationRuleSafelyAsync(observed, state.PointCode, RcsStationEvents.AfterEnter, "", CancellationToken.None);
+            }
+        }
         ObserveVehiclePosition(state);
         if (state.Status is "Running" or "Paused")
             _traffic.ObserveProgress(state.Id, state.TaskId, state.RouteVersion, state.RouteIndex, state.PointCode);
@@ -401,14 +446,18 @@ public sealed class RcsTaskExecutionService : IRcsTaskExecutionService, IDisposa
                 if (state.Status != "Running" || state.TaskId != execution.Plan.TaskId
                     || state.RouteVersion != execution.RouteVersion || state.RouteIndex < 1) return;
                 var currentIndex = state.RouteIndex - 1;
-                if (!HasNextSegment(execution.Plan.RoutePlan, execution.SegmentIndex)) return;
                 var nextSegmentIndex = execution.SegmentIndex + 1;
-                var nextSegment = execution.Plan.RoutePlan.Segments[nextSegmentIndex];
+                if (currentIndex >= execution.Plan.Points.Count - 1) return;
+                var nextSegment = GetSegment(execution, nextSegmentIndex, currentIndex);
                 // The algorithm's segment offset is the advance threshold. If the vehicle has already
                 // passed that anchor, rebase the same size window on its latest confirmed point.
-                if (currentIndex < nextSegment.StartPointOffset) return;
+                var reachedBusinessWaitPoint = await WaitForGateAtCurrentPointAsync(execution, currentIndex, execution.Token);
+                if (currentIndex < nextSegment.StartPointOffset && !reachedBusinessWaitPoint) return;
                 var windowPoints = execution.Plan.Points.Skip(currentIndex).Take(nextSegment.Points.Count).ToArray();
+                windowPoints = LimitWindowAtWaitPoint(execution, currentIndex, windowPoints);
                 if (windowPoints.Length == 0) return;
+                await RunBeforeLeaveAsync(execution, state.PointCode, execution.Token);
+                await RunBeforeEnterForSegmentAsync(execution, windowPoints, currentIndex, execution.Token);
                 var nextVersion = checked(execution.RouteVersion + 1);
                 IAlgorithmRouteLease lockLease;
                 if (!_traffic.TryAcquireRouteWindow(execution.Plan.Map, execution.Plan.VehicleId, execution.Plan.TaskId,
@@ -517,6 +566,102 @@ public sealed class RcsTaskExecutionService : IRcsTaskExecutionService, IDisposa
         return commandId;
     }
 
+    private Task RunBeforeLeaveAsync(Execution execution, string pointCode, CancellationToken token) =>
+        RunStationRuleAsync(execution, pointCode, RcsStationEvents.BeforeLeave, "", token);
+
+    private void ValidateWaitPointGates(Execution execution)
+    {
+        var path = execution.Plan.RoutePointCodes;
+        for (var targetIndex = 1; targetIndex < path.Count; targetIndex++)
+        {
+            var gatedRules = _stationRules.Get(execution.Plan.Map.MapCode, path[targetIndex])
+                .Where(x => x.IsEnabled && x.Event == RcsStationEvents.BeforeEnter && !string.IsNullOrWhiteSpace(x.WaitPointCode));
+            foreach (var rule in gatedRules)
+                if (!path.Take(targetIndex).Contains(rule.WaitPointCode, StringComparer.OrdinalIgnoreCase))
+                    throw new InvalidOperationException($"业务站点 {rule.PointCode} 的等待站点 {rule.WaitPointCode} 不在当前路径上，无法安全等待放行。");
+        }
+    }
+
+    private async Task<bool> WaitForGateAtCurrentPointAsync(Execution execution, int currentIndex, CancellationToken token)
+    {
+        if (currentIndex < 0 || currentIndex >= execution.Plan.RoutePointCodes.Count) return false;
+        var pointCode = execution.Plan.RoutePointCodes[currentIndex];
+        var reachedGate = false;
+        for (var targetIndex = currentIndex + 1; targetIndex < execution.Plan.RoutePointCodes.Count; targetIndex++)
+        {
+            var targetCode = execution.Plan.RoutePointCodes[targetIndex];
+            var gates = _stationRules.Get(execution.Plan.Map.MapCode, targetCode)
+                .Where(x => x.IsEnabled && x.Event == RcsStationEvents.BeforeEnter
+                    && string.Equals(x.WaitPointCode, pointCode, StringComparison.OrdinalIgnoreCase)).ToArray();
+            if (gates.Length == 0) continue;
+            reachedGate = true;
+            if (execution.AuthorizedEntryIndices.Contains(targetIndex)) continue;
+            await _stationRules.WaitForGateAsync(new(execution.Plan.TaskId, execution.Plan.VehicleId,
+                execution.Plan.Map.MapCode, execution.Plan.Warehouse, targetCode, RcsStationEvents.BeforeEnter,
+                execution.Plan.ContainerCode, "", pointCode), token);
+            execution.AuthorizedEntryIndices.Add(targetIndex);
+        }
+        return reachedGate;
+    }
+
+    private VehicleRoutePoint[] LimitWindowAtWaitPoint(Execution execution, int startOffset, IReadOnlyList<VehicleRoutePoint> points)
+    {
+        for (var relativeTarget = 1; relativeTarget < points.Count; relativeTarget++)
+        {
+            var targetIndex = startOffset + relativeTarget;
+            if (targetIndex >= execution.Plan.RoutePointCodes.Count || execution.AuthorizedEntryIndices.Contains(targetIndex)) continue;
+            var targetCode = execution.Plan.RoutePointCodes[targetIndex];
+            foreach (var rule in _stationRules.Get(execution.Plan.Map.MapCode, targetCode)
+                .Where(x => x.IsEnabled && x.Event == RcsStationEvents.BeforeEnter && !string.IsNullOrWhiteSpace(x.WaitPointCode)))
+            {
+                var waitIndex = execution.Plan.RoutePointCodes.Take(targetIndex)
+                    .Select((code, index) => (code, index)).Where(x => string.Equals(x.code, rule.WaitPointCode, StringComparison.OrdinalIgnoreCase))
+                    .Select(x => x.index).DefaultIfEmpty(-1).Max();
+                if (waitIndex < startOffset)
+                    throw new InvalidOperationException($"车辆已越过业务站点 {targetCode} 配置的等待站点 {rule.WaitPointCode}，本次路径无法安全执行。");
+                if (waitIndex == startOffset) continue;
+                if (waitIndex - startOffset < points.Count) return points.Take(waitIndex - startOffset + 1).ToArray();
+            }
+        }
+        return points.ToArray();
+    }
+
+    private RouteSegmentDto GetSegment(Execution execution, int index, int currentIndex)
+    {
+        if (index < execution.Plan.RoutePlan.Segments.Count) return execution.Plan.RoutePlan.Segments[index];
+        var settings = _algorithmSettings.Current;
+        var start = Math.Min(currentIndex + settings.AdvanceAfterPoints, execution.Plan.Points.Count - 1);
+        return new RouteSegmentDto
+        {
+            StartPointOffset = start,
+            Points = execution.Plan.Points.Skip(currentIndex).Take(settings.SegmentPointCount).ToArray()
+        };
+    }
+
+    private async Task RunBeforeEnterForSegmentAsync(Execution execution, IReadOnlyList<VehicleRoutePoint> points, int startOffset, CancellationToken token)
+    {
+        for (var i = 1; i < points.Count; i++)
+        {
+            var routeIndex = startOffset + i;
+            if (execution.CheckedEntryIndices.Contains(routeIndex)) continue;
+            var rules = _stationRules.Get(execution.Plan.Map.MapCode, points[i].PointCode)
+                .Where(x => x.IsEnabled && x.Event == RcsStationEvents.BeforeEnter && string.IsNullOrWhiteSpace(x.WaitPointCode)).ToArray();
+            if (rules.Length == 0) continue;
+            await RunStationRuleAsync(execution, points[i].PointCode, RcsStationEvents.BeforeEnter, "", token);
+            execution.CheckedEntryIndices.Add(routeIndex);
+        }
+    }
+
+    private Task RunStationRuleAsync(Execution execution, string pointCode, string eventCode, string action, CancellationToken token) =>
+        _stationRules.ExecuteAsync(new(execution.Plan.TaskId, execution.Plan.VehicleId, execution.Plan.Map.MapCode,
+            execution.Plan.Warehouse, pointCode, eventCode, execution.Plan.ContainerCode, action), token);
+
+    private async Task RunStationRuleSafelyAsync(Execution execution, string pointCode, string eventCode, string action, CancellationToken token)
+    {
+        try { await RunStationRuleAsync(execution, pointCode, eventCode, action, token); }
+        catch (Exception ex) { _logger.LogWarning(ex, "站点异步业务规则执行失败 TaskId={TaskId} Vehicle={Vehicle} Point={Point} Event={Event}", execution.Plan.TaskId, execution.Plan.VehicleId, pointCode, eventCode); }
+    }
+
     private static RcsTaskExecutionStageDto Stage(int sequence, string code, string name, string from,
         string to, string action, string vehicleId, IReadOnlyList<string>? routePointCodes = null) => new()
     {
@@ -567,6 +712,7 @@ public sealed class RcsTaskExecutionService : IRcsTaskExecutionService, IDisposa
         if (observedState.Status != "Running" || string.IsNullOrWhiteSpace(observedState.PointCode)) return false;
         var vehicleId = execution.Plan.VehicleId;
         var taskId = execution.Plan.TaskId;
+        var originalPlan = execution.Plan;
         await SendCheckedAsync(Control(vehicleId, taskId, VehicleCommandType.Pause), execution.Token);
         var routeUpdated = false;
         try
@@ -585,11 +731,19 @@ public sealed class RcsTaskExecutionService : IRcsTaskExecutionService, IDisposa
                     state.PointCode, remaining, _algorithmSettings.Current, retainAnchor: true),
                 RouteVersion = checked(state.RouteVersion + 1)
             };
-            var segment = GetFirstSegment(candidate.RoutePlan);
+            execution.Plan = candidate;
+            ValidateWaitPointGates(execution);
+            execution.AuthorizedEntryIndices.Clear(); execution.CheckedEntryIndices.Clear();
+            await WaitForGateAtCurrentPointAsync(execution, 0, execution.Token);
+            var rawSegment = GetFirstSegment(candidate.RoutePlan);
+            var segment = rawSegment with { Points = LimitWindowAtWaitPoint(execution, rawSegment.StartPointOffset, rawSegment.Points) };
             var anchor = segment.Points.FirstOrDefault();
             // UPDATE_ROUTE requires the confirmed current position as a plain move anchor.
             if (anchor is null || !string.Equals(anchor.PointCode, state.PointCode, StringComparison.OrdinalIgnoreCase)
                 || anchor.Action != VehiclePointAction.Move || anchor.StepId != "") return false;
+
+            await RunBeforeLeaveAsync(execution, state.PointCode, execution.Token);
+            await RunBeforeEnterForSegmentAsync(execution, segment.Points, segment.StartPointOffset, execution.Token);
 
             if (!_traffic.TryAcquireRouteWindow(candidate.Map, vehicleId, taskId, segment.Points,
                 segment.StartPointOffset, candidate.RouteVersion, out var lease, out _)) return false;
@@ -601,7 +755,7 @@ public sealed class RcsTaskExecutionService : IRcsTaskExecutionService, IDisposa
                     CommandId = Guid.NewGuid().ToString("N"), VehicleId = vehicleId, TaskId = taskId,
                     Type = VehicleCommandType.UpdateRoute, RouteVersion = candidate.RouteVersion,
                     RoutePointOffset = segment.StartPointOffset, TotalRoutePoints = candidate.Points.Count,
-                    HasMorePoints = HasNextSegment(candidate.RoutePlan, 0), ContainerCode = candidate.ContainerCode,
+                    HasMorePoints = segment.StartPointOffset + segment.Points.Count < candidate.Points.Count, ContainerCode = candidate.ContainerCode,
                     ExpectedPointCode = state.PointCode, Points = segment.Points
                 }, execution.Token);
                 if (!ack.Accepted) return false;
@@ -630,6 +784,7 @@ public sealed class RcsTaskExecutionService : IRcsTaskExecutionService, IDisposa
         {
             if (!routeUpdated)
             {
+                execution.Plan = originalPlan;
                 var latest = _channel.GetStates().FirstOrDefault(x => string.Equals(x.Id, vehicleId, StringComparison.OrdinalIgnoreCase));
                 if (latest?.Status == "Paused" && latest.TaskId == taskId)
                 {
@@ -657,7 +812,8 @@ public sealed class RcsTaskExecutionService : IRcsTaskExecutionService, IDisposa
                     execution.Plan.Stops, _algorithmSettings.Current)
             };
             execution.Plan = candidate;
-            segment = GetFirstSegment(candidate.RoutePlan);
+            var candidateFirst = GetFirstSegment(candidate.RoutePlan);
+            segment = candidateFirst with { Points = LimitWindowAtWaitPoint(execution, candidateFirst.StartPointOffset, candidateFirst.Points) };
         }
 
         return await _traffic.AcquireRouteWindowAsync(execution.Plan.Map, execution.Plan.VehicleId,
@@ -725,9 +881,6 @@ public sealed class RcsTaskExecutionService : IRcsTaskExecutionService, IDisposa
     private static RouteSegmentDto GetFirstSegment(AlgorithmRoutePlanDto routePlan) => routePlan.Segments.FirstOrDefault()
         ?? throw new InvalidOperationException("路径算法未返回可下发的路径段。");
 
-    private static bool HasNextSegment(AlgorithmRoutePlanDto routePlan, int currentSegmentIndex) =>
-        currentSegmentIndex + 1 < routePlan.Segments.Count;
-
     public void Dispose()
     {
         _channel.StateChanged -= OnVehicleStateChanged;
@@ -744,5 +897,7 @@ public sealed class RcsTaskExecutionService : IRcsTaskExecutionService, IDisposa
         public int RouteVersion { get; set; } = plan.RouteVersion;
         public bool HasAcceptedCommand { get; set; }
         public Exception? RouteUpdateError { get; set; }
+        public HashSet<int> AuthorizedEntryIndices { get; } = [];
+        public HashSet<int> CheckedEntryIndices { get; } = [];
     }
 }

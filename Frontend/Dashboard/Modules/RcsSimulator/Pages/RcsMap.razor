@@ -50,7 +50,7 @@
                         }
                         @foreach (var point in PickPoints)
                         {
-                            <button role="menuitem" @onclick="() => OnMapEditorStationClicked(point.PointCode)"><span class="pick-icon station">◇</span><span>选中站点 @point.PointCode<small>@point.PointName</small></span></button>
+                            <button role="menuitem" @onclick="() => OnMapEditorStationClicked(point.PointCode)"><span class="pick-icon station">◇</span><span>选中站点 @point.PointCode</span></button>
                         }
                         <button class="pick-cancel" role="menuitem" @onclick="ClosePickMenu">取消</button>
                     </div>
@@ -129,7 +129,7 @@
     private IEnumerable<VehicleStateDto> PickVehicles => _pickVehicleIds.Where(_vehicles.ContainsKey).Select(id => _vehicles[id]);
     private IEnumerable<RcsMapPointDto> PickPoints => _editor?.Points.Where(p => _pickPointCodes.Contains(p.PointCode)) ?? [];
     private string PickMenuStyle => FormattableString.Invariant($"left:{_pickMenuX}px;top:{_pickMenuY}px");
-    private IEnumerable<RcsMapNode> VehiclePoints => EnabledPoints.Select(p => new RcsMapNode(p.PointCode, p.PointName, p.PointType, p.X, p.Y, p.Z));
+    private IEnumerable<RcsMapNode> VehiclePoints => EnabledPoints.Select(p => new RcsMapNode(p.PointCode, p.PointType, p.X, p.Y, p.Z));
     private RcsMoveTaskDialog? _moveTaskDialog;
     private bool _showMoveDialog;
     private string _moveStart = "", _moveEnd = "";
@@ -191,7 +191,8 @@
     private string MapCanvasPayload() => System.Text.Json.JsonSerializer.Serialize(new
     {
         Stations = _editor?.Points.Select(p => new { Mark = p.PointCode, p.PointType, p.X, p.Y, StaEnable = p.IsEnabled }).ToArray() ?? [],
-        Lines = _editor?.Lines.Select(l => new { l.LineCode, l.FromPointCode, l.ToPointCode, l.IsEnabled }).ToArray() ?? [],
+        Lines = _editor?.Lines.Select(l => new { l.LineCode, l.FromPointCode, l.ToPointCode, l.Direction, l.IsEnabled }).ToArray() ?? [],
+        ShowLineDirections = true,
         InventoryByStation = _inventoryInstances
             .Where(x => x.MapCode == _editor?.MapCode && !string.IsNullOrWhiteSpace(x.PointCode))
             .GroupBy(x => x.PointCode, StringComparer.OrdinalIgnoreCase)
@@ -228,7 +229,7 @@
         SelectedVehicleStatus = SelectedVehicle?.Status,
         Vehicles = _vehicles.Values.ToArray(),
         SelectedVehicleId = _selectedVehicleId,
-        StationVisualScale = 0.68,
+        StationVisualScale = 0.56,
         EnableVehicleSelection = true,
         PickStationForMove = _showMoveDialog,
         EnableContextMenu = false

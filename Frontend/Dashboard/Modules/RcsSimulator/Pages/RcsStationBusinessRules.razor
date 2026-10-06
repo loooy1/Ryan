@@ -1,0 +1,69 @@
+@page "/rcs/station-business-rules"
+@using Contracts.Rcs.Map
+@using Contracts.Rcs.StationBusiness
+@using Dashboard.Modules.RcsSimulator.Services
+@inject RcsApiClient Api
+@inject RcsMapCacheService MapCache
+@inject IJSRuntime Js
+
+<PageTitle>站点业务规则</PageTitle>
+<style>
+.sbr-page{padding:24px;min-height:calc(100vh - 70px);color:#e2e8f0}.sbr-head{display:flex;justify-content:space-between;align-items:end;margin-bottom:18px}.sbr-kicker{font-size:.68rem;letter-spacing:.16em;color:#22d3ee;font-weight:800}.sbr-head h1{margin:6px 0;font-size:1.45rem}.sbr-head p,.sbr-muted{color:#8295b3;font-size:.78rem}.sbr-grid{display:grid;grid-template-columns:minmax(300px, .8fr) minmax(500px,1.5fr);gap:16px}.sbr-card{border:1px solid #263650;border-radius:14px;background:linear-gradient(155deg,#111d32,#0b1425);padding:18px}.sbr-card h3{margin:0 0 14px}.sbr-form{display:grid;grid-template-columns:1fr 1fr;gap:12px}.sbr-form label{display:flex;flex-direction:column;gap:6px;color:#9bb0cc;font-size:.73rem}.sbr-form label.full{grid-column:1/-1}.sbr-form input,.sbr-form select,.sbr-form textarea{box-sizing:border-box;width:100%;border:1px solid #334155;border-radius:7px;padding:9px;background:#081323;color:#e2e8f0}.sbr-form textarea{font: .72rem Consolas,monospace;min-height:82px}.sbr-row{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:12px;border:1px solid #263650;border-radius:10px;background:#0b1628;margin-bottom:9px}.sbr-row strong{color:#e2e8f0}.sbr-pill{font-size:.65rem;padding:4px 7px;border-radius:99px;background:#0e3540;color:#67e8f9}.sbr-buttons{display:flex;gap:8px;justify-content:flex-end;margin-top:14px}.sbr-btn{border:1px solid #334155;border-radius:7px;background:#17243a;color:#cbd5e1;padding:8px 12px;cursor:pointer}.sbr-btn.primary{background:#0891b2;border-color:#22d3ee;color:#fff}.sbr-btn.danger{color:#fca5a5}.sbr-note{padding:10px 12px;border-left:2px solid #22d3ee;background:#0b1b2c;color:#9bb0cc;font-size:.72rem;line-height:1.6;margin:12px 0}.sbr-feedback{margin-top:14px;color:#4ade80}.sbr-feedback.error{color:#f87171}@@media(max-width:900px){.sbr-grid{grid-template-columns:1fr}}
+</style>
+
+<div class="sbr-page">
+    <header class="sbr-head"><div><div class="sbr-kicker">RCS / STATION BUSINESS RULES</div><h1>站点业务规则</h1><p>为指定地图站点配置进入、到达、动作、离开等业务触发；HTTP 放行类事件等待业务结果，通知类事件异步执行。</p></div><button class="sbr-btn" @onclick="ReloadAsync" disabled="@_busy">↻ 刷新</button></header>
+    <div class="sbr-grid">
+        <section class="sbr-card">
+            <h3>@(_editing.Id == 0 ? "新增规则" : $"编辑规则 #{_editing.Id}")</h3>
+            <div class="sbr-form">
+                <label>地图编码<input @bind="_editing.MapCode" @bind:after="MapChangedAsync" /></label>
+                <label>业务站点 A<input list="rcs-map-stations" @bind="_editing.PointCode" placeholder="输入或选择站点编码" /></label>
+                @if(_editing.Event==RcsStationEvents.BeforeEnter){<label class="full">等待站点 B<input list="rcs-map-stations" @bind="_editing.WaitPointCode" placeholder="输入或选择等待站点编码" /></label>}
+                <datalist id="rcs-map-stations">@foreach(var point in _points){<option value="@point.PointCode"></option>}</datalist>
+                <label class="full">规则名称<input @bind="_editing.Name" placeholder="例如：入站前校验容器" /></label>
+                <label>触发事件<select @bind="_editing.Event" @bind:after="UpdateExecutionMode"><option value="BEFORE_ENTER">进入站点前（等待放行）</option><option value="AFTER_ENTER">到达站点后（异步通知）</option><option value="BEFORE_ACTION">执行取放动作前（等待放行）</option><option value="AFTER_ACTION">取放动作完成后（异步通知）</option><option value="BEFORE_LEAVE">离开站点前（等待放行）</option><option value="AFTER_LEAVE">离开站点后（异步通知）</option></select></label>
+                <label>执行方式<select @bind="_editing.ExecutionMode"><option value="WAIT_FOR_RESULT">等待业务结果</option><option value="FIRE_AND_FORGET">异步通知</option></select></label>
+                <label>HTTP 方法<select @bind="_editing.HttpMethod"><option>POST</option><option>GET</option><option>PUT</option><option>PATCH</option><option>DELETE</option></select></label>
+                <label>请求超时 (ms)<input type="number" min="100" max="120000" @bind="_editing.TimeoutMs" /></label>
+                <label class="full">请求 URL<input @bind="_editing.Url" placeholder="http://..." /></label>
+                <label class="full">请求头 JSON<textarea @bind="_editing.HeadersJson"></textarea></label>
+                <label class="full">请求体 JSON 模板<textarea @bind="_editing.RequestBodyTemplate"></textarea></label>
+                <label>放行结果字段路径<input @bind="_editing.PermitResponsePath" placeholder="data.allowPass" /></label>
+                <label>拒绝原因字段路径<input @bind="_editing.DenyMessagePath" placeholder="message" /></label>
+                <label>失败重试次数<input type="number" min="0" max="10" @bind="_editing.RetryCount" /></label>
+                <label>重试间隔 (ms)<input type="number" min="0" max="30000" @bind="_editing.RetryDelayMs" /></label>
+            </div>
+            <div class="sbr-note">进入前规则绑定业务站点 A，并选择等待站点 B。路径会在 B 暂停续发；车到 B 后才请求 A 的业务接口。放行字段为 true 后继续去 A；false、请求失败或超时会留在 B 重试。模板变量：<code>{TaskId}</code>、<code>{VehicleId}</code>、<code>{MapCode}</code>、<code>{Warehouse}</code>、<code>{PointCode}</code>（业务站点 A）、<code>{WaitPointCode}</code>（等待站点 B）、<code>{Event}</code>、<code>{ContainerCode}</code>、<code>{Action}</code>、<code>{Time}</code>。等待类响应需返回 HTTP 2xx 且 JSON 放行字段为 true。</div>
+            <label class="sbr-muted"><input type="checkbox" @bind="_editing.IsEnabled" /> 启用规则</label>
+            <div class="sbr-buttons"><button class="sbr-btn" @onclick="NewRule" disabled="@_busy">清空</button><button class="sbr-btn primary" @onclick="SaveAsync" disabled="@_busy">@(_busy ? "保存中…" : "保存规则")</button></div>
+        </section>
+        <section class="sbr-card"><h3>规则列表 <span class="sbr-muted">@_rules.Count 条 · 地图 @_editing.MapCode</span></h3>
+            @if(_loading){<p class="sbr-muted">读取规则中…</p>}
+            else if(_rules.Count==0){<p class="sbr-muted">当前地图还没有业务规则。</p>}
+            @foreach(var rule in _rules){<div class="sbr-row"><div><strong>@rule.Name</strong><div class="sbr-muted">业务站 A：@rule.PointCode @(string.IsNullOrWhiteSpace(rule.WaitPointCode)?"":$"· 等待站 B：{rule.WaitPointCode}") · @EventName(rule.Event) · @rule.HttpMethod @rule.Url</div></div><div style="display:flex;align-items:center;gap:7px"><span class="sbr-pill">@(rule.IsEnabled ? rule.ExecutionMode == "WAIT_FOR_RESULT" ? "等待放行" : "异步通知" : "已停用")</span><button class="sbr-btn" @onclick="()=>Edit(rule)">编辑</button><button class="sbr-btn danger" @onclick="()=>DeleteAsync(rule)">删除</button></div></div>}
+        </section>
+    </div>
+    @if(!string.IsNullOrWhiteSpace(_feedback)){<div class="sbr-feedback @(_error?"error":"")">@_feedback</div>}
+</div>
+
+@code {
+    private RcsMapEditorDto? _map;
+    private List<RcsMapPointDto> _points=[];
+    private List<RcsStationBusinessRuleDto> _rules=[];
+    private RcsStationBusinessRuleDto _editing=NewDto();
+    private bool _loading,_busy,_error;
+    private string _feedback="";
+    protected override async Task OnInitializedAsync(){try{var saved=await Js.InvokeAsync<string?>("localStorage.getItem","rcs_backend_url");if(!string.IsNullOrWhiteSpace(saved))Api.SetBaseUrl(saved);}catch{} await MapChangedAsync();}
+    private async Task MapChangedAsync(){try{_map=await MapCache.GetEditorMapAsync(_editing.MapCode);_points=_map?.Points??[];await LoadRulesAsync();}catch(Exception ex){_feedback=$"读取地图/规则失败：{ex.Message}";_error=true;}}
+    private async Task LoadRulesAsync(){_loading=true;try{_rules=(await Api.GetStationBusinessRulesAsync(_editing.MapCode)).ToList();_error=false;}catch(Exception ex){_feedback=$"读取规则失败：{ex.Message}";_error=true;}finally{_loading=false;}}
+    private async Task ReloadAsync(){await MapChangedAsync();}
+    private static RcsStationBusinessRuleDto NewDto()=>new(){MapCode="default",Name="",Event=RcsStationEvents.BeforeEnter,ExecutionMode=RcsStationRuleModes.WaitForResult,HttpMethod="POST",HeadersJson="{}",RequestBodyTemplate="{\"taskId\":\"{TaskId}\",\"vehicleId\":\"{VehicleId}\",\"mapCode\":\"{MapCode}\",\"warehouse\":\"{Warehouse}\",\"pointCode\":\"{PointCode}\",\"waitPointCode\":\"{WaitPointCode}\",\"event\":\"{Event}\",\"containerCode\":\"{ContainerCode}\",\"action\":\"{Action}\",\"time\":\"{Time}\"}",PermitResponsePath="allowPass",DenyMessagePath="message"};
+    private void NewRule(){_editing=NewDto();_points=_map?.Points??[];_feedback="";}
+    private void UpdateExecutionMode(){_editing.ExecutionMode=_editing.Event.StartsWith("AFTER_",StringComparison.Ordinal)?RcsStationRuleModes.FireAndForget:RcsStationRuleModes.WaitForResult;if(_editing.Event!=RcsStationEvents.BeforeEnter)_editing.WaitPointCode="";}
+    private void Edit(RcsStationBusinessRuleDto x){_editing=new(){Id=x.Id,MapCode=x.MapCode,PointCode=x.PointCode,WaitPointCode=x.WaitPointCode,Name=x.Name,Event=x.Event,ActionType=x.ActionType,ExecutionMode=x.ExecutionMode,HttpMethod=x.HttpMethod,Url=x.Url,HeadersJson=x.HeadersJson,RequestBodyTemplate=x.RequestBodyTemplate,PermitResponsePath=x.PermitResponsePath,DenyMessagePath=x.DenyMessagePath,TimeoutMs=x.TimeoutMs,RetryCount=x.RetryCount,RetryDelayMs=x.RetryDelayMs,SortOrder=x.SortOrder,IsEnabled=x.IsEnabled};}
+    private async Task SaveAsync(){_busy=true;try{_map=await MapCache.GetEditorMapAsync(_editing.MapCode,true);_points=_map?.Points??[];if(_map is null)throw new InvalidOperationException($"地图 {_editing.MapCode} 不存在或尚未保存。");_editing.PointCode=ResolveMapPoint(_editing.PointCode,"业务站点 A");if(_editing.Event==RcsStationEvents.BeforeEnter)_editing.WaitPointCode=ResolveMapPoint(_editing.WaitPointCode,"等待站点 B");var saved=await Api.SaveStationBusinessRuleAsync(_editing);_editing=saved;_feedback="站点业务规则已保存，站点已匹配到地图点位。";_error=false;await LoadRulesAsync();}catch(Exception ex){_feedback=$"保存失败：{ex.Message}";_error=true;}finally{_busy=false;}}
+    private string ResolveMapPoint(string input,string field){var value=(input??"").Trim();if(value.Length==0)throw new InvalidOperationException($"{field}不能为空。");var point=_points.FirstOrDefault(x=>string.Equals(x.PointCode,value,StringComparison.OrdinalIgnoreCase));if(point is null)throw new InvalidOperationException($"{field}编码“{value}”未匹配到地图站点，请输入有效的站点编码。");return point.PointCode;}
+    private async Task DeleteAsync(RcsStationBusinessRuleDto x){_busy=true;try{await Api.DeleteStationBusinessRuleAsync(x.Id);_feedback="规则已删除。";_error=false;if(_editing.Id==x.Id)NewRule();await LoadRulesAsync();}catch(Exception ex){_feedback=$"删除失败：{ex.Message}";_error=true;}finally{_busy=false;}}
+    private static string EventName(string e)=>e switch{"BEFORE_ENTER"=>"进入前","AFTER_ENTER"=>"到达后","BEFORE_ACTION"=>"动作前","AFTER_ACTION"=>"动作后","BEFORE_LEAVE"=>"离开前","AFTER_LEAVE"=>"离开后",_=>e};
+}

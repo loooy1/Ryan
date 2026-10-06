@@ -28,5 +28,5 @@ public sealed class RcsMapSnapshot
     }
 }
 
-public sealed record RcsMapNode(string PointCode, string PointName, string PointType, double X, double Y, double Z);
+public sealed record RcsMapNode(string PointCode, string PointType, double X, double Y, double Z);
 public sealed record RcsMapEdge(string LineCode, string FromPointCode, string ToPointCode, double Distance, string Direction, double MaxSpeed);

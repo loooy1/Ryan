@@ -122,7 +122,6 @@ public sealed class RcsMapCacheService
         Points = map.Points.Select(point => new RcsMapPointDto
         {
             PointCode = point.PointCode,
-            PointName = point.PointName,
             PointType = point.PointType,
             X = point.X,
             Y = point.Y,

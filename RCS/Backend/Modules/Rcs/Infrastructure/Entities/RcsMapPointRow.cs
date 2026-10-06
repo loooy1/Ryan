@@ -6,7 +6,6 @@ public sealed class RcsMapPointRow
     public long Id { get; set; }
     public string MapCode { get; set; } = "";
     public string PointCode { get; set; } = "";
-    public string PointName { get; set; } = "";
     public string PointType { get; set; } = "";
     public double X { get; set; }
     public double Y { get; set; }

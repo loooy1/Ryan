@@ -328,7 +328,6 @@
             var point = new RcsMapPointDto
             {
                 PointCode = code,
-                PointName = code,
                 PointType = MapGrcsStationType(ReadInt(FindProperty(station, "stationType"), 0)),
                 X = ReadDouble(FindProperty(station, "x"), 0),
                 Y = ReadDouble(FindProperty(station, "y"), 0),
@@ -466,7 +465,7 @@
     {
         for (var row = 0; row < Math.Clamp(_matrixRows, 1, 200); row++)
         for (var column = 0; column < Math.Clamp(_matrixColumns, 1, 200); column++)
-            _map.Points.Add(new RcsMapPointDto { PointCode = NextPointCode(), PointName = $"点 {_map.Points.Count + 1}", PointType = _matrixType, Z = 1, X = _matrixOriginX + column * Math.Max(0, _matrixHorizontalSpacing), Y = _matrixOriginY + row * Math.Max(0, _matrixVerticalSpacing), IsEnabled = true });
+            _map.Points.Add(new RcsMapPointDto { PointCode = NextPointCode(), PointType = _matrixType, Z = 1, X = _matrixOriginX + column * Math.Max(0, _matrixHorizontalSpacing), Y = _matrixOriginY + row * Math.Max(0, _matrixVerticalSpacing), IsEnabled = true });
         CloseMatrix(); _mapEditorDirty = true;
     }
     private async Task SaveAsync()
@@ -484,13 +483,14 @@
     private object BuildMapEditorPayload() => new
     {
         Stations = _map.Points.Select(p => new { Mark = p.PointCode, PointType = p.PointType, X = p.X, Y = p.Y, StaEnable = p.IsEnabled }),
-        Lines = _map.Lines.Select(l => new { l.LineCode, l.FromPointCode, l.ToPointCode, l.IsEnabled }),
+        Lines = _map.Lines.Select(l => new { l.LineCode, l.FromPointCode, l.ToPointCode, l.Direction, l.IsEnabled }),
         SelectedMark = _selectedPoint?.PointCode,
         SelectedMarks = _rangeSelection.Count > 0 ? _rangeSelection.ToArray() : (_selectedPointCodes.Count > 0 ? _selectedPointCodes.ToArray() : (_pendingLinePoint is null ? (_selectedPoint is null ? Array.Empty<string>() : new[] { _selectedPoint.PointCode }) : new[] { _pendingLinePoint.PointCode, _selectedPoint?.PointCode }.Where(x => x is not null).Cast<string>().ToArray())),
         AnchorMark = _alignmentAnchor?.PointCode,
         SelectedLineCode = _selectedLine?.LineCode,
         SelectedLineCodes = _selectedLineCodes.ToArray(),
-        StationVisualScale = 0.68,
+        StationVisualScale = 0.56,
+        ShowLineDirections = true,
         EnableContextMenu = true,
     };
 
@@ -499,7 +499,7 @@
     {
         if (_tool is EditorTool.Storage or EditorTool.Transfer or EditorTool.People or EditorTool.Sorting or EditorTool.Waypoint or EditorTool.Elevator or EditorTool.Charging)
         {
-            var point = new RcsMapPointDto { PointCode = NextPointCode(), PointName = $"点 {_map.Points.Count + 1}", PointType = PointTypeFor(_tool), Z = 1, X = Math.Round(x, 1), Y = Math.Round(y, 1), IsEnabled = true };
+            var point = new RcsMapPointDto { PointCode = NextPointCode(), PointType = PointTypeFor(_tool), Z = 1, X = Math.Round(x, 1), Y = Math.Round(y, 1), IsEnabled = true };
             _map.Points.Add(point); _selectedPoint = point; _selectedLine = null; _tool = EditorTool.Select;
         }
         else if (_tool == EditorTool.Select) { _selectedPoint = null; _selectedLine = null; _selectedPointCodes.Clear(); _selectedLineCodes.Clear(); }

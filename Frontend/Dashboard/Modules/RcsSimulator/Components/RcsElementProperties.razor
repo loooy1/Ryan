@@ -5,7 +5,6 @@
 {
     <div class="property-title">点位属性</div>
     <label>编码<input value="@Point.PointCode" readonly="@(ReadOnlyCodes || RuntimeMode)" @onchange="PointCodeChanged" /></label>
-    <label>名称<input readonly="@RuntimeMode" @bind="Point.PointName" @bind:after="NotifyChanged" /></label>
     <label>类型<select disabled="@RuntimeMode" @bind="Point.PointType" @bind:after="NotifyChanged"><option value="STORAGE">储位</option><option value="TRANSFER">接驳位</option><option value="PEOPLE">人工分拣台</option><option value="SORTING">分拣台</option><option value="WAYPOINT">路径点</option><option value="ELEVATOR">跨层点</option><option value="CHARGING">充电点</option></select></label>
     <div class="property-grid">
         <label>X<input type="number" step="any" readonly="@RuntimeMode" @bind="Point.X" @bind:after="NotifyChanged" /></label>

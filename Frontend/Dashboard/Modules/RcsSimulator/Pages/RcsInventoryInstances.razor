@@ -35,7 +35,7 @@
                             <select @bind="_moveTargets[item.Id]" disabled="@_busy" aria-label="选择目标站点">
                                 <option value="">移动到站点…</option>
                                 @foreach (var point in _map?.Points ?? [])
-                                { <option value="@point.PointCode">@point.PointCode · @point.PointName</option> }
+                                { <option value="@point.PointCode">@point.PointCode</option> }
                             </select>
                             <button class="inventory-row-action" @onclick="() => MoveAsync(item)" disabled="@_busy">移动</button>
                             <button class="inventory-row-action danger" @onclick="() => DeleteAsync(item)" disabled="@_busy">删除</button>
@@ -61,7 +61,7 @@
             @if (string.IsNullOrEmpty(_newItem.ParentInstanceCode))
             {
                 <label>地图编码<input @bind="_newItem.MapCode" readonly /></label>
-                <label>站点<select @bind="_newItem.PointCode" disabled="@(_busy || _map?.Points.Count is not > 0)"><option value="">选择站点</option>@foreach (var point in _map?.Points ?? []) { <option value="@point.PointCode">@point.PointCode · @point.PointName</option> }</select></label>
+                <label>站点<select @bind="_newItem.PointCode" disabled="@(_busy || _map?.Points.Count is not > 0)"><option value="">选择站点</option>@foreach (var point in _map?.Points ?? []) { <option value="@point.PointCode">@point.PointCode</option> }</select></label>
             }
             @if (string.IsNullOrEmpty(_newItem.ParentInstanceCode) && _map?.Points.Count is not > 0)
             {

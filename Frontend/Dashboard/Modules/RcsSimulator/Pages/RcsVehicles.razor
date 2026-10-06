@@ -65,7 +65,7 @@
                         @foreach (var protocol in _protocols) { <option value="@protocol.Code">@protocol.Name (@protocol.Code)</option> }
                     </select></label>
                     @if (_editProtocol != car.Protocol) { <small class="protocol-hint">切换协议会重建车辆会话；仅空闲且未载货时可保存。</small> }
-                    <label>当前位置<select @bind="_editPointCode" @bind:after="MarkPositionDirty" disabled="@(_busy || car.Status is "Running" or "Paused")"><option value="">未定位</option>@foreach (var point in MapPoints) { <option value="@point.PointCode">@point.PointCode · @point.PointName</option> }</select></label>
+                    <label>当前位置<select @bind="_editPointCode" @bind:after="MarkPositionDirty" disabled="@(_busy || car.Status is "Running" or "Paused")"><option value="">未定位</option>@foreach (var point in MapPoints) { <option value="@point.PointCode">@point.PointCode</option> }</select></label>
                     <button class="wide position-save" @onclick="SetCurrentPositionAsync" disabled="@(_busy || !_positionDirty || car.Status is "Running" or "Paused")">设置当前位置</button>
                     <label class="check-label"><input type="checkbox" @bind="_editEnabled" @bind:after="MarkDirty" disabled="@_busy" />允许分配新任务</label>
                     <button class="wide" @onclick="SaveDefinitionAsync" disabled="@(_busy || !_dirty)">保存配置</button>
@@ -90,7 +90,7 @@
                 <label>车辆编号<input @bind="_newId" @bind:event="oninput" placeholder="例如 V-02" maxlength="64" disabled="@_busy" /></label>
                 <label>车辆名称<input @bind="_newName" @bind:event="oninput" placeholder="例如 虚拟车 02" maxlength="128" disabled="@_busy" /></label>
                 <label>车辆协议<select @bind="_newProtocol" disabled="@_busy">@foreach (var protocol in _protocols) { <option value="@protocol.Code">@protocol.Name (@protocol.Code)</option> }</select></label>
-                <label>当前位置<select @bind="_newPoint" disabled="@_busy"><option value="">未定位</option>@foreach (var point in MapPoints) { <option value="@point.PointCode">@point.PointCode · @point.PointName</option> }</select></label>
+                <label>当前位置<select @bind="_newPoint" disabled="@_busy"><option value="">未定位</option>@foreach (var point in MapPoints) { <option value="@point.PointCode">@point.PointCode</option> }</select></label>
                 <label class="check-label"><input type="checkbox" @bind="_newEnabled" disabled="@_busy" />允许分配任务</label>
                 @if (_modalError != "") { <div class="fleet-feedback error" role="alert">@_modalError</div> }
                 <div class="modal-actions"><button @onclick="CloseAdd" disabled="@_busy">取消</button><button class="primary" @onclick="AddAsync" disabled="@(_busy || string.IsNullOrWhiteSpace(_newId))">@(_busy ? "添加中…" : "添加车辆")</button></div>

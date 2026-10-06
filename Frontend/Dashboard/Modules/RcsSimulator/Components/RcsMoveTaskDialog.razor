@@ -33,7 +33,7 @@
         }
         <label class="container-field">货物 / 托盘编码<input @bind="_containerCode" @bind:event="oninput" maxlength="128" placeholder="选择起点库存后自动填写" readonly="@(_selectedItemCode != "")" disabled="@IsBusy" /></label>
     }
-    <datalist id="move-task-stations">@foreach (var point in Points) { <option value="@point.PointCode">@point.PointName</option> }</datalist>
+    <datalist id="move-task-stations">@foreach (var point in Points) { <option value="@point.PointCode"></option> }</datalist>
     <div class="pick-hint"><span>◎</span>点击地图站点填写@(_pickField == "start" ? "起点" : "终点")</div>
     @if (_error != "") { <div class="move-error" role="alert">@_error</div> }
     @if (Vehicle.Status is "Running" or "Paused") { <div class="move-error">车辆正在执行任务，请先关闭窗口并停止当前任务。</div> }

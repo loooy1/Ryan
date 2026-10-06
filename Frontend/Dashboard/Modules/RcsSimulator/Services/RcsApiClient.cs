@@ -5,6 +5,7 @@ using Contracts.Rcs.Inventory;
 using Contracts.Rcs.Route;
 using Contracts.Rcs.Tasks;
 using Contracts.Rcs.Vehicle;
+using Contracts.Rcs.StationBusiness;
 
 namespace Dashboard.Modules.RcsSimulator.Services;
 
@@ -70,6 +71,29 @@ public sealed class RcsApiClient
         return await response.Content.ReadFromJsonAsync<AlgorithmSettingsDto>(cancellationToken: token)
             ?? throw new InvalidOperationException("RCS 未确认算法设置保存成功。");
     }
+
+    public async Task<IReadOnlyList<RcsStationBusinessRuleDto>> GetStationBusinessRulesAsync(string mapCode, string? pointCode = null, CancellationToken token = default)
+    {
+        var query = $"mapCode={Uri.EscapeDataString(mapCode)}";
+        if (!string.IsNullOrWhiteSpace(pointCode)) query += "&pointCode=" + Uri.EscapeDataString(pointCode);
+        using var response = await _http.GetAsync(U("/api/rcs/station-business-rules?" + query), token);
+        await EnsureSuccessAsync(response, token);
+        return await response.Content.ReadFromJsonAsync<RcsStationBusinessRuleDto[]>(cancellationToken: token) ?? [];
+    }
+    public async Task<RcsStationBusinessRuleDto> SaveStationBusinessRuleAsync(RcsStationBusinessRuleDto rule, CancellationToken token = default)
+    {
+        var request = new SaveRcsStationBusinessRuleRequest { MapCode=rule.MapCode, PointCode=rule.PointCode, WaitPointCode=rule.WaitPointCode, Name=rule.Name, Event=rule.Event,
+            ActionType=rule.ActionType, ExecutionMode=rule.ExecutionMode, HttpMethod=rule.HttpMethod, Url=rule.Url, HeadersJson=rule.HeadersJson,
+            RequestBodyTemplate=rule.RequestBodyTemplate, PermitResponsePath=rule.PermitResponsePath, DenyMessagePath=rule.DenyMessagePath,
+            TimeoutMs=rule.TimeoutMs, RetryCount=rule.RetryCount, RetryDelayMs=rule.RetryDelayMs, SortOrder=rule.SortOrder, IsEnabled=rule.IsEnabled };
+        using var response = rule.Id == 0 ? await _http.PostAsJsonAsync(U("/api/rcs/station-business-rules"), request, token)
+            : await _http.PutAsJsonAsync(U($"/api/rcs/station-business-rules/{rule.Id}"), request, token);
+        await EnsureSuccessAsync(response, token);
+        return await response.Content.ReadFromJsonAsync<RcsStationBusinessRuleDto>(cancellationToken: token)
+            ?? throw new InvalidOperationException("RCS 未确认站点规则保存成功。");
+    }
+    public async Task DeleteStationBusinessRuleAsync(long id, CancellationToken token = default)
+    { using var response = await _http.DeleteAsync(U($"/api/rcs/station-business-rules/{id}"), token); await EnsureSuccessAsync(response, token); }
 
     public Task<RcsMapEditorDto?> GetEditorMapAsync(string mapCode = "default", CancellationToken token = default) =>
         _mapHttp.GetFromJsonAsync<RcsMapEditorDto>(U($"/api/rcs/editor/map?mapCode={Uri.EscapeDataString(mapCode)}"), token);
