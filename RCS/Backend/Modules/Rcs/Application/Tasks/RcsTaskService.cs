@@ -15,7 +15,7 @@ namespace RCSBackend.Modules.Rcs.Application.Tasks;
 /// <summary>任务接收、持久化和每车生命周期。长时间执行不占用调度锁。</summary>
 public sealed class RcsTaskService(IRcsTaskStore store, RcsMapCache maps, IRcsTaskScheduler scheduler,
     IRcsTaskExecutionService executor, RcsVehicleRegistry vehicles, RcsDispatchLock dispatchLock,
-    ILogger<RcsTaskService> logger) : IRcsTaskService
+    RcsInventoryTransferService inventory, ILogger<RcsTaskService> logger) : IRcsTaskService
 {
     private readonly SemaphoreSlim _gate = dispatchLock.Gate;
     private readonly Channel<bool> _wake = Channel.CreateBounded<bool>(new BoundedChannelOptions(1)
@@ -23,110 +23,269 @@ public sealed class RcsTaskService(IRcsTaskStore store, RcsMapCache maps, IRcsTa
     private readonly ConcurrentDictionary<string, ActiveTask> _active = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<long, Task> _executions = new();
     private CancellationToken _executionLifetime;
+    private bool _clearing;
     public event Action<RcsTaskDto>? TaskChanged;
+    public event Action<int>? TasksCleared;
     public void NotifyWork() => _wake.Writer.TryWrite(true);
     public void SetExecutionLifetime(CancellationToken token) => _executionLifetime = token;
     public bool IsVehicleBusy(string vehicleId) => _active.ContainsKey(vehicleId);
 
-    public Task<RcsTaskReceiveResponse> ReceiveAsync(RcsTaskReceiveRequest request, string originalRequestJson, CancellationToken token = default) =>
+    public Task<RcsApiResponse> ReceiveAsync(RcsTaskReceiveRequest request, string originalRequestJson, CancellationToken token = default) =>
         ReceiveFromAsync(request, RcsTaskSource.Upstream, originalRequestJson, token);
 
-    public Task<RcsTaskReceiveResponse> ReceiveManualAsync(RcsTaskReceiveRequest request, CancellationToken token = default) =>
+    public Task<RcsApiResponse> ReceiveManualAsync(RcsTaskReceiveRequest request, CancellationToken token = default) =>
         ReceiveFromAsync(request, RcsTaskSource.Manual, "", token);
 
-    private async Task<RcsTaskReceiveResponse> ReceiveFromAsync(RcsTaskReceiveRequest request, string source, string originalRequestJson, CancellationToken token)
+    private async Task<RcsApiResponse> ReceiveFromAsync(RcsTaskReceiveRequest request, string source, string originalRequestJson, CancellationToken token)
     {
         RcsTaskRequestValidator.Validate(request, allowManualTaskType: source == RcsTaskSource.Manual);
         await vehicles.InitializeAsync(token);
         await _gate.WaitAsync(token);
         try
         {
+            if (_clearing) throw new RcsTaskConflictException("正在清空任务，请稍后重试。");
             var existing = await store.FindAsync(request.Tasks.Select(x => x.TaskId).ToArray(), token);
             var byId = existing.ToDictionary(x => x.TaskId, StringComparer.OrdinalIgnoreCase);
             var added = new List<RcsTaskRow>();
+            var reservedTaskIds = new List<string>();
             var currentMap = maps.Current;
-            foreach (var input in request.Tasks)
+            try
             {
-                if (byId.TryGetValue(input.TaskId, out var duplicate))
+                foreach (var input in request.Tasks)
                 {
-                    if (!SameRequest(duplicate, request, input, source))
-                        throw new RcsTaskConflictException($"TaskId {input.TaskId} 已存在且报文内容不同。");
-                    if (source == RcsTaskSource.Upstream
-                        && string.IsNullOrWhiteSpace(duplicate.OriginalRequestJson)
-                        && !string.IsNullOrWhiteSpace(originalRequestJson))
+                    if (byId.TryGetValue(input.TaskId, out var duplicate))
                     {
-                        duplicate.OriginalRequestJson = originalRequestJson;
-                        duplicate.UpdatedAt = DateTime.UtcNow;
-                        await store.UpdateAsync(duplicate, token);
-                        Publish(duplicate, "已保存上游系统原始报文");
+                        if (!SameRequest(duplicate, request, input, source))
+                            throw new RcsTaskConflictException($"TaskId {input.TaskId} 已存在且报文内容不同。");
+                        if (source == RcsTaskSource.Upstream
+                            && string.IsNullOrWhiteSpace(duplicate.OriginalRequestJson)
+                            && !string.IsNullOrWhiteSpace(originalRequestJson))
+                        {
+                            duplicate.OriginalRequestJson = originalRequestJson;
+                            duplicate.UpdatedAt = DateTime.UtcNow;
+                            await store.UpdateAsync(duplicate, token);
+                            Publish(duplicate, "已保存上游系统原始报文");
+                        }
+                        continue;
                     }
-                    continue;
-                }
-                var map = currentMap ?? throw new ArgumentException("没有当前地图，请先发布并加载地图。");
-                if (!string.Equals(map.SceneName, request.Warehouse, StringComparison.OrdinalIgnoreCase))
-                    throw new ArgumentException($"场景 {request.Warehouse} 与当前地图场景 {map.SceneName} 不一致。");
-                if (input.StationCode.Any(code => !map.Points.ContainsKey(code)))
-                    throw new ArgumentException($"任务 {input.TaskId} 的 StationCode 包含不存在或禁用的站点。");
-                if (input.VehicleId != "")
-                {
-                    var target = executor.GetVehicles().FirstOrDefault(x => SameId(x.Id, input.VehicleId))
-                        ?? throw new ArgumentException($"车辆 {input.VehicleId} 不存在。");
+                    var map = currentMap ?? throw new ArgumentException("没有当前地图，请先发布并加载地图。");
+                    if (!string.Equals(map.SceneName, request.Warehouse, StringComparison.OrdinalIgnoreCase))
+                        throw new ArgumentException($"场景 {request.Warehouse} 与当前地图场景 {map.SceneName} 不一致。");
+
+                    var normalizedStations = new List<string>(input.StationCode.Count);
+                    foreach (var code in input.StationCode)
+                    {
+                        if (!map.TryGetPoint(code, out var point))
+                            throw new ArgumentException($"任务 {input.TaskId} 的站点 {code} 不存在、已禁用或楼层与地图 Z 不匹配。");
+                        normalizedStations.Add(point.PointCode);
+                    }
+                    ValidateTaskRoute(map, input.TaskId, normalizedStations);
+                    var stops = RcsTaskRoutePlanner.CreateStops(new(input.TaskId, input.VehicleId, map.MapCode,
+                        request.Warehouse, normalizedStations, input.TaskType, input.ContainerCode, input.StationActions));
+                    var fetchStops = stops.Where(x => x.Action == Contracts.Rcs.Protocol.VehiclePointAction.Fetch).ToArray();
+                    var putStops = stops.Where(x => x.Action == Contracts.Rcs.Protocol.VehiclePointAction.Put).ToArray();
+                    if (fetchStops.Length > 0 || putStops.Length > 0)
+                    {
+                        var stopArray = stops.ToArray();
+                        if (fetchStops.Length != 1 || putStops.Length != 1
+                            || Array.IndexOf(stopArray, fetchStops[0]) >= Array.IndexOf(stopArray, putStops[0]))
+                            throw new ArgumentException("库存搬运任务必须先执行一次 fetch，再执行一次 put。");
+                        try
+                        {
+                            await inventory.ReserveBeforeAcceptanceAsync(input.TaskId, map.MapCode,
+                                input.ContainerCode, fetchStops[0].PointCode, putStops[0].PointCode, token);
+                            reservedTaskIds.Add(input.TaskId);
+                        }
+                        catch (RcsInventoryPreconditionException ex) when (ex.IsConflict)
+                        {
+                            throw new RcsTaskConflictException(ex.Message);
+                        }
+                        catch (RcsInventoryPreconditionException ex)
+                        {
+                            throw new ArgumentException(ex.Message);
+                        }
+                    }
+
+                    if (input.VehicleId != "")
+                    {
+                        var target = executor.GetVehicles().FirstOrDefault(x => SameId(x.Id, input.VehicleId))
+                            ?? throw new ArgumentException($"车辆 {input.VehicleId} 不存在。");
+                        if (source == RcsTaskSource.Manual)
+                        {
+                            if (!target.IsEnabled) throw new ArgumentException($"车辆 {input.VehicleId} 已停用。");
+                            if (!target.IsOnline) throw new RcsTaskConflictException($"车辆 {input.VehicleId} 当前离线，不能下发手动任务。");
+                            if (target.OperatingMode != RcsOperatingMode.Manual)
+                                throw new ArgumentException($"手动界面任务必须指定手动模式车辆，车辆 {input.VehicleId} 当前为自动模式。");
+                        }
+                    }
+                    else if (source == RcsTaskSource.Manual)
+                        throw new ArgumentException("手动界面任务必须指定一台手动模式车辆。");
+
+                    var row = new RcsTaskRow
+                    {
+                        TaskId = input.TaskId, GroupId = request.GroupId, MsgTime = request.MsgTime,
+                        Warehouse = request.Warehouse, PriorityCode = request.PriorityCode,
+                        TaskType = input.TaskType, ContainerCode = input.ContainerCode, RequestedVehicleId = input.VehicleId,
+                        Source = source,
+                        OriginalRequestJson = source == RcsTaskSource.Upstream ? originalRequestJson : "",
+                        StationCodesJson = JsonSerializer.Serialize(input.StationCode),
+                        StationActionsJson = JsonSerializer.Serialize(input.StationActions),
+                        ExecutionStagesJson = JsonSerializer.Serialize(CreatePendingExecutionStages(input, map.MapCode, request.Warehouse)),
+                        AreaCodesJson = JsonSerializer.Serialize(input.AreaCode), MapCode = map.MapCode,
+                        CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow
+                    };
                     if (source == RcsTaskSource.Manual)
                     {
-                        if (!target.IsEnabled) throw new ArgumentException($"车辆 {input.VehicleId} 已停用。");
-                        if (target.OperatingMode != RcsOperatingMode.Manual)
-                            throw new ArgumentException($"手动界面任务必须指定手动模式车辆，车辆 {input.VehicleId} 当前为自动模式。");
+                        var target = executor.GetVehicles().First(x => SameId(x.Id, input.VehicleId));
+                        if (_active.ContainsKey(target.Id) || target.Status is not ("Idle" or "Arrived"))
+                            throw new RcsTaskConflictException($"手动车辆 {target.Id} 当前忙碌，任务未下发。请等车辆空闲后重试。");
+                        if (added.Any(x => SameId(x.VehicleId, target.Id)))
+                            throw new ArgumentException($"同一批手动任务不能重复下发给车辆 {target.Id}。");
+                        row.Status = RcsTaskStatus.Running;
+                        row.VehicleId = target.Id;
+                        row.StartedAt = DateTime.UtcNow;
                     }
+                    added.Add(row); byId.Add(row.TaskId, row);
                 }
-                else if (source == RcsTaskSource.Manual)
-                    throw new ArgumentException("手动界面任务必须指定一台手动模式车辆。");
-                var row = new RcsTaskRow
-                {
-                    TaskId = input.TaskId, GroupId = request.GroupId, MsgTime = request.MsgTime,
-                    Warehouse = request.Warehouse, PriorityCode = request.PriorityCode,
-                    TaskType = input.TaskType, ContainerCode = input.ContainerCode, RequestedVehicleId = input.VehicleId,
-                    Source = source,
-                    OriginalRequestJson = source == RcsTaskSource.Upstream ? originalRequestJson : "",
-                    StationCodesJson = JsonSerializer.Serialize(input.StationCode),
-                    StationActionsJson = JsonSerializer.Serialize(input.StationActions),
-                    ExecutionStagesJson = JsonSerializer.Serialize(CreatePendingExecutionStages(input, map.MapCode, request.Warehouse)),
-                    AreaCodesJson = JsonSerializer.Serialize(input.AreaCode), MapCode = map.MapCode,
-                    CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow
-                };
-                if (source == RcsTaskSource.Manual)
-                {
-                    var target = executor.GetVehicles().First(x => SameId(x.Id, input.VehicleId));
-                    if (_active.ContainsKey(target.Id) || target.Status is not ("Idle" or "Arrived"))
-                        throw new RcsTaskConflictException($"手动车辆 {target.Id} 当前忙碌，任务未下发。请等车辆空闲后重试。");
-                    if (added.Any(x => SameId(x.VehicleId, target.Id)))
-                        throw new ArgumentException($"同一批手动任务不能重复下发给车辆 {target.Id}。");
-                    row.Status = RcsTaskStatus.Running;
-                    row.VehicleId = target.Id;
-                    row.StartedAt = DateTime.UtcNow;
-                }
-                added.Add(row); byId.Add(row.TaskId, row);
+
+                if (added.Count > 0) await store.AddAsync(added, token);
             }
-            if (added.Count > 0) await store.AddAsync(added, token);
+            catch
+            {
+                foreach (var taskId in reservedTaskIds) inventory.Release(taskId);
+                throw;
+            }
             foreach (var task in added)
             {
                 if (source == RcsTaskSource.Manual) StartExecution(task, _executionLifetime, "手动任务已直接下发给指定车辆");
                 else Publish(task, "任务已接收并进入等待队列");
             }
             if (source == RcsTaskSource.Upstream) NotifyWork();
-            return new RcsTaskReceiveResponse { Success = true, MsgTime = ProtocolTime(),
-                Message = source == RcsTaskSource.Manual
-                    ? $"新增 {added.Count} 个手动任务，已直接下发给指定车辆；已存在 {existing.Count} 个任务。"
-                    : $"新增 {added.Count} 个任务，已存在 {existing.Count} 个任务；任务已保存，等待自动车辆分配。",
-                Tasks = request.Tasks.Select(x => byId[x.TaskId].ToDto()).ToArray() };
+            return RcsApiResponse.Accepted();
         }
         finally { _gate.Release(); }
     }
 
     public async Task<IReadOnlyList<RcsTaskDto>> ListAsync(int limit, CancellationToken token = default) =>
         (await store.ListAsync(Math.Clamp(limit, 1, 500), token)).Select(x => x.ToDto()).ToArray();
+    public async Task<RcsTaskPageDto> ListPageAsync(int page, int pageSize, string status, string search,
+        CancellationToken token = default)
+    {
+        pageSize = Math.Clamp(pageSize / 10 * 10, 10, 100);
+        search = (search ?? "").Trim();
+        if (search.Length > 128) search = search[..128];
+        var rows = await store.ListPageAsync(Math.Max(page, 1), pageSize, status?.Trim() ?? "", search, token);
+        return new RcsTaskPageDto
+        {
+            Items = rows.Items.Select(x => x.ToDto()).ToArray(), TotalCount = rows.TotalCount,
+            AllTaskCount = rows.AllTaskCount, GroupCount = rows.GroupCount,
+            WaitingCount = rows.WaitingCount, ExecutingCount = rows.ExecutingCount,
+            Page = rows.Page, PageSize = rows.PageSize, TotalPages = rows.TotalPages
+        };
+    }
+
+    public async Task<int> ClearAllAsync(CancellationToken token = default)
+    {
+        ActiveTask[] active;
+        var clearStarted = false;
+        try
+        {
+            await _gate.WaitAsync(token);
+            try
+            {
+                if (_clearing) throw new RcsTaskConflictException("任务清空操作已在进行中。");
+                _clearing = true;
+                clearStarted = true;
+                active = _active.Values.ToArray();
+                foreach (var task in active)
+                {
+                    task.Row.Status = RcsTaskStatus.Cancelling;
+                    task.Row.Message = "用户正在清空任务，等待车辆停止确认。";
+                    await store.UpdateAsync(task.Row, token);
+                    task.Cancellation.Cancel();
+                    Publish(task.Row, "清空任务：正在请求车辆停止");
+                }
+            }
+            finally { _gate.Release(); }
+
+            var executions = active.Select(task => _executions.TryGetValue(task.Row.Id, out var execution)
+                ? execution : Task.CompletedTask).ToArray();
+            try { await Task.WhenAll(executions).WaitAsync(TimeSpan.FromSeconds(45), token); }
+            catch (TimeoutException) { throw new RcsTaskConflictException("等待活动车辆停止超时，任务记录已保留；请确认车辆状态后再清空。"); }
+
+            await _gate.WaitAsync(CancellationToken.None);
+            try
+            {
+                if (!_active.IsEmpty) throw new RcsTaskConflictException("仍有车辆任务未完成停止确认，任务记录已保留。");
+                if (active.Any(task => task.Row.Status is not (RcsTaskStatus.Cancelled or RcsTaskStatus.Completed)))
+                    throw new RcsTaskConflictException("至少一台车辆未能确认安全停止，任务记录已保留；请检查车辆状态后再清空。");
+                var waitingReservations = await store.WaitingCandidatesAsync(RcsTaskSource.Upstream, token);
+                var deletedCount = await store.DeleteAllAsync(token);
+                foreach (var waiting in waitingReservations) inventory.Release(waiting.TaskId);
+                TasksCleared?.Invoke(deletedCount);
+                return deletedCount;
+            }
+            finally
+            {
+                _clearing = false;
+                _gate.Release();
+            }
+        }
+        catch
+        {
+            if (clearStarted) await ResetClearingAsync();
+            throw;
+        }
+    }
+
+    private async Task ResetClearingAsync()
+    {
+        await _gate.WaitAsync(CancellationToken.None);
+        try { _clearing = false; }
+        finally { _gate.Release(); }
+    }
     public async Task<RcsTaskDto?> GetAsync(string taskId, CancellationToken token = default) =>
         (await store.FindAsync([taskId], token)).FirstOrDefault()?.ToDto();
-    public Task RecoverAsync(CancellationToken token) => store.RecoverAsync(token);
+    public async Task RecoverAsync(CancellationToken token)
+    {
+        await store.RecoverAsync(token);
+        var map = maps.Current;
+        if (map is null) return;
+
+        foreach (var task in await store.WaitingTasksAsync(RcsTaskSource.Upstream, token))
+        {
+            try
+            {
+                if (!SameId(task.MapCode, map.MapCode) || !SameId(task.Warehouse, map.SceneName))
+                    throw new ArgumentException("等待任务使用的地图或场景与当前地图不一致。");
+                var codes = JsonSerializer.Deserialize<string[]>(task.StationCodesJson) ?? [];
+                var normalized = codes.Select(code => map.TryGetPoint(code, out var point)
+                    ? point.PointCode
+                    : throw new ArgumentException($"等待任务站点 {code} 不存在或楼层与当前地图不匹配。")).ToArray();
+                ValidateTaskRoute(map, task.TaskId, normalized);
+                var actions = JsonSerializer.Deserialize<string[]>(task.StationActionsJson) ?? [];
+                var stops = RcsTaskRoutePlanner.CreateStops(new(task.TaskId, task.RequestedVehicleId, map.MapCode,
+                    task.Warehouse, normalized, task.TaskType, task.ContainerCode, actions));
+                var fetch = stops.Where(x => x.Action == Contracts.Rcs.Protocol.VehiclePointAction.Fetch).ToArray();
+                var put = stops.Where(x => x.Action == Contracts.Rcs.Protocol.VehiclePointAction.Put).ToArray();
+                if (fetch.Length == 0 && put.Length == 0) continue;
+                var stopArray = stops.ToArray();
+                if (fetch.Length != 1 || put.Length != 1
+                    || Array.IndexOf(stopArray, fetch[0]) >= Array.IndexOf(stopArray, put[0]))
+                    throw new ArgumentException("等待中的库存搬运任务必须先执行一次 fetch，再执行一次 put。");
+                await inventory.ReserveBeforeAcceptanceAsync(task.TaskId, map.MapCode, task.ContainerCode,
+                    fetch[0].PointCode, put[0].PointCode, token);
+            }
+            catch (Exception ex) when (ex is ArgumentException or RcsInventoryPreconditionException or JsonException)
+            {
+                task.Status = RcsTaskStatus.Failed;
+                task.Message = ex.Message;
+                task.FinishedAt = DateTime.UtcNow;
+                await store.UpdateAsync(task, token);
+                Publish(task, ex.Message);
+            }
+        }
+    }
     public async Task WaitForWorkAsync(CancellationToken token) => await _wake.Reader.ReadAsync(token);
 
     // 只领取并启动一个任务，立即返回，后台循环可继续给其他空闲车分配。
@@ -135,11 +294,12 @@ public sealed class RcsTaskService(IRcsTaskStore store, RcsMapCache maps, IRcsTa
         await _gate.WaitAsync(stoppingToken);
         try
         {
+            if (_clearing) return false;
             var waiting = await store.WaitingCandidatesAsync(RcsTaskSource.Upstream, stoppingToken);
             var available = executor.GetVehicles().Where(x => !_active.ContainsKey(x.Id)).ToArray();
             var assignment = scheduler.Select(waiting, available);
             if (assignment is null) return false;
-            if (_active.ContainsKey(assignment.VehicleId) || !available.Any(x => x.Id == assignment.VehicleId && x.IsEnabled
+            if (_active.ContainsKey(assignment.VehicleId) || !available.Any(x => x.Id == assignment.VehicleId && x.IsEnabled && x.IsOnline
                 && x.OperatingMode == RcsOperatingMode.Automatic && (x.Status is "Idle" or "Arrived")))
                 throw new InvalidOperationException("调度器返回了不可用或非自动模式车辆。");
             var next = (await store.FindAsync([assignment.TaskId], stoppingToken)).FirstOrDefault();
@@ -230,6 +390,7 @@ public sealed class RcsTaskService(IRcsTaskStore store, RcsMapCache maps, IRcsTa
         finally
         {
             executor.ClearVehiclePlanningGoal(task.VehicleId);
+            inventory.Release(task.TaskId);
             cancellation.Dispose();
             NotifyWork();
         }
@@ -240,6 +401,7 @@ public sealed class RcsTaskService(IRcsTaskStore store, RcsMapCache maps, IRcsTa
         await _gate.WaitAsync(token);
         try
         {
+            if (_clearing) throw new RcsTaskConflictException("正在清空任务，暂不能修改车辆任务状态。");
             var active = FindActive(taskId);
             if (active is null || active.Row.Status is not (RcsTaskStatus.Running or RcsTaskStatus.Paused)) return false;
             var task = active.Row;
@@ -256,6 +418,7 @@ public sealed class RcsTaskService(IRcsTaskStore store, RcsMapCache maps, IRcsTa
         await _gate.WaitAsync(token);
         try
         {
+            if (_clearing) throw new RcsTaskConflictException("正在清空任务，暂不能修改车辆任务状态。");
             var active = FindActive(taskId);
             if (active is null || active.Row.Status != RcsTaskStatus.Paused) return false;
             var task = active.Row; task.Status = RcsTaskStatus.Running;
@@ -276,6 +439,7 @@ public sealed class RcsTaskService(IRcsTaskStore store, RcsMapCache maps, IRcsTa
         await _gate.WaitAsync(token);
         try
         {
+            if (_clearing) throw new RcsTaskConflictException("正在清空任务，请稍后重试。");
             var active = FindActive(taskId);
             if (active is not null)
             {
@@ -286,7 +450,8 @@ public sealed class RcsTaskService(IRcsTaskStore store, RcsMapCache maps, IRcsTa
             var waiting = (await store.FindAsync([taskId], token)).FirstOrDefault();
             if (waiting?.Status != RcsTaskStatus.Waiting) return false;
             waiting.Status = RcsTaskStatus.Cancelled; waiting.Message = "等待中的任务已取消。"; waiting.FinishedAt = DateTime.UtcNow;
-            await store.UpdateAsync(waiting, token); Publish(waiting, waiting.Message); NotifyWork(); return true;
+            await store.UpdateAsync(waiting, token); inventory.Release(waiting.TaskId);
+            Publish(waiting, waiting.Message); NotifyWork(); return true;
         }
         finally { _gate.Release(); }
     }
@@ -297,6 +462,7 @@ public sealed class RcsTaskService(IRcsTaskStore store, RcsMapCache maps, IRcsTa
         await _gate.WaitAsync(token);
         try
         {
+            if (_clearing) throw new RcsTaskConflictException("正在清空任务，请稍后重试。");
             executor.ValidateReset(vehicleId, pointCode);
             if (_active.TryGetValue(vehicleId, out var active))
             {
@@ -317,6 +483,7 @@ public sealed class RcsTaskService(IRcsTaskStore store, RcsMapCache maps, IRcsTa
         await _gate.WaitAsync(token);
         try
         {
+            if (_clearing) throw new RcsTaskConflictException("正在清空任务，请稍后重试。");
             if (_active.ContainsKey(vehicleId))
                 throw new RcsTaskConflictException($"车辆 {vehicleId} 有活动任务，不能修改当前位置。");
             executor.ValidateReset(vehicleId, pointCode);
@@ -332,6 +499,7 @@ public sealed class RcsTaskService(IRcsTaskStore store, RcsMapCache maps, IRcsTa
         await _gate.WaitAsync(token);
         try
         {
+            if (_clearing) throw new RcsTaskConflictException("正在清空任务，请稍后重试。");
             var active = FindActive(taskId);
             if (active is null || active.Row.Status is not (RcsTaskStatus.Running or RcsTaskStatus.Paused))
                 throw new RcsTaskConflictException("任务不在执行或暂停状态。");
@@ -376,9 +544,24 @@ public sealed class RcsTaskService(IRcsTaskStore store, RcsMapCache maps, IRcsTa
         try
         {
             var stages = JsonSerializer.Deserialize<List<RcsTaskExecutionStageDto>>(task.ExecutionStagesJson) ?? [];
+            var persistedStage = stage with { RoutePointCodes = [] };
             var index = stages.FindIndex(x => x.StageCode == stage.StageCode);
-            if (index < 0) stages.Add(stage); else stages[index] = stage;
+            if (index < 0) stages.Add(persistedStage); else stages[index] = persistedStage;
             task.ExecutionStagesJson = JsonSerializer.Serialize(stages.OrderBy(x => x.Sequence));
+            if (stage.Status == RcsTaskExecutionStageStatus.Running && stage.RoutePointCodes.Count > 0)
+            {
+                if (stage.Sequence == 1)
+                    task.RouteJson = JsonSerializer.Serialize(stage.RoutePointCodes);
+                else if (stage.Sequence == 3)
+                {
+                    var firstLeg = JsonSerializer.Deserialize<string[]>(task.RouteJson) ?? [];
+                    var fullRoute = firstLeg.ToList();
+                    var endOffset = firstLeg.Length > 0
+                        && string.Equals(firstLeg[^1], stage.RoutePointCodes[0], StringComparison.OrdinalIgnoreCase) ? 1 : 0;
+                    fullRoute.AddRange(stage.RoutePointCodes.Skip(endOffset));
+                    task.RouteJson = JsonSerializer.Serialize(fullRoute);
+                }
+            }
             task.UpdatedAt = DateTime.UtcNow;
             await store.UpdateAsync(task, CancellationToken.None);
             Publish(task, $"RCS 执行阶段：{stage.Name} {stage.Status}");
@@ -388,16 +571,15 @@ public sealed class RcsTaskService(IRcsTaskStore store, RcsMapCache maps, IRcsTa
 
     private static IReadOnlyList<RcsTaskExecutionStageDto> CreateExecutionStages(RcsTaskExecutionPlan plan)
     {
-        if (!plan.SyncInventory) return [];
-        var fetch = plan.TaskStops.Single(x => x.Action == Contracts.Rcs.Protocol.VehiclePointAction.Fetch);
-        var put = plan.TaskStops.Single(x => x.Action == Contracts.Rcs.Protocol.VehiclePointAction.Put);
-        var current = plan.RoutePointCodes.FirstOrDefault() ?? "";
+        var start = plan.Stops.LastOrDefault() ?? plan.TaskStops.First();
+        var end = plan.RemainingStageStops.LastOrDefault() ?? plan.TaskStops.Last();
+        var current = plan.RoutePlan.TotalPath.FirstOrDefault()?.PointCode ?? start.PointCode;
         return
         [
-            new() { Sequence = 1, StageCode = "VEHICLE_TO_PICKUP", Name = "叫车任务", Status = RcsTaskExecutionStageStatus.Waiting, FromPointCode = current, ToPointCode = fetch.PointCode, VehicleId = plan.VehicleId },
-            new() { Sequence = 2, StageCode = "PICKUP_ACTION", Name = "取货命令", Status = RcsTaskExecutionStageStatus.Waiting, FromPointCode = fetch.PointCode, ToPointCode = fetch.PointCode, Action = fetch.Action, VehicleId = plan.VehicleId },
-            new() { Sequence = 3, StageCode = "VEHICLE_TO_DROPOFF", Name = "放货任务", Status = RcsTaskExecutionStageStatus.Waiting, FromPointCode = fetch.PointCode, ToPointCode = put.PointCode, VehicleId = plan.VehicleId },
-            new() { Sequence = 4, StageCode = "DROPOFF_ACTION", Name = "放货命令", Status = RcsTaskExecutionStageStatus.Waiting, FromPointCode = put.PointCode, ToPointCode = put.PointCode, Action = put.Action, VehicleId = plan.VehicleId }
+            new() { Sequence = 1, StageCode = "VEHICLE_TO_START", Name = "车辆从当前位置前往起点", Status = RcsTaskExecutionStageStatus.Waiting, FromPointCode = current, ToPointCode = start.PointCode, VehicleId = plan.VehicleId },
+            new() { Sequence = 2, StageCode = "START_ACTION", Name = "车辆在起点执行起点动作", Status = RcsTaskExecutionStageStatus.Waiting, FromPointCode = start.PointCode, ToPointCode = start.PointCode, Action = start.Action, VehicleId = plan.VehicleId },
+            new() { Sequence = 3, StageCode = "VEHICLE_TO_END", Name = "车辆从起点前往终点", Status = RcsTaskExecutionStageStatus.Waiting, FromPointCode = start.PointCode, ToPointCode = end.PointCode, VehicleId = plan.VehicleId },
+            new() { Sequence = 4, StageCode = "END_ACTION", Name = "车辆在终点执行终点动作", Status = RcsTaskExecutionStageStatus.Waiting, FromPointCode = end.PointCode, ToPointCode = end.PointCode, Action = end.Action, VehicleId = plan.VehicleId }
         ];
     }
 
@@ -406,20 +588,46 @@ public sealed class RcsTaskService(IRcsTaskStore store, RcsMapCache maps, IRcsTa
     {
         var stops = RcsTaskRoutePlanner.CreateStops(new(request.TaskId, request.VehicleId, mapCode, warehouse,
             request.StationCode, request.TaskType, request.ContainerCode, request.StationActions));
-        var fetch = stops.Where(x => x.Action == Contracts.Rcs.Protocol.VehiclePointAction.Fetch).ToArray();
-        var put = stops.Where(x => x.Action == Contracts.Rcs.Protocol.VehiclePointAction.Put).ToArray();
-        var stopList = stops.ToList();
-        if (fetch.Length != 1 || put.Length != 1
-            || stopList.FindIndex(x => x.Action == Contracts.Rcs.Protocol.VehiclePointAction.Fetch)
-                >= stopList.FindIndex(x => x.Action == Contracts.Rcs.Protocol.VehiclePointAction.Put)
-            || string.IsNullOrWhiteSpace(request.ContainerCode)) return [];
+        if (stops.Count == 0) return [];
+        var start = stops[0];
+        var end = stops[^1];
         return
         [
-            new() { Sequence = 1, StageCode = "VEHICLE_TO_PICKUP", Name = "叫车任务", Status = RcsTaskExecutionStageStatus.Waiting, ToPointCode = fetch[0].PointCode, VehicleId = request.VehicleId },
-            new() { Sequence = 2, StageCode = "PICKUP_ACTION", Name = "取货命令", Status = RcsTaskExecutionStageStatus.Waiting, FromPointCode = fetch[0].PointCode, ToPointCode = fetch[0].PointCode, Action = fetch[0].Action, VehicleId = request.VehicleId },
-            new() { Sequence = 3, StageCode = "VEHICLE_TO_DROPOFF", Name = "放货任务", Status = RcsTaskExecutionStageStatus.Waiting, FromPointCode = fetch[0].PointCode, ToPointCode = put[0].PointCode, VehicleId = request.VehicleId },
-            new() { Sequence = 4, StageCode = "DROPOFF_ACTION", Name = "放货命令", Status = RcsTaskExecutionStageStatus.Waiting, FromPointCode = put[0].PointCode, ToPointCode = put[0].PointCode, Action = put[0].Action, VehicleId = request.VehicleId }
+            new() { Sequence = 1, StageCode = "VEHICLE_TO_START", Name = "车辆从当前位置前往起点", Status = RcsTaskExecutionStageStatus.Waiting, ToPointCode = start.PointCode, VehicleId = request.VehicleId },
+            new() { Sequence = 2, StageCode = "START_ACTION", Name = "车辆在起点执行起点动作", Status = RcsTaskExecutionStageStatus.Waiting, FromPointCode = start.PointCode, ToPointCode = start.PointCode, Action = start.Action, VehicleId = request.VehicleId },
+            new() { Sequence = 3, StageCode = "VEHICLE_TO_END", Name = "车辆从起点前往终点", Status = RcsTaskExecutionStageStatus.Waiting, FromPointCode = start.PointCode, ToPointCode = end.PointCode, VehicleId = request.VehicleId },
+            new() { Sequence = 4, StageCode = "END_ACTION", Name = "车辆在终点执行终点动作", Status = RcsTaskExecutionStageStatus.Waiting, FromPointCode = end.PointCode, ToPointCode = end.PointCode, Action = end.Action, VehicleId = request.VehicleId }
         ];
+    }
+
+    private static void ValidateTaskRoute(Contracts.Rcs.Map.RcsMapSnapshot map, string taskId,
+        IReadOnlyList<string> stationCodes)
+    {
+        for (var i = 1; i < stationCodes.Count; i++)
+        {
+            var start = stationCodes[i - 1];
+            var destination = stationCodes[i];
+            if (HasStaticPath(map, start, destination)) continue;
+            throw new ArgumentException($"任务 {taskId} 的站点路径不可达：{start} → {destination}。");
+        }
+    }
+
+    private static bool HasStaticPath(Contracts.Rcs.Map.RcsMapSnapshot map, string start, string destination)
+    {
+        if (SameId(start, destination)) return true;
+        var visited = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { start };
+        var pending = new Queue<string>();
+        pending.Enqueue(start);
+        while (pending.TryDequeue(out var current))
+        {
+            if (!map.Adjacency.TryGetValue(current, out var edges)) continue;
+            foreach (var edge in edges)
+            {
+                if (SameId(edge.ToPointCode, destination)) return true;
+                if (visited.Add(edge.ToPointCode)) pending.Enqueue(edge.ToPointCode);
+            }
+        }
+        return false;
     }
 
     private static bool SameId(string a, string b) => string.Equals(a, b, StringComparison.OrdinalIgnoreCase);

@@ -1,0 +1,261 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>HTTP 请求工具</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #08111f;
+      --panel: #101d30;
+      --panel-soft: #0b1728;
+      --border: #263a55;
+      --text: #e6f0ff;
+      --muted: #91a7c4;
+      --cyan: #35c7f4;
+      --green: #35d49a;
+      --red: #ff7185;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      padding: 32px 18px;
+      color: var(--text);
+      background: radial-gradient(ellipse at 15% 0%, #15314b 0, transparent 42%), var(--bg);
+      font: 14px/1.55 "Segoe UI", "Microsoft YaHei", sans-serif;
+    }
+    main { width: min(1080px, 100%); margin: 0 auto; }
+    header { margin: 0 0 22px; }
+    .eyebrow { color: var(--cyan); font-size: 11px; font-weight: 700; letter-spacing: .16em; }
+    h1 { margin: 5px 0 4px; font-size: 26px; }
+    header p, .hint { margin: 0; color: var(--muted); }
+    .card {
+      margin-top: 16px;
+      padding: 20px;
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      background: linear-gradient(145deg, rgba(18, 34, 54, .96), rgba(12, 24, 40, .96));
+      box-shadow: 0 16px 45px rgba(0, 0, 0, .18);
+    }
+    .row { display: grid; grid-template-columns: 145px minmax(0, 1fr); gap: 12px; align-items: end; }
+    .url-row { grid-template-columns: 125px minmax(0, 1fr) auto; }
+    .field { min-width: 0; }
+    label { display: block; margin: 0 0 7px; color: #b9cbe2; font-size: 12px; font-weight: 600; }
+    input, select, textarea {
+      width: 100%;
+      border: 1px solid #314762;
+      border-radius: 8px;
+      outline: none;
+      color: var(--text);
+      background: #091524;
+      font: inherit;
+      transition: border-color .15s, box-shadow .15s;
+    }
+    input, select { height: 42px; padding: 0 12px; }
+    textarea { min-height: 235px; padding: 12px; resize: vertical; font: 13px/1.55 Consolas, "Cascadia Code", monospace; tab-size: 2; }
+    input:focus, select:focus, textarea:focus { border-color: var(--cyan); box-shadow: 0 0 0 3px rgba(53, 199, 244, .12); }
+    .section-title { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+    h2 { margin: 0; font-size: 15px; }
+    .split { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    .actions { display: flex; align-items: center; gap: 9px; }
+    button {
+      min-height: 40px;
+      padding: 0 16px;
+      border: 1px solid #3c5876;
+      border-radius: 8px;
+      color: var(--text);
+      background: #172940;
+      font: inherit;
+      font-weight: 650;
+      cursor: pointer;
+    }
+    button:hover { filter: brightness(1.12); }
+    button:disabled { cursor: wait; opacity: .7; }
+    button.primary { border-color: #1689a8; background: linear-gradient(135deg, #0e9fbe, #147aa5); }
+    button.secondary { min-height: 34px; padding: 0 11px; font-size: 12px; }
+    .status { min-height: 24px; color: var(--muted); font-size: 12px; }
+    .status.ok { color: var(--green); }
+    .status.bad { color: var(--red); }
+    .response {
+      min-height: 235px;
+      margin: 0;
+      padding: 14px;
+      overflow: auto;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      border: 1px solid #263a55;
+      border-radius: 8px;
+      color: #cbe5ff;
+      background: #07111e;
+      font: 13px/1.55 Consolas, "Cascadia Code", monospace;
+    }
+    .notice {
+      margin-top: 14px;
+      padding: 11px 13px;
+      border: 1px solid #40506b;
+      border-radius: 8px;
+      color: #b8c8dd;
+      background: rgba(7, 17, 30, .65);
+      font-size: 12px;
+    }
+    @media (max-width: 720px) {
+      body { padding: 20px 12px; }
+      .row, .url-row, .split { grid-template-columns: 1fr; }
+      .card { padding: 15px; }
+      .url-row .actions { justify-content: stretch; }
+      .url-row .actions button { flex: 1; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div class="eyebrow">HTTP CLIENT · LOCAL TOOL</div>
+      <h1>HTTP 请求工具</h1>
+      <p>填写请求地址和 JSON 请求体，发送后查看状态码、耗时和响应内容。</p>
+    </header>
+
+    <section class="card" aria-label="请求设置">
+      <div class="row url-row">
+        <div class="field">
+          <label for="method">请求方法</label>
+          <select id="method">
+            <option>POST</option><option>GET</option><option>PUT</option><option>PATCH</option><option>DELETE</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="url">请求 URL</label>
+          <input id="url" type="url" spellcheck="false" placeholder="http://127.0.0.1:8224/api/v1/container_operation_finish">
+        </div>
+        <div class="actions">
+          <button class="primary" id="sendButton" type="button">发送请求</button>
+          <button id="clearButton" type="button">清空响应</button>
+        </div>
+      </div>
+
+      <div class="split" style="margin-top:20px">
+        <div class="field">
+          <div class="section-title">
+            <h2>请求头</h2>
+            <button class="secondary" id="headerButton" type="button">恢复默认</button>
+          </div>
+          <textarea id="headers" spellcheck="false" aria-label="请求头 JSON"></textarea>
+          <p class="hint" style="margin-top:7px;font-size:12px">按 JSON 对象填写，例如 Content-Type、Authorization。</p>
+        </div>
+        <div class="field">
+          <div class="section-title">
+            <h2>请求体</h2>
+            <button class="secondary" id="formatButton" type="button">格式化 JSON</button>
+          </div>
+          <textarea id="body" spellcheck="false" aria-label="请求体 JSON"></textarea>
+          <p class="hint" style="margin-top:7px;font-size:12px">GET 请求不会发送请求体。</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="card" aria-label="响应结果">
+      <div class="section-title">
+        <h2>响应</h2>
+        <div class="actions">
+          <span class="status" id="status">尚未发送请求</span>
+          <button class="secondary" id="copyButton" type="button">复制响应</button>
+        </div>
+      </div>
+      <pre class="response" id="response">响应内容会显示在这里。</pre>
+    </section>
+
+    <div class="notice">
+      跨域提示：浏览器可能因 CORS 策略拦截请求，尤其是直接双击打开本文件时。若看到“Failed to fetch”，检查服务端是否允许当前页面来源跨域访问；这不一定代表目标服务未启动。
+    </div>
+  </main>
+
+  <script>
+    const defaultHeaders = { "Content-Type": "application/json; charset=utf-8" };
+    const headerInput = document.getElementById("headers");
+    const bodyInput = document.getElementById("body");
+    const responseOutput = document.getElementById("response");
+    const statusOutput = document.getElementById("status");
+    const sendButton = document.getElementById("sendButton");
+
+    headerInput.value = JSON.stringify(defaultHeaders, null, 2);
+    bodyInput.value = JSON.stringify({ example: "请替换为接口要求的 JSON 请求体" }, null, 2);
+
+    document.getElementById("formatButton").addEventListener("click", () => {
+      try {
+        bodyInput.value = JSON.stringify(JSON.parse(bodyInput.value), null, 2);
+        setStatus("JSON 格式正确", "ok");
+      } catch (error) {
+        setStatus("JSON 格式错误：" + error.message, "bad");
+      }
+    });
+
+    document.getElementById("headerButton").addEventListener("click", () => {
+      headerInput.value = JSON.stringify(defaultHeaders, null, 2);
+    });
+
+    document.getElementById("clearButton").addEventListener("click", () => {
+      responseOutput.textContent = "响应内容会显示在这里。";
+      setStatus("尚未发送请求", "");
+    });
+
+    document.getElementById("copyButton").addEventListener("click", async () => {
+      try {
+        await navigator.clipboard.writeText(responseOutput.textContent);
+        setStatus("响应已复制", "ok");
+      } catch {
+        setStatus("复制失败，请手动选择响应内容复制", "bad");
+      }
+    });
+
+    sendButton.addEventListener("click", async () => {
+      const url = document.getElementById("url").value.trim();
+      const method = document.getElementById("method").value;
+      if (!url) {
+        setStatus("请先填写请求 URL", "bad");
+        document.getElementById("url").focus();
+        return;
+      }
+
+      let headers;
+      let requestBody;
+      try {
+        headers = JSON.parse(headerInput.value || "{}");
+        if (!headers || Array.isArray(headers) || typeof headers !== "object") throw new Error("请求头必须是 JSON 对象");
+        requestBody = method === "GET" ? undefined : bodyInput.value;
+        if (requestBody) JSON.parse(requestBody);
+      } catch (error) {
+        setStatus("请求设置错误：" + error.message, "bad");
+        return;
+      }
+
+      sendButton.disabled = true;
+      const startedAt = performance.now();
+      setStatus("请求发送中…", "");
+      responseOutput.textContent = "正在等待响应…";
+
+      try {
+        const response = await fetch(url, { method, headers, body: requestBody });
+        const text = await response.text();
+        const elapsed = Math.round(performance.now() - startedAt);
+        let displayed = text || "（响应体为空）";
+        try { displayed = JSON.stringify(JSON.parse(text), null, 2); } catch { /* 保留原始文本 */ }
+        responseOutput.textContent = displayed;
+        setStatus(`HTTP ${response.status} ${response.statusText || ""} · ${elapsed} ms`, response.ok ? "ok" : "bad");
+      } catch (error) {
+        const elapsed = Math.round(performance.now() - startedAt);
+        responseOutput.textContent = `${error.name}: ${error.message}\n\n浏览器请求失败。可能是 CORS 限制、网络不可达或 URL 错误。`;
+        setStatus(`请求失败 · ${elapsed} ms`, "bad");
+      } finally {
+        sendButton.disabled = false;
+      }
+    });
+
+    function setStatus(message, kind) {
+      statusOutput.textContent = message;
+      statusOutput.className = "status" + (kind ? " " + kind : "");
+    }
+  </script>
+</body>
+</html>

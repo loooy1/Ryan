@@ -6,9 +6,12 @@ public interface IRcsTaskService
 {
     void SetExecutionLifetime(CancellationToken token);
     event Action<RcsTaskDto>? TaskChanged;
-    Task<RcsTaskReceiveResponse> ReceiveAsync(RcsTaskReceiveRequest request, string originalRequestJson, CancellationToken token = default);
-    Task<RcsTaskReceiveResponse> ReceiveManualAsync(RcsTaskReceiveRequest request, CancellationToken token = default);
+    event Action<int>? TasksCleared;
+    Task<RcsApiResponse> ReceiveAsync(RcsTaskReceiveRequest request, string originalRequestJson, CancellationToken token = default);
+    Task<RcsApiResponse> ReceiveManualAsync(RcsTaskReceiveRequest request, CancellationToken token = default);
     Task<IReadOnlyList<RcsTaskDto>> ListAsync(int limit, CancellationToken token = default);
+    Task<RcsTaskPageDto> ListPageAsync(int page, int pageSize, string status, string search, CancellationToken token = default);
+    Task<int> ClearAllAsync(CancellationToken token = default);
     Task<RcsTaskDto?> GetAsync(string taskId, CancellationToken token = default);
     Task RecoverAsync(CancellationToken token);
     Task WaitForWorkAsync(CancellationToken token);

@@ -71,8 +71,15 @@ public sealed class RcsVehicleRegistry(IRcsVehicleStore store, RcsMapCache maps,
         try { telemetry = adapter.DecodeHeartbeat(payload); }
         catch (JsonException ex) { throw new ArgumentException($"车辆心跳报文格式无效：{ex.Message}"); }
         ValidateHeartbeat(telemetry);
-        if (telemetry.PointCode != "" && maps.Current is { } map && !map.Points.ContainsKey(telemetry.PointCode))
-            throw new ArgumentException($"车辆心跳上报的站点 {telemetry.PointCode} 不在当前地图中。");
+        if (telemetry.PointCode != "" && maps.Current is { } map)
+        {
+            if (!map.TryGetPoint(telemetry.PointCode, out var node))
+                throw new ArgumentException($"车辆心跳上报的站点 {telemetry.PointCode} 不在当前地图中。");
+            telemetry = telemetry with
+            {
+                PointCode = node.PointCode, X = telemetry.X ?? node.X, Y = telemetry.Y ?? node.Y, Z = node.Z
+            };
+        }
 
         VehicleStateDto state;
         lock (_gate)
@@ -174,7 +181,6 @@ public sealed class RcsVehicleRegistry(IRcsVehicleStore store, RcsMapCache maps,
             LastHeartbeatAt = entry.LastHeartbeatAt,
             PointCode = string.IsNullOrWhiteSpace(telemetry?.PointCode) ? state.PointCode : telemetry.PointCode,
             X = telemetry?.X ?? state.X, Y = telemetry?.Y ?? state.Y, Z = telemetry?.Z ?? state.Z,
-            Floor = telemetry?.Floor ?? state.Floor,
             Status = string.IsNullOrWhiteSpace(telemetry?.Status) ? state.Status : telemetry.Status,
             TaskId = string.IsNullOrWhiteSpace(telemetry?.TaskId) ? state.TaskId : telemetry.TaskId,
             CommandId = string.IsNullOrWhiteSpace(telemetry?.CommandId) ? state.CommandId : telemetry.CommandId,
@@ -194,8 +200,8 @@ public sealed class RcsVehicleRegistry(IRcsVehicleStore store, RcsMapCache maps,
         if (telemetry is null) throw new ArgumentException("车辆心跳解析结果为空。");
         if (telemetry.BatteryPercent is < 0 or > 100) throw new ArgumentException("心跳电量必须在 0 到 100 之间。");
         if (telemetry.X is { } x && !double.IsFinite(x) || telemetry.Y is { } y && !double.IsFinite(y)
-            || telemetry.Z is { } z && !double.IsFinite(z))
-            throw new ArgumentException("心跳坐标必须是有限数值。");
+            || telemetry.Z is { } z && (!double.IsFinite(z) || Math.Abs(z - Math.Round(z)) > 0.000001))
+            throw new ArgumentException("心跳坐标必须是有限数值，Z 必须是整数楼层号。");
         if (telemetry.RouteVersion is < 0 || telemetry.RouteIndex is < 0 || telemetry.RouteLength is < 0)
             throw new ArgumentException("心跳路径版本或进度不能为负数。");
         if (!string.IsNullOrWhiteSpace(telemetry.Status)
@@ -220,8 +226,8 @@ public sealed class RcsVehicleRegistry(IRcsVehicleStore store, RcsMapCache maps,
     private IVehicleProtocolSession CreateSession(RcsVehicleRow row, string? pointCode)
     {
         VehicleRoutePoint? position = null;
-        if (!string.IsNullOrWhiteSpace(pointCode) && maps.Current?.Points.TryGetValue(pointCode, out var node) == true)
-            position = new VehicleRoutePoint { PointCode = node.PointCode, X = node.X, Y = node.Y, Z = node.Z, Floor = node.Floor };
+        if (!string.IsNullOrWhiteSpace(pointCode) && maps.Current?.TryGetPoint(pointCode, out var node) == true)
+            position = new VehicleRoutePoint { PointCode = node.PointCode, X = node.X, Y = node.Y, Z = node.Z };
         else if (!string.IsNullOrWhiteSpace(pointCode))
             logger.LogWarning("车辆 {VehicleId} 的初始站点 {Point} 不在当前地图，车辆保持未定位。", row.VehicleId, pointCode);
         if (!_adapters.TryGetValue(row.Protocol, out var adapter))
@@ -238,7 +244,7 @@ public sealed class RcsVehicleRegistry(IRcsVehicleStore store, RcsMapCache maps,
         {
             Id = vehicleId, Protocol = protocol, Status = "ProtocolUnavailable",
             PointCode = position?.PointCode ?? "", X = position?.X ?? 0, Y = position?.Y ?? 0,
-            Z = position?.Z ?? 0, Floor = position?.Floor ?? 0
+            Z = position?.Z ?? 0
         };
         public event Action<VehicleStateDto>? StateChanged { add { } remove { } }
         public Task<VehicleCommandAck> SendAsync(VehicleCommand command, CancellationToken token = default) =>

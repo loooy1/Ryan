@@ -1,5 +1,6 @@
 using Contracts.Rcs.Route;
 using Contracts.Rcs.Vehicle;
+using Contracts.Rcs.Tasks;
 using Microsoft.AspNetCore.Mvc;
 using RCSBackend.Modules.Rcs.Application.Simulation;
 using RCSBackend.Modules.Rcs.Application.Tasks;
@@ -26,6 +27,26 @@ public sealed class RcsVehiclesController(RcsVehicleService vehicles, IRcsTaskSe
         return Ok(simulation.Vehicles);
     }
 
+    [HttpPost("{id}/heartbeat")]
+    [Consumes("application/json", "application/octet-stream", "text/plain")]
+    public async Task<ActionResult<VehicleStateDto>> Heartbeat(string id, CancellationToken token)
+    {
+        const int MaxPayloadBytes = 64 * 1024;
+        await using var buffer = new MemoryStream();
+        var chunk = new byte[8192];
+        while (true)
+        {
+            var count = await Request.Body.ReadAsync(chunk, token);
+            if (count == 0) break;
+            if (buffer.Length + count > MaxPayloadBytes)
+                return StatusCode(StatusCodes.Status413PayloadTooLarge, Error("心跳报文不能超过 64 KB。"));
+            await buffer.WriteAsync(chunk.AsMemory(0, count), token);
+        }
+        if (buffer.Length == 0) return BadRequest(Error("心跳报文不能为空。"));
+        try { return Ok(await vehicles.ReceiveHeartbeatAsync(id, buffer.ToArray(), token)); }
+        catch (ArgumentException ex) { return BadRequest(Error(ex.Message)); }
+    }
+
     [HttpPost]
     public async Task<ActionResult<VehicleStateDto>> Add(CreateVehicleRequest request, CancellationToken token)
     {
@@ -49,7 +70,7 @@ public sealed class RcsVehiclesController(RcsVehicleService vehicles, IRcsTaskSe
     [HttpDelete("{id}")]
     public async Task<IActionResult> Delete(string id, CancellationToken token)
     {
-        try { await vehicles.DeleteAsync(id, token); return NoContent(); }
+        try { await vehicles.DeleteAsync(id, token); return Ok(RcsApiResponse.Accepted()); }
         catch (ArgumentException ex) { return BadRequest(Error(ex.Message)); }
         catch (RcsTaskConflictException ex) { return Conflict(Error(ex.Message)); }
     }
@@ -75,7 +96,7 @@ public sealed class RcsVehiclesController(RcsVehicleService vehicles, IRcsTaskSe
     [HttpPost("{id}/reset")]
     public async Task<IActionResult> Reset(string id, [FromBody] string pointCode, CancellationToken token)
     {
-        try { await vehicles.ResetAsync(id, pointCode, token); return NoContent(); }
+        try { await vehicles.ResetAsync(id, pointCode, token); return Ok(RcsApiResponse.Accepted()); }
         catch (ArgumentException ex) { return BadRequest(Error(ex.Message)); }
         catch (RcsTaskConflictException ex) { return Conflict(Error(ex.Message)); }
     }
@@ -89,7 +110,7 @@ public sealed class RcsVehiclesController(RcsVehicleService vehicles, IRcsTaskSe
     private async Task<IActionResult> Control(string id, Func<Task<bool>> action, CancellationToken token)
     {
         if (!(await vehicles.ListAsync(token)).Any(x => SameId(x.Id, id))) return NotFound(Error("车辆不存在。"));
-        return await action() ? NoContent() : Conflict(Error("该车辆没有符合操作条件的活动任务。"));
+        return await action() ? Ok(RcsApiResponse.Accepted()) : Conflict(Error("该车辆没有符合操作条件的活动任务。"));
     }
     private async Task<VehicleStateDto?> GetCurrentAsync(string id, CancellationToken token)
     {
@@ -98,5 +119,5 @@ public sealed class RcsVehiclesController(RcsVehicleService vehicles, IRcsTaskSe
     }
     private VehicleStateDto? Current(string id) => simulation.Vehicles.FirstOrDefault(x => SameId(x.Id, id));
     private static bool SameId(string a, string b) => string.Equals(a, b, StringComparison.OrdinalIgnoreCase);
-    private static object Error(string message) => new { message };
+    private static RcsApiResponse Error(string message) => RcsApiResponse.Rejected(message);
 }

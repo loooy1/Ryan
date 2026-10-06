@@ -15,7 +15,6 @@ public sealed class RcsMapPointRowConfiguration : IEntityTypeConfiguration<RcsMa
         builder.Property(x => x.PointCode).HasColumnName("point_code").IsRequired();
         builder.Property(x => x.PointName).HasColumnName("point_name").IsRequired();
         builder.Property(x => x.PointType).HasColumnName("point_type").IsRequired();
-        builder.Property(x => x.Floor).HasColumnName("floor");
         builder.Property(x => x.X).HasColumnName("x");
         builder.Property(x => x.Y).HasColumnName("y");
         builder.Property(x => x.Z).HasColumnName("z");

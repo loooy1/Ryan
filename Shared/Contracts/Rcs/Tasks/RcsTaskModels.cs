@@ -74,6 +74,7 @@ public sealed record RcsTaskExecutionStageDto
     public string Action { get; init; } = "";
     public string VehicleId { get; init; } = "";
     public string CommandId { get; init; } = "";
+    public IReadOnlyList<string> RoutePointCodes { get; init; } = [];
     public string Message { get; init; } = "";
     public string? StartedAt { get; init; }
     public string? FinishedAt { get; init; }
@@ -106,10 +107,39 @@ public sealed class RcsTaskDto
     public string? FinishedAt { get; init; }
 }
 
-public sealed class RcsTaskReceiveResponse
+public sealed record RcsTaskPageDto
 {
-    public bool Success { get; init; }
+    public IReadOnlyList<RcsTaskDto> Items { get; init; } = [];
+    public int TotalCount { get; init; }
+    public int AllTaskCount { get; init; }
+    public int GroupCount { get; init; }
+    public int WaitingCount { get; init; }
+    public int ExecutingCount { get; init; }
+    public int Page { get; init; } = 1;
+    public int PageSize { get; init; } = 10;
+    public int TotalPages { get; init; } = 1;
+}
+
+public sealed record RcsTaskClearResultDto(int DeletedCount);
+
+/// <summary>统一的 RCS 任务请求确认响应；任务详情通过任务查询接口获取。</summary>
+public sealed class RcsApiResponse
+{
     public string MsgTime { get; init; } = "";
-    public string Message { get; init; } = "";
-    public IReadOnlyList<RcsTaskDto> Tasks { get; init; } = [];
+    public bool Success { get; init; }
+    public string? Exception { get; init; }
+
+    public static RcsApiResponse Accepted() => new()
+    {
+        MsgTime = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss", System.Globalization.CultureInfo.InvariantCulture),
+        Success = true,
+        Exception = null
+    };
+
+    public static RcsApiResponse Rejected(string exception) => new()
+    {
+        MsgTime = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss", System.Globalization.CultureInfo.InvariantCulture),
+        Success = false,
+        Exception = exception
+    };
 }

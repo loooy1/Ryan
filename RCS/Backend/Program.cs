@@ -1,5 +1,6 @@
 using Backend.Shared;
 using Backend.Shared.Logging;
+using Contracts.Rcs.Tasks;
 using RCSBackend.Modules.Rcs;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -41,7 +42,18 @@ app.Logger.LogInformation("RCS 后端启动，环境={Environment}", app.Environ
 
 // 全局异常兜底：未捕获异常统一返回 {"error":"..."}
 app.UseSharedHttpLogging();
-app.UseGlobalErrorHandler();
+app.Use(async (context, next) =>
+{
+    try { await next(); }
+    catch (Exception ex)
+    {
+        if (context.Response.HasStarted) throw;
+        context.Response.Clear();
+        context.Response.StatusCode = StatusCodes.Status500InternalServerError;
+        app.Logger.LogError(ex, "未处理异常：{Method} {Path}", context.Request.Method, context.Request.Path);
+        await context.Response.WriteAsJsonAsync(RcsApiResponse.Rejected(ex.Message));
+    }
+});
 
 await app.InitializeSharedDatabaseAsync();
 await app.Services.GetRequiredService<RCSBackend.Modules.Rcs.Application.Execution.RcsAlgorithmSettingsService>().InitializeAsync();

@@ -20,6 +20,10 @@ public sealed class RcsApiClient
     {
         Timeout = TimeSpan.FromMinutes(2)
     };
+    private readonly HttpClient _taskControlHttp = new()
+    {
+        Timeout = TimeSpan.FromSeconds(60)
+    };
 
     public string BaseUrl => _baseUrl;
 
@@ -74,18 +78,10 @@ public sealed class RcsApiClient
     {
         using var response = await _mapHttp.PutAsJsonAsync(U("/api/rcs/editor/map"), map, token);
         await EnsureSuccessAsync(response, token);
-        var result = await response.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>(cancellationToken: token);
-        if (result.ValueKind != System.Text.Json.JsonValueKind.Object
-            || !result.TryGetProperty("success", out var success)
-            || success.ValueKind != System.Text.Json.JsonValueKind.True
-            || !result.TryGetProperty("mapCode", out var savedCode)
-            || savedCode.ValueKind != System.Text.Json.JsonValueKind.String
-            || savedCode.GetString() != map.MapCode)
+        var result = await response.Content.ReadFromJsonAsync<RcsApiResponse>(cancellationToken: token);
+        if (result is not { Success: true })
         {
-            var message = result.ValueKind == System.Text.Json.JsonValueKind.Object
-                && result.TryGetProperty("message", out var detail)
-                && detail.ValueKind == System.Text.Json.JsonValueKind.String
-                ? detail.GetString() : "目标服务未确认地图保存成功，请检查 RCS 后端地址。";
+            var message = result?.Exception ?? "目标服务未确认地图保存成功，请检查 RCS 后端地址。";
             throw new InvalidOperationException(message);
         }
     }
@@ -110,6 +106,24 @@ public sealed class RcsApiClient
         return await response.Content.ReadFromJsonAsync<RcsTaskDto[]>(cancellationToken: token)
             ?? throw new InvalidOperationException("RCS 未返回有效任务列表。");
     }
+    public async Task<RcsTaskPageDto> GetTaskPageAsync(int page, int pageSize, string status = "", string search = "",
+        CancellationToken token = default)
+    {
+        var query = $"page={Math.Max(1, page)}&pageSize={Math.Clamp(pageSize, 10, 100)}";
+        if (!string.IsNullOrWhiteSpace(status)) query += "&status=" + Uri.EscapeDataString(status);
+        if (!string.IsNullOrWhiteSpace(search)) query += "&search=" + Uri.EscapeDataString(search.Trim());
+        using var response = await _http.GetAsync(U("/api/rcs/tasks/page?" + query), token);
+        await EnsureSuccessAsync(response, token);
+        return await response.Content.ReadFromJsonAsync<RcsTaskPageDto>(cancellationToken: token)
+            ?? throw new InvalidOperationException("RCS 未返回有效分页任务数据。");
+    }
+    public async Task<RcsTaskClearResultDto> ClearAllTasksAsync(CancellationToken token = default)
+    {
+        using var response = await _taskControlHttp.DeleteAsync(U("/api/rcs/tasks/all"), token);
+        await EnsureSuccessAsync(response, token);
+        return await response.Content.ReadFromJsonAsync<RcsTaskClearResultDto>(cancellationToken: token)
+            ?? throw new InvalidOperationException("RCS 未返回任务清空结果。");
+    }
     public Task<VehicleStateDto?> AddVehicleAsync(CreateVehicleRequest request, CancellationToken token = default) =>
         PostAsync<VehicleStateDto>("/api/rcs/vehicles", request, token);
     public async Task<VehicleStateDto?> UpdateVehicleAsync(string id, UpdateVehicleRequest request, CancellationToken token = default)
@@ -125,8 +139,8 @@ public sealed class RcsApiClient
     }
     public Task<RouteDto?> RunVehicleAsync(string id, RunVehicleRequest request, CancellationToken token = default) =>
         PostAsync<RouteDto>(VehiclePath(id) + "/run", request, token);
-    public Task<RcsTaskReceiveResponse?> SubmitManualTaskAsync(RcsTaskReceiveRequest request, CancellationToken token = default) =>
-        PostAsync<RcsTaskReceiveResponse>("/api/rcs/tasks/manual", request, token);
+    public Task<RcsApiResponse?> SubmitManualTaskAsync(RcsTaskReceiveRequest request, CancellationToken token = default) =>
+        PostAsync<RcsApiResponse>("/api/rcs/tasks/manual", request, token);
     public Task PauseVehicleAsync(string id, CancellationToken token = default) => ControlVehicleAsync(id, "pause", token);
     public Task ResumeVehicleAsync(string id, CancellationToken token = default) => ControlVehicleAsync(id, "resume", token);
     public Task StopVehicleAsync(string id, CancellationToken token = default) => ControlVehicleAsync(id, "stop", token);
@@ -154,7 +168,7 @@ public sealed class RcsApiClient
         try
         {
             using var json = System.Text.Json.JsonDocument.Parse(body);
-            foreach (var key in new[] { "message", "error", "detail" })
+            foreach (var key in new[] { "exception", "message", "error", "detail" })
                 if (json.RootElement.TryGetProperty(key, out var value) && value.ValueKind == System.Text.Json.JsonValueKind.String)
                     throw new InvalidOperationException(value.GetString());
         }

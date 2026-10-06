@@ -26,6 +26,7 @@ public sealed class RcsRealtimePublisher : IHostedService
         _vehicles = vehicles;
         _vehicles.VehiclesChanged += OnVehiclesChanged;
         _tasks.TaskChanged += OnTaskChanged;
+        _tasks.TasksCleared += OnTasksCleared;
         _execution.VehicleStateChanged += OnStateChanged;
         _execution.InventoryChanged += OnInventoryChanged;
         _logs.EventAdded += OnLogAdded;
@@ -39,6 +40,7 @@ public sealed class RcsRealtimePublisher : IHostedService
         _execution.InventoryChanged -= OnInventoryChanged;
         _vehicles.VehiclesChanged -= OnVehiclesChanged;
         _tasks.TaskChanged -= OnTaskChanged;
+        _tasks.TasksCleared -= OnTasksCleared;
         _logs.EventAdded -= OnLogAdded;
         return Task.CompletedTask;
     }
@@ -52,6 +54,8 @@ public sealed class RcsRealtimePublisher : IHostedService
         _ = _hub.Clients.All.SendAsync("VehiclesChanged", _execution.GetVehicles());
 
     private void OnTaskChanged(RcsTaskDto task) => _ = _hub.Clients.All.SendAsync("TaskChanged", task);
+
+    private void OnTasksCleared(int deletedCount) => _ = _hub.Clients.All.SendAsync("TasksCleared", deletedCount);
 
     private void OnLogAdded(AppLogEvent entry)
     {

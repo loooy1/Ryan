@@ -4,6 +4,7 @@
 @using Contracts.Rcs.Tasks
 @inject RcsApiClient Api
 @inject RcsRealtimeHubClient Realtime
+@inject RcsVehicleCacheService VehicleCache
 @inject IJSRuntime Js
 @implements IAsyncDisposable
 
@@ -48,8 +49,15 @@
             @if (Selected is { } car)
             {
                 <div class="detail-heading"><div><span class="fleet-kicker">SELECTED VEHICLE</span><h2>@car.Id</h2></div><span class="state-badge @StatusClass(car)">@StatusText(car)</span></div>
-                <div class="detail-position"><span>实时位置</span><strong>@PointText(car)</strong><small>X @car.X.ToString("0.##") · Y @car.Y.ToString("0.##") · 楼层 @car.Floor</small></div>
-                <div class="detail-meta"><span>车辆协议</span><b>@car.Protocol</b><span>运行模式</span><b>@ModeText(car)</b><span>初始站点</span><b>@(car.InitialPointCode == "" ? "未设置" : car.InitialPointCode)</b></div>
+                <div class="detail-position"><span>实时位置</span><strong>@PointText(car)</strong><small>X @car.X.ToString("0.##") · Y @car.Y.ToString("0.##") · 楼层 @car.Z.ToString("0")</small></div>
+                <div class="detail-meta">
+                    <span>通讯状态</span><b class="@(car.IsOnline ? "online" : "offline")">@(car.IsOnline ? "在线" : "离线")</b>
+                    <span>电量</span><b>@BatteryText(car)</b>
+                    <span>故障代码</span><b class="@(car.ErrorCode == "" ? "" : "vehicle-error")">@(car.ErrorCode == "" ? "无" : car.ErrorCode)</b>
+                    <span>故障信息</span><b class="@(car.ErrorMessage == "" ? "" : "vehicle-error")">@(car.ErrorMessage == "" ? "无" : car.ErrorMessage)</b>
+                    <span>最后心跳</span><b>@(car.LastHeartbeatAt?.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss") ?? "暂无")</b>
+                    <span>车辆协议</span><b>@car.Protocol</b><span>运行模式</span><b>@ModeText(car)</b><span>初始站点</span><b>@(car.InitialPointCode == "" ? "未设置" : car.InitialPointCode)</b>
+                </div>
                 <section class="detail-section">
                     <h3>车辆配置</h3>
                     <label>车辆名称<input @bind="_editName" @bind:event="oninput" @bind:after="MarkDirty" maxlength="128" disabled="@_busy" /></label>
@@ -107,11 +115,13 @@
     protected override async Task OnInitializedAsync()
     {
         try { var saved = await Js.InvokeAsync<string?>("localStorage.getItem", "rcs_backend_url"); if (!string.IsNullOrWhiteSpace(saved)) Api.SetBaseUrl(saved); } catch { }
-        Realtime.VehicleStateChanged += OnStateChanged; Realtime.VehiclesChanged += OnVehiclesChanged; Realtime.Reconnected += OnReconnected;
-        await RefreshAsync();
-        if (_disposed) return;
-        Realtime.SetBaseUrl(Api.BaseUrl);
-        try { await Realtime.StartAsync(); } catch { }
+        VehicleCache.Changed += OnCacheChanged;
+        if (VehicleCache.Current is { } cached) ApplySnapshot(cached);
+        else _loading = true;
+        try { ApplySnapshot(await VehicleCache.EnsureLoadedAsync(_lifetime.Token)); }
+        catch (OperationCanceledException) when (_disposed) { }
+        catch (Exception ex) when (!_disposed) { Feedback(ex.Message, true); }
+        finally { _loading = false; }
     }
     private async Task RefreshAsync()
     {
@@ -119,15 +129,7 @@
         _loading = true;
         try
         {
-            ApplyFleet(await Api.GetVehiclesAsync(_lifetime.Token));
-            _protocols = await Api.GetVehicleProtocolsAsync(_lifetime.Token);
-            if (_protocols.Count > 0 && !_protocols.Any(x => x.Code == _newProtocol)) _newProtocol = _protocols[0].Code;
-            try { _map = await Api.GetMapAsync(_lifetime.Token); } catch { _map = null; }
-            if (!_disposed && !Realtime.IsConnected)
-            {
-                Realtime.SetBaseUrl(Api.BaseUrl);
-                try { await Realtime.StartAsync(); } catch { }
-            }
+            ApplySnapshot(await VehicleCache.RefreshAsync(_lifetime.Token));
         }
         catch (OperationCanceledException) when (_disposed) { }
         catch (Exception ex) when (!_disposed) { Feedback(ex.Message, true); }
@@ -143,9 +145,18 @@
             if (!_positionDirty) _editPointCode = car.PointCode;
         }
     }
+    private void ApplySnapshot(RcsVehicleCacheSnapshot snapshot)
+    {
+        _protocols = snapshot.Protocols;
+        _map = snapshot.Map;
+        if (!string.IsNullOrWhiteSpace(snapshot.SelectedVehicleId)) _selectedId = snapshot.SelectedVehicleId;
+        if (_protocols.Count > 0 && !_protocols.Any(x => x.Code == _newProtocol)) _newProtocol = _protocols[0].Code;
+        ApplyFleet(snapshot.Vehicles);
+    }
     private void SelectVehicle(string id)
     {
         _selectedId = id; _confirmDelete = false; _dirty = false; _positionDirty = false;
+        VehicleCache.SelectedVehicleId = id;
         if (Selected is { } car) { _editName = car.Name; _editEnabled = car.IsEnabled; _editPointCode = car.PointCode; _editProtocol = car.Protocol; }
     }
     private void MarkDirty() => _dirty = true;
@@ -164,7 +175,7 @@
         {
             var state = await Api.AddVehicleAsync(new() { Id = _newId.Trim(), Name = _newName.Trim(), PointCode = _newPoint, IsEnabled = _newEnabled, Protocol = _newProtocol }, _lifetime.Token)
                 ?? throw new InvalidOperationException("RCS 未返回新车辆。");
-            _showAdd = false; _vehicles[state.Id] = state; SelectVehicle(state.Id); Feedback($"车辆 {state.Id} 已添加。");
+            _showAdd = false; VehicleCache.UpsertVehicle(state); SelectVehicle(state.Id); Feedback($"车辆 {state.Id} 已添加。");
         }
         catch (OperationCanceledException) when (_disposed) { }
         catch (Exception ex) when (!_disposed) { _modalError = ex.Message; }
@@ -173,50 +184,49 @@
     private async Task SaveDefinitionAsync() => await ActAsync(async () =>
     {
         var state = await Api.UpdateVehicleAsync(_selectedId, new() { Name = _editName, IsEnabled = _editEnabled, Protocol = _editProtocol }, _lifetime.Token);
-        _dirty = false; if (state is not null) _vehicles[state.Id] = state; Feedback("车辆配置已保存。");
+        _dirty = false; if (state is not null) VehicleCache.UpsertVehicle(state); Feedback("车辆配置已保存。");
     });
     private async Task SetCurrentPositionAsync() => await ActAsync(async () =>
     {
         var point = _editPointCode;
         var state = await Api.SetVehiclePositionAsync(_selectedId, point, _lifetime.Token);
-        if (state is not null) _vehicles[state.Id] = state;
+        if (state is not null) VehicleCache.UpsertVehicle(state);
         _positionDirty = false;
         Feedback(point == "" ? "车辆当前位置已清除。" : $"车辆当前位置已设为 {point}。");
     });
     private async Task DeleteAsync() => await ActAsync(async () =>
     {
         var id = _selectedId; await Api.DeleteVehicleAsync(id, _lifetime.Token);
-        _vehicles.Remove(id); SelectVehicle(OrderedVehicles.FirstOrDefault()?.Id ?? ""); Feedback($"车辆 {id} 已删除。");
+        VehicleCache.RemoveVehicle(id); SelectVehicle(OrderedVehicles.FirstOrDefault()?.Id ?? ""); Feedback($"车辆 {id} 已删除。");
     });
     private async Task ActAsync(Func<Task> action)
     {
         if (_busy || Selected is null) return;
         _busy = true;
-        try { await action(); ApplyFleet(await Api.GetVehiclesAsync(_lifetime.Token)); }
+        try { await action(); ApplySnapshot(await VehicleCache.RefreshAsync(_lifetime.Token)); }
         catch (OperationCanceledException) when (_disposed) { }
         catch (Exception ex) when (!_disposed) { Feedback(ex.Message, true); }
         finally { _busy = false; }
     }
     private void Feedback(string text, bool error = false) { _feedback = text; _error = error; }
-    private void OnStateChanged(VehicleStateDto state) => _ = InvokeAsync(() =>
+    private void OnCacheChanged(RcsVehicleCacheSnapshot snapshot) => _ = InvokeAsync(() =>
     {
-        if (_disposed) return; _vehicles[state.Id] = state;
-        if (state.Id == _selectedId && !_positionDirty) _editPointCode = state.PointCode;
+        if (_disposed) return;
+        ApplySnapshot(snapshot);
+        if (Selected is { } state && !_positionDirty) _editPointCode = state.PointCode;
         StateHasChanged();
     });
-    private void OnVehiclesChanged(IReadOnlyList<VehicleStateDto> states) => _ = InvokeAsync(() =>
-    {
-        if (_disposed) return; ApplyFleet(states); StateHasChanged();
-    });
-    private void OnReconnected() => _ = InvokeAsync(async () => { if (!_disposed) { await RefreshAsync(); StateHasChanged(); } });
     private static string PointText(VehicleStateDto car) => car.PointCode == "" ? "未定位" : car.PointCode;
+    private static string BatteryText(VehicleStateDto car) => car.BatteryPercent is { } battery ? $"{battery:0.#}%" : "暂无数据";
     private static string ModeText(VehicleStateDto car) => car.OperatingMode == RcsOperatingMode.Manual ? "手动" : "自动";
-    private static string StatusClass(VehicleStateDto car) => !car.IsEnabled ? "off" : car.Status.ToLowerInvariant();
-    private static string StatusText(VehicleStateDto car) => (car.Status switch { "Running" => "运行中", "Paused" => "已暂停", "Arrived" => "已到达", "ProtocolUnavailable" => "协议未注册", _ => "空闲" }) + (!car.IsEnabled ? " · 停用" : "");
+    private static string StatusClass(VehicleStateDto car) => !car.IsOnline ? "offline" : !car.IsEnabled ? "off" : car.Status.ToLowerInvariant();
+    private static string StatusText(VehicleStateDto car) => (!car.IsOnline ? "通讯离线" : car.Status switch
+        { "Running" => "运行中", "Paused" => "已暂停", "Arrived" => "已到达", "Error" => "故障", "ProtocolUnavailable" => "协议未注册", _ => "空闲" })
+        + (!car.IsEnabled ? " · 停用" : "");
     public ValueTask DisposeAsync()
     {
         _disposed = true; _lifetime.Cancel();
-        Realtime.VehicleStateChanged -= OnStateChanged; Realtime.VehiclesChanged -= OnVehiclesChanged; Realtime.Reconnected -= OnReconnected;
+        VehicleCache.Changed -= OnCacheChanged;
         _lifetime.Dispose(); return ValueTask.CompletedTask;
     }
 }

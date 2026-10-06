@@ -32,15 +32,17 @@ internal static class RcsTaskRequestValidator
             if (task.StationCode is null || task.StationCode.Count is < 1 or > 100)
                 throw new ArgumentException("StationCode 必须包含 1～100 个站点。");
             foreach (var code in task.StationCode) Required(code, "StationCode");
+            if (!allowManualTaskType && task.StationCode.Any(code => !HasFloorSuffix(code)))
+                throw new ArgumentException("自动任务 StationCode 必须使用“站点号_楼层号”格式，例如 0100000347_1。");
             var taskType = task.TaskType.ToUpperInvariant();
-            if (taskType is not ("MOVE_ONLY" or "INBOUND" or "OUTBOUND")
+            if (taskType is not ("MOVE_ONLY" or "AUTO_CARRY")
                 && !(allowManualTaskType && taskType == "MANUAL"))
                 throw new ArgumentException(allowManualTaskType
-                    ? "TaskType 仅支持 MOVE_ONLY、INBOUND、OUTBOUND、MANUAL。"
-                    : "TaskType 仅支持 MOVE_ONLY、INBOUND、OUTBOUND。");
-            if (task.TaskType.ToUpperInvariant() is "INBOUND" or "OUTBOUND"
+                    ? "TaskType 仅支持 MOVE_ONLY、Auto_Carry、MANUAL。"
+                    : "TaskType 仅支持 MOVE_ONLY、Auto_Carry。");
+            if (taskType == "AUTO_CARRY"
                 && (task.StationCode.Count < 2 || string.IsNullOrWhiteSpace(task.ContainerCode)))
-                throw new ArgumentException("INBOUND/OUTBOUND 至少需要两个站点及 ContainerCode。");
+                throw new ArgumentException("Auto_Carry 至少需要两个站点及 ContainerCode。");
             if (task.StationActions is null || task.StationActions.Count > 100)
                 throw new ArgumentException("StationActions 必须是数组，最多 100 项。");
             if (task.StationActions.Count > 0)
@@ -64,5 +66,12 @@ internal static class RcsTaskRequestValidator
                 throw new ArgumentException("AreaCode 必须是数组，最多 100 项。");
             foreach (var code in task.AreaCode) Required(code, "AreaCode");
         }
+    }
+
+    private static bool HasFloorSuffix(string code)
+    {
+        var separator = code.LastIndexOf('_');
+        return separator > 0 && int.TryParse(code.AsSpan(separator + 1), NumberStyles.Integer,
+            CultureInfo.InvariantCulture, out _);
     }
 }

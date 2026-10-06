@@ -315,7 +315,7 @@
             Version = 1,
         };
 
-        var rootFloor = ReadInt(FindProperty(root, "floor"), 1);
+        var rootFloor = ReadDouble(FindProperty(root, "floor"), 1);
         var pointCodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var pointByCode = new Dictionary<string, RcsMapPointDto>(StringComparer.OrdinalIgnoreCase);
         foreach (var stationProperty in stationsElement.EnumerateObject())
@@ -330,10 +330,9 @@
                 PointCode = code,
                 PointName = code,
                 PointType = MapGrcsStationType(ReadInt(FindProperty(station, "stationType"), 0)),
-                Floor = ReadInt(FindProperty(station, "floor"), rootFloor),
                 X = ReadDouble(FindProperty(station, "x"), 0),
                 Y = ReadDouble(FindProperty(station, "y"), 0),
-                Z = ReadDouble(FindProperty(station, "z"), 0),
+                Z = ReadDouble(FindProperty(station, "floor"), rootFloor),
                 IsEnabled = ReadBool(FindProperty(station, "staEnable"), true),
                 MetadataJson = station.GetRawText(),
             };
@@ -358,10 +357,8 @@
             var end = FindProperty(path, "endPos");
             var startX = ReadDouble(FindProperty(start, "x"), pointByCode[from].X);
             var startY = ReadDouble(FindProperty(start, "y"), pointByCode[from].Y);
-            var startZ = ReadDouble(FindProperty(start, "z"), pointByCode[from].Z);
             var endX = ReadDouble(FindProperty(end, "x"), pointByCode[to].X);
             var endY = ReadDouble(FindProperty(end, "y"), pointByCode[to].Y);
-            var endZ = ReadDouble(FindProperty(end, "z"), pointByCode[to].Z);
             var driveDirection = ReadInt(FindProperty(path, "driveDirection"), 0);
 
             map.Lines.Add(new RcsMapLineDto
@@ -369,7 +366,7 @@
                 LineCode = lineCode,
                 FromPointCode = from,
                 ToPointCode = to,
-                Distance = Math.Sqrt(Math.Pow(endX - startX, 2) + Math.Pow(endY - startY, 2) + Math.Pow(endZ - startZ, 2)),
+                Distance = Math.Sqrt(Math.Pow(endX - startX, 2) + Math.Pow(endY - startY, 2)),
                 Direction = driveDirection == 0 ? "BIDIRECTIONAL" : "FORWARD",
                 MaxSpeed = ReadDouble(FindProperty(path, "agvSpeed"), 0),
                 // GRCS 的 routeEnable 在该地图中并未标记可通行状态，保留原值在元数据；
@@ -469,7 +466,7 @@
     {
         for (var row = 0; row < Math.Clamp(_matrixRows, 1, 200); row++)
         for (var column = 0; column < Math.Clamp(_matrixColumns, 1, 200); column++)
-            _map.Points.Add(new RcsMapPointDto { PointCode = NextPointCode(), PointName = $"点 {_map.Points.Count + 1}", PointType = _matrixType, Floor = 1, X = _matrixOriginX + column * Math.Max(0, _matrixHorizontalSpacing), Y = _matrixOriginY + row * Math.Max(0, _matrixVerticalSpacing), IsEnabled = true });
+            _map.Points.Add(new RcsMapPointDto { PointCode = NextPointCode(), PointName = $"点 {_map.Points.Count + 1}", PointType = _matrixType, Z = 1, X = _matrixOriginX + column * Math.Max(0, _matrixHorizontalSpacing), Y = _matrixOriginY + row * Math.Max(0, _matrixVerticalSpacing), IsEnabled = true });
         CloseMatrix(); _mapEditorDirty = true;
     }
     private async Task SaveAsync()
@@ -502,7 +499,7 @@
     {
         if (_tool is EditorTool.Storage or EditorTool.Transfer or EditorTool.People or EditorTool.Sorting or EditorTool.Waypoint or EditorTool.Elevator or EditorTool.Charging)
         {
-            var point = new RcsMapPointDto { PointCode = NextPointCode(), PointName = $"点 {_map.Points.Count + 1}", PointType = PointTypeFor(_tool), Floor = 1, X = Math.Round(x, 1), Y = Math.Round(y, 1), IsEnabled = true };
+            var point = new RcsMapPointDto { PointCode = NextPointCode(), PointName = $"点 {_map.Points.Count + 1}", PointType = PointTypeFor(_tool), Z = 1, X = Math.Round(x, 1), Y = Math.Round(y, 1), IsEnabled = true };
             _map.Points.Add(point); _selectedPoint = point; _selectedLine = null; _tool = EditorTool.Select;
         }
         else if (_tool == EditorTool.Select) { _selectedPoint = null; _selectedLine = null; _selectedPointCodes.Clear(); _selectedLineCodes.Clear(); }

@@ -10,8 +10,7 @@
     <div class="property-grid">
         <label>X<input type="number" step="any" readonly="@RuntimeMode" @bind="Point.X" @bind:after="NotifyChanged" /></label>
         <label>Y<input type="number" step="any" readonly="@RuntimeMode" @bind="Point.Y" @bind:after="NotifyChanged" /></label>
-        <label>Z<input type="number" step="any" readonly="@RuntimeMode" @bind="Point.Z" @bind:after="NotifyChanged" /></label>
-        <label>楼层<input type="number" readonly="@RuntimeMode" @bind="Point.Floor" @bind:after="NotifyChanged" /></label>
+        <label>Z（楼层）<input type="number" step="1" readonly="@RuntimeMode" @bind="Point.Z" @bind:after="NotifyChanged" /></label>
     </div>
     <label>状态<select value="@Point.IsEnabled.ToString()" @onchange="PointEnabledChanged"><option value="True">启用</option><option value="False">禁用</option></select></label>
 }

@@ -16,6 +16,56 @@ public sealed class RcsInventoryTransferService(IDbContextFactory<GrcsDbContext>
 
     public event Action? InventoryChanged;
 
+    /// <summary>
+    /// Reserve inventory before acknowledging a task. This makes inventory failures synchronous
+    /// at task_receive and prevents another newly received task from claiming the same item/slot.
+    /// </summary>
+    public async Task ReserveBeforeAcceptanceAsync(string taskId, string mapCode, string containerCode,
+        string sourcePoint, string destinationPoint, CancellationToken token)
+    {
+        if (string.Equals(sourcePoint, destinationPoint, StringComparison.OrdinalIgnoreCase))
+            throw new RcsInventoryPreconditionException("取货站点和放货站点不能相同。", isConflict: false);
+
+        var destinationKey = LocationKey(mapCode, destinationPoint);
+        await _gate.WaitAsync(token);
+        try
+        {
+            if (_reservations.TryGetValue(taskId, out var existing))
+            {
+                if (existing.MapCode == mapCode && existing.SourcePoint == sourcePoint
+                    && existing.DestinationPoint == destinationPoint && existing.InstanceCode == containerCode)
+                    return;
+                throw new RcsInventoryPreconditionException($"任务 {taskId} 已存在不同的库存预约。", isConflict: true);
+            }
+            if (_reservedDestinations.Contains(destinationKey))
+                throw new RcsInventoryPreconditionException($"目标站点 {destinationPoint} 已被另一搬运任务预约。", isConflict: true);
+
+            await using var db = await factory.CreateDbContextAsync(token);
+            var item = await db.Set<RcsInventoryInstanceRow>().FirstOrDefaultAsync(x =>
+                (x.ItemType == RcsInventoryItemTypes.Pallet || x.ItemType == RcsInventoryItemTypes.Cargo)
+                && x.InstanceCode == containerCode
+                && x.ParentInstanceCode == "" && x.MapCode == mapCode && x.PointCode == sourcePoint
+                && x.Status == "AVAILABLE", token);
+            if (item is null)
+                throw new RcsInventoryPreconditionException(
+                    $"起点 {sourcePoint} 没有可取的独立货物或托盘 {containerCode}。", isConflict: false);
+
+            var itemKey = ItemKey(item.ItemType, item.InstanceCode);
+            if (_reservedItems.Contains(itemKey))
+                throw new RcsInventoryPreconditionException($"库存 {containerCode} 已被另一任务预约。", isConflict: true);
+            var destinationOccupied = await db.Set<RcsInventoryInstanceRow>().AnyAsync(x =>
+                x.MapCode == mapCode && x.PointCode == destinationPoint && x.ParentInstanceCode == "", token);
+            if (destinationOccupied)
+                throw new RcsInventoryPreconditionException(
+                    $"目标站点 {destinationPoint} 已有独立库存，不能放置新的货物或托盘。", isConflict: false);
+
+            _reservations.Add(taskId, new(item.ItemType, item.InstanceCode, mapCode, sourcePoint, destinationPoint));
+            _reservedItems.Add(itemKey);
+            _reservedDestinations.Add(destinationKey);
+        }
+        finally { _gate.Release(); }
+    }
+
     public async Task ReserveAsync(RcsTaskExecutionPlan plan, CancellationToken token)
     {
         if (!plan.SyncInventory) return;
@@ -143,4 +193,9 @@ public sealed class RcsInventoryTransferService(IDbContextFactory<GrcsDbContext>
     private static string ItemKey(string itemType, string instanceCode) => $"{itemType}\u001f{instanceCode}";
     private static string KindName(string itemType) => itemType == RcsInventoryItemTypes.Pallet ? "托盘" : "货物";
     private sealed record Reservation(string ItemType, string InstanceCode, string MapCode, string SourcePoint, string DestinationPoint);
+}
+
+public sealed class RcsInventoryPreconditionException(string message, bool isConflict) : Exception(message)
+{
+    public bool IsConflict { get; } = isConflict;
 }

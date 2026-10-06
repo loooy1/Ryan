@@ -35,7 +35,7 @@ public sealed class RcsMapStore
         if (map == null) return Task.FromResult<RcsMapSnapshot?>(null);
         var pointRows = uow.Repository<RcsMapPointRow>().Query().Where(x => x.MapCode == map.MapCode && x.IsEnabled).ToList();
         var points = pointRows.ToDictionary(x => x.PointCode,
-            x => new RcsMapNode(x.PointCode, x.PointName, x.PointType, x.Floor, x.X, x.Y, x.Z),
+            x => new RcsMapNode(x.PointCode, x.PointName, x.PointType, x.X, x.Y, x.Z),
             StringComparer.OrdinalIgnoreCase);
         var adjacency = points.Keys.ToDictionary(x => x, _ => new List<RcsMapEdge>(), StringComparer.OrdinalIgnoreCase);
         foreach (var line in uow.Repository<RcsMapLineRow>().Query().Where(x => x.MapCode == map.MapCode && x.IsEnabled).ToList())
@@ -61,6 +61,8 @@ public sealed class RcsMapStore
             throw new ArgumentException("地图编码不能为空。", nameof(dto));
         if (dto.Points.Any(x => string.IsNullOrWhiteSpace(x.PointCode)))
             throw new ArgumentException("地图点编码不能为空。", nameof(dto));
+        if (dto.Points.Any(x => !double.IsFinite(x.Z) || Math.Abs(x.Z - Math.Round(x.Z)) > 0.000001))
+            throw new ArgumentException("站点 Z 必须填写整数楼层号。", nameof(dto));
         var pointCodes = dto.Points.Select(x => x.PointCode).ToHashSet(StringComparer.OrdinalIgnoreCase);
         if (dto.Lines.Any(x => string.IsNullOrWhiteSpace(x.FromPointCode)
             || string.IsNullOrWhiteSpace(x.ToPointCode)
@@ -99,7 +101,7 @@ public sealed class RcsMapStore
             await points.AddAsync(new RcsMapPointRow
             {
                 MapCode = dto.MapCode, PointCode = point.PointCode, PointName = point.PointName,
-                PointType = point.PointType, Floor = point.Floor, X = point.X, Y = point.Y, Z = point.Z,
+                PointType = point.PointType, X = point.X, Y = point.Y, Z = point.Z,
                 IsEnabled = point.IsEnabled, MetadataJson = point.MetadataJson,
                 CreatedAt = now, UpdatedAt = now
             });
@@ -123,7 +125,7 @@ public sealed class RcsMapStore
         Points = points.Select(x => new RcsMapPointDto
         {
             PointCode = x.PointCode, PointName = x.PointName, PointType = x.PointType,
-            Floor = x.Floor, X = x.X, Y = x.Y, Z = x.Z, IsEnabled = x.IsEnabled, MetadataJson = x.MetadataJson
+            X = x.X, Y = x.Y, Z = x.Z, IsEnabled = x.IsEnabled, MetadataJson = x.MetadataJson
         }).ToList(),
         Lines = lines.Select(x => new RcsMapLineDto
         {

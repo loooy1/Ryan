@@ -68,8 +68,8 @@
                 <section class="runtime-card selected-vehicle-card" aria-label="选中车辆操作">
                     <div class="runtime-card-title">车辆操作 <small>@VehicleStatus(car)</small></div>
                     <div class="selected-vehicle-title"><strong>@car.Id</strong><span>@car.Name</span></div>
-                    <div class="vehicle-position"><span>当前位置</span><strong>@(car.PointCode == "" ? "未定位" : car.PointCode)</strong><small>X @car.X.ToString("0.##") · Y @car.Y.ToString("0.##") · 楼层 @car.Floor</small></div>
-                    <div class="selected-vehicle-meta"><span>当前任务</span><b>@(car.Status is "Running" or "Paused" ? car.TaskId : "—")</b><span>路径进度</span><b>@car.RouteIndex / @car.RouteLength</b><span>车上容器</span><b>@(car.LoadedContainerCode == "" ? "无" : car.LoadedContainerCode)</b></div>
+                    <div class="vehicle-position"><span>当前位置</span><strong>@(car.PointCode == "" ? "未定位" : car.PointCode)</strong><small>X @car.X.ToString("0.##") · Y @car.Y.ToString("0.##") · 楼层 @car.Z.ToString("0")</small></div>
+                    <div class="selected-vehicle-meta"><span>通讯状态</span><b class="@(car.IsOnline ? "telemetry-online" : "telemetry-offline")">@(car.IsOnline ? "在线" : "离线")</b><span>电量</span><b>@(car.BatteryPercent is { } battery ? $"{battery:0.#}%" : "暂无数据")</b><span>故障</span><b class="@(car.ErrorCode == "" ? "" : "telemetry-error")">@(car.ErrorCode == "" ? "无" : $"{car.ErrorCode} {car.ErrorMessage}".Trim())</b><span>当前任务</span><b>@(car.Status is "Running" or "Paused" ? car.TaskId : "—")</b><span>路径进度</span><b>@car.RouteIndex / @car.RouteLength</b><span>车上容器</span><b>@(car.LoadedContainerCode == "" ? "无" : car.LoadedContainerCode)</b></div>
                     <div class="vehicle-route-detail"><span>完整路径 · @(SelectedVehicleTask?.RoutePointCodes.Count ?? 0) 点</span><strong>@FormatPath(SelectedVehicleTask?.RoutePointCodes)</strong></div>
                     <div class="vehicle-route-detail locked"><span>当前锁定 · @car.LockedPointCodes.Count 点 / @car.LockedLineCodes.Count 段</span><strong>@FormatPath(car.LockedPointCodes)</strong></div>
                     <div class="vehicle-mode-control"><span>运行模式</span><strong class="@(car.OperatingMode == RcsOperatingMode.Manual ? "manual" : "automatic")">@(car.OperatingMode == RcsOperatingMode.Manual ? "手动" : "自动")</strong>
@@ -129,7 +129,7 @@
     private IEnumerable<VehicleStateDto> PickVehicles => _pickVehicleIds.Where(_vehicles.ContainsKey).Select(id => _vehicles[id]);
     private IEnumerable<RcsMapPointDto> PickPoints => _editor?.Points.Where(p => _pickPointCodes.Contains(p.PointCode)) ?? [];
     private string PickMenuStyle => FormattableString.Invariant($"left:{_pickMenuX}px;top:{_pickMenuY}px");
-    private IEnumerable<RcsMapNode> VehiclePoints => EnabledPoints.Select(p => new RcsMapNode(p.PointCode, p.PointName, p.PointType, p.Floor, p.X, p.Y, p.Z));
+    private IEnumerable<RcsMapNode> VehiclePoints => EnabledPoints.Select(p => new RcsMapNode(p.PointCode, p.PointName, p.PointType, p.X, p.Y, p.Z));
     private RcsMoveTaskDialog? _moveTaskDialog;
     private bool _showMoveDialog;
     private string _moveStart = "", _moveEnd = "";
@@ -150,6 +150,7 @@
         Realtime.VehicleStateChanged += OnVehicleStateChanged;
         Realtime.VehiclesChanged += OnVehiclesChanged;
         Realtime.TaskChanged += OnTaskChanged;
+        Realtime.TasksCleared += OnTasksCleared;
         Realtime.InventoryChanged += OnInventoryChangedRealtime;
         Realtime.Reconnected += OnReconnected;
         await RefreshVehiclesAsync();
@@ -353,6 +354,13 @@
         _canvasDirty = true;
         StateHasChanged();
     });
+    private void OnTasksCleared(int deletedCount) => _ = InvokeAsync(() =>
+    {
+        if (_disposed) return;
+        _tasks.Clear();
+        _canvasDirty = true;
+        StateHasChanged();
+    });
     private async Task RefreshVehiclesAsync()
     {
         try
@@ -464,6 +472,7 @@
         _disposed = true; Realtime.VehicleStateChanged -= OnVehicleStateChanged; Realtime.InventoryChanged -= OnInventoryChangedRealtime;
         Realtime.VehiclesChanged -= OnVehiclesChanged;
         Realtime.TaskChanged -= OnTaskChanged;
+        Realtime.TasksCleared -= OnTasksCleared;
         Realtime.Reconnected -= OnReconnected;
         if (_mounted) { try { await Js.InvokeVoidAsync("grcsMapEditorDisposeHost", HostId); } catch (JSException) { } }
         _canvasRef?.Dispose();

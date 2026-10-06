@@ -4,6 +4,7 @@ using Backend.Shared.Infrastructure;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 #nullable disable
@@ -11,9 +12,11 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace RCSBackend.Migrations
 {
     [DbContext(typeof(GrcsDbContext))]
-    partial class GrcsDbContextModelSnapshot : ModelSnapshot
+    [Migration("20261006024556_UseZAsFloor")]
+    partial class UseZAsFloor
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder

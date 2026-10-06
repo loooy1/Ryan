@@ -49,6 +49,12 @@
             <span class="nav-label">RCS模拟器</span>
         </button>
 
+        <button class="nav-btn @(Nav.ActiveFeature == "tools" ? "active" : "")"
+                @onclick="SelectTools" title="常用工具">
+            <span class="nav-icon">⚒</span>
+            <span class="nav-label">常用工具</span>
+        </button>
+
         @* 以后新增功能在这里加 <button> *@
 
         <div class="sidebar-spacer"></div>
@@ -201,6 +207,15 @@
         NavManager.NavigateTo("rcs/map");
     }
 
+    private void SelectTools()
+    {
+        Nav.SelectFeature("tools", new List<SubNavItem>
+        {
+            new("HTTP模拟器", "tools/http-simulator", "🌐"),
+        });
+        NavManager.NavigateTo("tools/http-simulator");
+    }
+
     // 回到主页：清空所有选中状态，侧边栏展开
     private void GoHome()
     {
@@ -213,6 +228,7 @@
     {
         "wcs" => "WCS模拟器",
         "rcs" => "RCS模拟器",
+        "tools" => "常用工具",
         _ => ""
     };
 

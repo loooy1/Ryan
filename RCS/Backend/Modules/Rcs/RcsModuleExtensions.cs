@@ -1,4 +1,6 @@
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.AspNetCore.Mvc;
+using Contracts.Rcs.Tasks;
 using Rcs.Algorithms.AStar;
 using Rcs.Algorithms;
 using Rcs.Algorithms.Traffic;
@@ -22,7 +24,18 @@ public static class RcsModuleExtensions
 {
     public static IServiceCollection AddRcsModule(this IServiceCollection services)
     {
-        services.AddControllers().AddApplicationPart(typeof(RcsSimulationController).Assembly);
+        services.AddControllers()
+            .AddApplicationPart(typeof(RcsSimulationController).Assembly)
+            .ConfigureApiBehaviorOptions(options =>
+            {
+                options.InvalidModelStateResponseFactory = context =>
+                {
+                    var details = context.ModelState.Values
+                        .SelectMany(value => value.Errors)
+                        .Select(error => string.IsNullOrWhiteSpace(error.ErrorMessage) ? "请求参数无效。" : error.ErrorMessage);
+                    return new BadRequestObjectResult(RcsApiResponse.Rejected(string.Join("；", details)));
+                };
+            });
         services.AddSingleton<IAStarPathfinder, AStarPathfinder>();
         services.AddSingleton<IPathPlanningAlgorithm, AStarRoutePlanningAlgorithm>();
         services.AddSingleton<RcsDispatchLock>();

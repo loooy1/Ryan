@@ -9,9 +9,19 @@ namespace RCSBackend.Modules.Rcs.Api;
 public sealed class RcsTasksController(IRcsTaskService tasks) : ControllerBase
 {
     [HttpPost("/api/v1/task_receive")]
-    public async Task<ActionResult<RcsTaskReceiveResponse>> Receive([FromBody] JsonDocument payload, CancellationToken token)
+    public async Task<ActionResult<RcsApiResponse>> Receive(CancellationToken token)
     {
-        var originalRequestJson = payload.RootElement.GetRawText();
+        string originalRequestJson;
+        try
+        {
+            using var payload = await JsonDocument.ParseAsync(Request.Body, cancellationToken: token);
+            originalRequestJson = payload.RootElement.GetRawText();
+        }
+        catch (JsonException ex)
+        {
+            return BadRequest(Error($"请求 JSON 格式无效：{ex.Message}"));
+        }
+
         RcsUpstreamTaskReceiveRequest? request;
         try
         {
@@ -45,7 +55,7 @@ public sealed class RcsTasksController(IRcsTaskService tasks) : ControllerBase
     }
 
     [HttpPost("/api/rcs/tasks/manual")]
-    public async Task<ActionResult<RcsTaskReceiveResponse>> ReceiveManual([FromBody] RcsTaskReceiveRequest request, CancellationToken token)
+    public async Task<ActionResult<RcsApiResponse>> ReceiveManual([FromBody] RcsTaskReceiveRequest request, CancellationToken token)
     {
         try { return Ok(await tasks.ReceiveManualAsync(request, token)); }
         catch (ArgumentException ex) { return BadRequest(Error(ex.Message)); }
@@ -56,21 +66,33 @@ public sealed class RcsTasksController(IRcsTaskService tasks) : ControllerBase
     public async Task<ActionResult<IReadOnlyList<RcsTaskDto>>> List([FromQuery] int limit = 100, CancellationToken token = default) =>
         Ok(await tasks.ListAsync(limit, token));
 
+    [HttpGet("/api/rcs/tasks/page")]
+    public async Task<ActionResult<RcsTaskPageDto>> ListPage([FromQuery] int page = 1, [FromQuery] int pageSize = 10,
+        [FromQuery] string status = "", [FromQuery] string search = "", CancellationToken token = default) =>
+        Ok(await tasks.ListPageAsync(page, pageSize, status, search, token));
+
+    [HttpDelete("/api/rcs/tasks/all")]
+    public async Task<ActionResult<RcsTaskClearResultDto>> ClearAll(CancellationToken token)
+    {
+        try { return Ok(new RcsTaskClearResultDto(await tasks.ClearAllAsync(token))); }
+        catch (RcsTaskConflictException ex) { return Conflict(Error(ex.Message)); }
+    }
+
     [HttpGet("/api/rcs/tasks/{taskId}")]
     public async Task<ActionResult<RcsTaskDto>> Get(string taskId, CancellationToken token) =>
-        await tasks.GetAsync(taskId, token) is { } task ? Ok(task) : NotFound();
+        await tasks.GetAsync(taskId, token) is { } task ? Ok(task) : NotFound(Error("任务不存在。"));
 
     [HttpPost("/api/rcs/tasks/{taskId}/pause")]
     public async Task<IActionResult> Pause(string taskId, CancellationToken token) =>
-        await tasks.PauseAsync(taskId, token) ? NoContent() : Conflict(Error("任务不在执行或暂停状态。"));
+        await tasks.PauseAsync(taskId, token) ? Ok(RcsApiResponse.Accepted()) : Conflict(Error("任务不在执行或暂停状态。"));
 
     [HttpPost("/api/rcs/tasks/{taskId}/resume")]
     public async Task<IActionResult> Resume(string taskId, CancellationToken token) =>
-        await tasks.ResumeAsync(taskId, token) ? NoContent() : Conflict(Error("任务不在暂停状态。"));
+        await tasks.ResumeAsync(taskId, token) ? Ok(RcsApiResponse.Accepted()) : Conflict(Error("任务不在暂停状态。"));
 
     [HttpPost("/api/rcs/tasks/{taskId}/cancel")]
     public async Task<IActionResult> Cancel(string taskId, CancellationToken token) =>
-        await tasks.CancelAsync(taskId, token) ? NoContent() : Conflict(Error("任务不存在或已结束。"));
+        await tasks.CancelAsync(taskId, token) ? Ok(RcsApiResponse.Accepted()) : Conflict(Error("任务不存在或已结束。"));
 
     [HttpPost("/api/rcs/tasks/{taskId}/replan")]
     public async Task<ActionResult<RcsTaskDto>> Replan(string taskId, CancellationToken token)
@@ -79,6 +101,5 @@ public sealed class RcsTasksController(IRcsTaskService tasks) : ControllerBase
         catch (RcsTaskConflictException ex) { return Conflict(Error(ex.Message)); }
     }
 
-    private static RcsTaskReceiveResponse Error(string message) => new()
-        { Success = false, Message = message, MsgTime = RcsTaskService.ProtocolTime() };
+    private static RcsApiResponse Error(string message) => RcsApiResponse.Rejected(message);
 }

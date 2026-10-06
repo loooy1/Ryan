@@ -2,6 +2,7 @@ using System.Data;
 using System.Text.Json;
 using Backend.Shared.Infrastructure;
 using Contracts.Rcs.Inventory;
+using Contracts.Rcs.Tasks;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using RCSBackend.Modules.Rcs.Infrastructure.Entities;
@@ -28,12 +29,12 @@ public sealed class RcsInventoryController(IDbContextFactory<GrcsDbContext> fact
         [FromBody] RcsInventoryModelDto dto, CancellationToken token = default)
     {
         var error = ValidateModel(dto);
-        if (error is not null) return BadRequest(new { message = error });
+        if (error is not null) return BadRequest(RcsApiResponse.Rejected(error));
         await using var db = await factory.CreateDbContextAsync(token);
         var type = Normalize(dto.ItemType);
         var code = dto.ModelCode.Trim();
         if (await db.Set<RcsInventoryModelRow>().AnyAsync(x => x.ItemType == type && x.ModelCode == code, token))
-            return Conflict(new { message = $"{TypeName(type)}模型编码已存在：{code}" });
+            return Conflict(RcsApiResponse.Rejected($"{TypeName(type)}模型编码已存在：{code}"));
         var now = DateTime.UtcNow;
         var row = new RcsInventoryModelRow
         {
@@ -52,17 +53,17 @@ public sealed class RcsInventoryController(IDbContextFactory<GrcsDbContext> fact
         [FromBody] RcsInventoryModelDto dto, CancellationToken token = default)
     {
         var error = ValidateModel(dto);
-        if (error is not null) return BadRequest(new { message = error });
+        if (error is not null) return BadRequest(RcsApiResponse.Rejected(error));
         await using var db = await factory.CreateDbContextAsync(token);
         var row = await db.Set<RcsInventoryModelRow>().FirstOrDefaultAsync(x => x.Id == id, token);
-        if (row is null) return NotFound(new { message = "模型不存在。" });
+        if (row is null) return NotFound(RcsApiResponse.Rejected("模型不存在。"));
         var type = Normalize(dto.ItemType);
         var code = dto.ModelCode.Trim();
         if ((row.ItemType != type || row.ModelCode != code)
             && await db.Set<RcsInventoryInstanceRow>().AnyAsync(x => x.ItemType == row.ItemType && x.ModelCode == row.ModelCode, token))
-            return Conflict(new { message = "该模型已有实例在使用，不能修改类型或模型编码。" });
+            return Conflict(RcsApiResponse.Rejected("该模型已有实例在使用，不能修改类型或模型编码。"));
         if (await db.Set<RcsInventoryModelRow>().AnyAsync(x => x.Id != id && x.ItemType == type && x.ModelCode == code, token))
-            return Conflict(new { message = $"{TypeName(type)}模型编码已存在：{code}" });
+            return Conflict(RcsApiResponse.Rejected($"{TypeName(type)}模型编码已存在：{code}"));
         row.ItemType = type; row.ModelCode = code; row.Name = dto.Name.Trim();
         row.LengthMm = dto.LengthMm; row.WidthMm = dto.WidthMm; row.HeightMm = dto.HeightMm;
         row.WeightKg = dto.WeightKg; row.MaxLoadKg = type == RcsInventoryItemTypes.Pallet ? dto.MaxLoadKg : null;
@@ -76,12 +77,12 @@ public sealed class RcsInventoryController(IDbContextFactory<GrcsDbContext> fact
     {
         await using var db = await factory.CreateDbContextAsync(token);
         var row = await db.Set<RcsInventoryModelRow>().FirstOrDefaultAsync(x => x.Id == id, token);
-        if (row is null) return NotFound();
+        if (row is null) return NotFound(RcsApiResponse.Rejected("模型不存在。"));
         if (await db.Set<RcsInventoryInstanceRow>().AnyAsync(x => x.ItemType == row.ItemType && x.ModelCode == row.ModelCode, token))
-            return Conflict(new { message = "该模型仍被实例使用，不能删除。" });
+            return Conflict(RcsApiResponse.Rejected("该模型仍被实例使用，不能删除。"));
         db.Remove(row);
         await db.SaveChangesAsync(token);
-        return NoContent();
+        return Ok(RcsApiResponse.Accepted());
     }
 
     [HttpGet("instances")]
@@ -105,16 +106,16 @@ public sealed class RcsInventoryController(IDbContextFactory<GrcsDbContext> fact
         [FromBody] CreateRcsInventoryInstanceRequest request, CancellationToken token = default)
     {
         var type = Normalize(request.ItemType);
-        if (!IsItemType(type)) return BadRequest(new { message = "类型必须是 CARGO 或 PALLET。" });
+        if (!IsItemType(type)) return BadRequest(RcsApiResponse.Rejected("类型必须是 CARGO 或 PALLET。"));
         var code = request.InstanceCode.Trim();
         var modelCode = request.ModelCode.Trim();
-        if (code.Length == 0 || modelCode.Length == 0) return BadRequest(new { message = "实例编码和模型编码不能为空。" });
+        if (code.Length == 0 || modelCode.Length == 0) return BadRequest(RcsApiResponse.Rejected("实例编码和模型编码不能为空。"));
 
         await using var db = await factory.CreateDbContextAsync(token);
         if (!await db.Set<RcsInventoryModelRow>().AnyAsync(x => x.ItemType == type && x.ModelCode == modelCode && x.IsEnabled, token))
-            return BadRequest(new { message = "找不到已启用的对应类型模型。" });
+            return BadRequest(RcsApiResponse.Rejected("找不到已启用的对应类型模型。"));
         if (await db.Set<RcsInventoryInstanceRow>().AnyAsync(x => x.ItemType == type && x.InstanceCode == code, token))
-            return Conflict(new { message = "实例编码已存在。" });
+            return Conflict(RcsApiResponse.Rejected("实例编码已存在。"));
 
         var parentCode = request.ParentInstanceCode.Trim();
         var mapCode = request.MapCode.Trim();
@@ -122,23 +123,23 @@ public sealed class RcsInventoryController(IDbContextFactory<GrcsDbContext> fact
         if (parentCode.Length > 0)
         {
             if (type != RcsInventoryItemTypes.Cargo || mapCode.Length > 0 || pointCode.Length > 0)
-                return BadRequest(new { message = "只有货物可以嵌套在托盘中；嵌套货物不能同时指定站点。" });
+                return BadRequest(RcsApiResponse.Rejected("只有货物可以嵌套在托盘中；嵌套货物不能同时指定站点。"));
             var parent = await db.Set<RcsInventoryInstanceRow>().FirstOrDefaultAsync(
                 x => x.ItemType == RcsInventoryItemTypes.Pallet && x.InstanceCode == parentCode, token);
-            if (parent is null) return BadRequest(new { message = "父实例不存在或不是托盘。" });
+            if (parent is null) return BadRequest(RcsApiResponse.Rejected("父实例不存在或不是托盘。"));
             if (string.IsNullOrWhiteSpace(parent.MapCode) || string.IsNullOrWhiteSpace(parent.PointCode))
-                return Conflict(new { message = "托盘当前不在储位上，不能向站点库存中添加嵌套货物。" });
+                return Conflict(RcsApiResponse.Rejected("托盘当前不在储位上，不能向站点库存中添加嵌套货物。"));
             mapCode = parent.MapCode; pointCode = parent.PointCode;
         }
         else if (mapCode.Length == 0 || pointCode.Length == 0)
-            return BadRequest(new { message = "独立实例必须选择地图和站点。" });
+            return BadRequest(RcsApiResponse.Rejected("独立实例必须选择地图和站点。"));
 
         if (mapCode.Length > 0 && !await db.Set<RcsMapPointRow>().AnyAsync(x => x.MapCode == mapCode && x.PointCode == pointCode, token))
-            return BadRequest(new { message = "指定地图中不存在该站点。" });
+            return BadRequest(RcsApiResponse.Rejected("指定地图中不存在该站点。"));
 
         await using var transaction = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable, token);
         if (parentCode.Length == 0 && await HasTopLevelInventoryAsync(db, mapCode, pointCode, token: token))
-            return Conflict(new { message = OccupiedStationMessage(pointCode) });
+            return Conflict(RcsApiResponse.Rejected(OccupiedStationMessage(pointCode)));
 
         var now = DateTime.UtcNow;
         var row = new RcsInventoryInstanceRow
@@ -158,16 +159,16 @@ public sealed class RcsInventoryController(IDbContextFactory<GrcsDbContext> fact
     {
         var mapCode = request.MapCode.Trim();
         var pointCode = request.PointCode.Trim();
-        if (mapCode.Length == 0 || pointCode.Length == 0) return BadRequest(new { message = "目标地图和站点不能为空。" });
+        if (mapCode.Length == 0 || pointCode.Length == 0) return BadRequest(RcsApiResponse.Rejected("目标地图和站点不能为空。"));
         await using var db = await factory.CreateDbContextAsync(token);
         var row = await db.Set<RcsInventoryInstanceRow>().FirstOrDefaultAsync(x => x.Id == id, token);
-        if (row is null) return NotFound();
+        if (row is null) return NotFound(RcsApiResponse.Rejected("库存实例不存在。"));
         if (!await db.Set<RcsMapPointRow>().AnyAsync(x => x.MapCode == mapCode && x.PointCode == pointCode, token))
-            return BadRequest(new { message = "目标地图中不存在该站点。" });
+            return BadRequest(RcsApiResponse.Rejected("目标地图中不存在该站点。"));
 
         await using var transaction = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable, token);
         if (await HasTopLevelInventoryAsync(db, mapCode, pointCode, id, token))
-            return Conflict(new { message = OccupiedStationMessage(pointCode) });
+            return Conflict(RcsApiResponse.Rejected(OccupiedStationMessage(pointCode)));
 
         if (row.ItemType == RcsInventoryItemTypes.Pallet)
         {
@@ -186,12 +187,12 @@ public sealed class RcsInventoryController(IDbContextFactory<GrcsDbContext> fact
     {
         await using var db = await factory.CreateDbContextAsync(token);
         var row = await db.Set<RcsInventoryInstanceRow>().FirstOrDefaultAsync(x => x.Id == id, token);
-        if (row is null) return NotFound();
+        if (row is null) return NotFound(RcsApiResponse.Rejected("库存实例不存在。"));
         if (row.ItemType == RcsInventoryItemTypes.Pallet && await db.Set<RcsInventoryInstanceRow>().AnyAsync(x => x.ParentInstanceCode == row.InstanceCode, token))
-            return Conflict(new { message = "托盘中还有货物，请先移出或删除货物。" });
+            return Conflict(RcsApiResponse.Rejected("托盘中还有货物，请先移出或删除货物。"));
         db.Remove(row);
         await db.SaveChangesAsync(token);
-        return NoContent();
+        return Ok(RcsApiResponse.Accepted());
     }
 
     private static string? ValidateModel(RcsInventoryModelDto dto)

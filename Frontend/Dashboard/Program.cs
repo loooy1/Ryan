@@ -41,5 +41,6 @@ builder.Services.AddScoped<Dashboard.Modules.WcsSimulator.Services.RuntimeConfig
 builder.Services.AddScoped<Dashboard.Modules.RcsSimulator.Services.RcsApiClient>();
 builder.Services.AddScoped<Dashboard.Modules.RcsSimulator.Services.RcsMapCacheService>();
 builder.Services.AddScoped<Dashboard.Modules.RcsSimulator.Services.RcsRealtimeHubClient>();
+builder.Services.AddScoped<Dashboard.Modules.RcsSimulator.Services.RcsVehicleCacheService>();
 
 await builder.Build().RunAsync();

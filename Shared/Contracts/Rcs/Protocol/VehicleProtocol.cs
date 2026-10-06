@@ -26,7 +26,6 @@ public sealed record VehicleRoutePoint
     public double X { get; init; }
     public double Y { get; init; }
     public double Z { get; init; }
-    public int Floor { get; init; }
     public string Action { get; init; } = VehiclePointAction.Move;
     public string StepId { get; init; } = "";
 }

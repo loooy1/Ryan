@@ -24,7 +24,6 @@ public sealed class RcsMapPointDto
     public string PointCode { get; set; } = "";
     public string PointName { get; set; } = "";
     public string PointType { get; set; } = "WAYPOINT";
-    public int Floor { get; set; }
     public double X { get; set; }
     public double Y { get; set; }
     public double Z { get; set; }

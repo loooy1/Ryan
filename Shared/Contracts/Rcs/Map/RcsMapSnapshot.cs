@@ -11,8 +11,22 @@ public sealed class RcsMapSnapshot
         new Dictionary<string, RcsMapNode>(StringComparer.OrdinalIgnoreCase);
     public IReadOnlyDictionary<string, IReadOnlyList<RcsMapEdge>> Adjacency { get; init; } =
         new Dictionary<string, IReadOnlyList<RcsMapEdge>>(StringComparer.OrdinalIgnoreCase);
-    public bool TryGetPoint(string pointCode, out RcsMapNode point) => Points.TryGetValue(pointCode, out point!);
+    public bool TryGetPoint(string pointCode, out RcsMapNode point)
+    {
+        var separator = pointCode.LastIndexOf('_');
+        if (separator > 0 && int.TryParse(pointCode.AsSpan(separator + 1),
+                System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var floor)
+            && Points.TryGetValue(pointCode[..separator], out point!))
+        {
+            if (Math.Abs(point.Z - floor) < 0.000001) return true;
+            point = null!;
+            return false;
+        }
+        if (Points.TryGetValue(pointCode, out point!)) return true;
+        point = null!;
+        return false;
+    }
 }
 
-public sealed record RcsMapNode(string PointCode, string PointName, string PointType, int Floor, double X, double Y, double Z);
+public sealed record RcsMapNode(string PointCode, string PointName, string PointType, double X, double Y, double Z);
 public sealed record RcsMapEdge(string LineCode, string FromPointCode, string ToPointCode, double Distance, string Direction, double MaxSpeed);

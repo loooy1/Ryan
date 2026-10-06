@@ -1,0 +1,35 @@
+@page "/tools/http-simulator"
+
+<PageTitle>HTTP模拟器 - 常用工具</PageTitle>
+
+<div class="http-tool-frame-shell">
+    <iframe src="/tools/http-request-tool.html"
+            title="HTTP请求模拟器"
+            loading="eager"></iframe>
+</div>
+
+<style>
+    .http-tool-frame-shell {
+        width: calc(100% + 64px);
+        height: calc(100vh - 36px);
+        min-height: 520px;
+        margin: -28px -32px;
+        overflow: hidden;
+        background: #08111f;
+    }
+
+    .http-tool-frame-shell iframe {
+        display: block;
+        width: 100%;
+        height: 100%;
+        border: 0;
+    }
+
+    @@media (max-width: 700px) {
+        .http-tool-frame-shell {
+            width: calc(100% + 24px);
+            margin-right: -12px;
+            margin-left: -12px;
+        }
+    }
+</style>

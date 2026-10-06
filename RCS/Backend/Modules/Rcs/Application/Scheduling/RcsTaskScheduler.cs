@@ -12,7 +12,8 @@ public sealed class RcsTaskScheduler : IRcsTaskScheduler
         foreach (var task in waitingTasks.OrderBy(x => x.PriorityCode).ThenBy(x => x.QueueId))
         {
             var requiredMode = task.Source == RcsTaskSource.Manual ? RcsOperatingMode.Manual : RcsOperatingMode.Automatic;
-            var available = vehicles.Where(x => x.IsEnabled && x.OperatingMode == requiredMode && (x.Status is "Idle" or "Arrived"))
+            var available = vehicles.Where(x => x.IsEnabled && x.IsOnline && x.OperatingMode == requiredMode
+                    && (x.Status is "Idle" or "Arrived"))
                 .OrderBy(x => x.Id, StringComparer.Ordinal).ToArray();
             var vehicle = available.FirstOrDefault(x => task.RequestedVehicleId == ""
                 || string.Equals(x.Id, task.RequestedVehicleId, StringComparison.OrdinalIgnoreCase));

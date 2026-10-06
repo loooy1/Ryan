@@ -1,4 +1,4 @@
-.fleet-page{max-width:1480px;margin:0 auto;padding:4px 0 28px;color:#e2e8f0}
+.fleet-page{width:100%;max-width:none;margin:0;padding:4px 0 28px;color:#e2e8f0}
 .fleet-header{display:flex;align-items:center;justify-content:space-between;gap:20px;margin-bottom:22px}
 .fleet-kicker{font-size:10px;font-weight:700;letter-spacing:2px;color:#38bdf8}
 .fleet-header h1{font-size:25px;margin:7px 0 8px;letter-spacing:.3px}
@@ -33,6 +33,7 @@
 .state-badge.running{color:#7dd3fc;background:#07598544;border-color:#075985}
 .state-badge.paused{color:#fde68a;background:#78350f44;border-color:#92400e}
 .state-badge.off{color:#94a3b8;background:#33415544;border-color:#475569}
+.state-badge.offline{color:#fca5a5;background:#7f1d1d44;border-color:#b91c1c}
 .vehicle-id{display:block;font-size:21px;font-weight:700;color:#f1f5f9;letter-spacing:.5px}
 .vehicle-name{display:block;color:#94a3b8;font-size:11px;margin:5px 0 18px;overflow-wrap:anywhere}
 .vehicle-card-data{display:grid;grid-template-columns:1fr;gap:5px}
@@ -54,6 +55,7 @@
 .detail-meta{display:grid;grid-template-columns:75px minmax(0,1fr);gap:9px;padding:17px 0;font-size:11px}
 .detail-meta>span{color:#64748b}
 .detail-meta>b{font-weight:500;color:#cbd5e1;overflow-wrap:anywhere}
+.detail-meta>b.online{color:#4ade80}.detail-meta>b.offline,.detail-meta>b.vehicle-error{color:#fca5a5}
 
 
 

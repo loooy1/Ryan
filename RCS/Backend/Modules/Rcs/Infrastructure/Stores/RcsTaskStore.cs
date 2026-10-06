@@ -21,6 +21,34 @@ public sealed class RcsTaskStore(IDbContextFactory<GrcsDbContext> factory) : IRc
         return await db.Set<RcsTaskRow>().AsNoTracking().OrderByDescending(x => x.Id).Take(limit).ToListAsync(token);
     }
 
+    public async Task<RcsTaskPageRows> ListPageAsync(int page, int pageSize, string status, string search,
+        CancellationToken token = default)
+    {
+        await using var db = await factory.CreateDbContextAsync(token);
+        var all = db.Set<RcsTaskRow>().AsNoTracking();
+        var filtered = all.AsQueryable();
+        if (!string.IsNullOrWhiteSpace(status)) filtered = filtered.Where(x => x.Status == status);
+        if (!string.IsNullOrWhiteSpace(search))
+        {
+            var query = search.Trim();
+            filtered = filtered.Where(x => x.TaskId.Contains(query) || x.GroupId.Contains(query)
+                || x.VehicleId.Contains(query) || x.RequestedVehicleId.Contains(query)
+                || x.ContainerCode.Contains(query) || x.Warehouse.Contains(query) || x.TaskType.Contains(query)
+                || x.StationCodesJson.Contains(query) || x.AreaCodesJson.Contains(query));
+        }
+
+        var totalCount = await filtered.CountAsync(token);
+        var totalPages = Math.Max(1, (int)Math.Ceiling(totalCount / (double)pageSize));
+        page = Math.Clamp(page, 1, totalPages);
+        var items = await filtered.OrderByDescending(x => x.Id).Skip((page - 1) * pageSize).Take(pageSize).ToListAsync(token);
+        var allTaskCount = await all.CountAsync(token);
+        var groupCount = await all.Select(x => x.GroupId).Distinct().CountAsync(token);
+        var waitingCount = await all.CountAsync(x => x.Status == RcsTaskStatus.Waiting, token);
+        var executingCount = await all.CountAsync(x => x.Status == RcsTaskStatus.Running
+            || x.Status == RcsTaskStatus.Paused || x.Status == RcsTaskStatus.Cancelling, token);
+        return new(items, totalCount, groupCount, allTaskCount, waitingCount, executingCount, page, pageSize, totalPages);
+    }
+
     public async Task AddAsync(IReadOnlyList<RcsTaskRow> tasks, CancellationToken token = default)
     {
         await using var db = await factory.CreateDbContextAsync(token);
@@ -34,6 +62,13 @@ public sealed class RcsTaskStore(IDbContextFactory<GrcsDbContext> factory) : IRc
         await using var db = await factory.CreateDbContextAsync(token);
         return await db.Set<RcsTaskRow>().AsNoTracking().Where(x => x.Status == RcsTaskStatus.Waiting && x.Source == source)
             .Select(x => new RcsTaskCandidate(x.Id, x.TaskId, x.PriorityCode, x.RequestedVehicleId, x.Source)).ToListAsync(token);
+    }
+
+    public async Task<List<RcsTaskRow>> WaitingTasksAsync(string source, CancellationToken token = default)
+    {
+        await using var db = await factory.CreateDbContextAsync(token);
+        return await db.Set<RcsTaskRow>().Where(x => x.Status == RcsTaskStatus.Waiting && x.Source == source)
+            .OrderBy(x => x.PriorityCode).ThenBy(x => x.Id).ToListAsync(token);
     }
 
     public async Task<bool> TryStartAsync(RcsTaskRow task, CancellationToken token = default)
@@ -52,6 +87,12 @@ public sealed class RcsTaskStore(IDbContextFactory<GrcsDbContext> factory) : IRc
         task.UpdatedAt = DateTime.UtcNow;
         db.Update(task);
         await db.SaveChangesAsync(token);
+    }
+
+    public async Task<int> DeleteAllAsync(CancellationToken token = default)
+    {
+        await using var db = await factory.CreateDbContextAsync(token);
+        return await db.Set<RcsTaskRow>().ExecuteDeleteAsync(token);
     }
 
     public async Task RecoverAsync(CancellationToken token = default)

@@ -1,7 +1,6 @@
 using Contracts.Rcs.Protocol;
 using Contracts.Rcs.Vehicle;
 using RCSBackend.Modules.Rcs.Infrastructure.Entities;
-using System.Text.Json;
 
 namespace RCSBackend.Modules.Rcs.Protocol;
 

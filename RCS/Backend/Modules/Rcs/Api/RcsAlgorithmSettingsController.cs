@@ -1,4 +1,5 @@
 using Contracts.Rcs.Algorithm;
+using Contracts.Rcs.Tasks;
 using Microsoft.AspNetCore.Mvc;
 using RCSBackend.Modules.Rcs.Application.Execution;
 
@@ -15,6 +16,6 @@ public sealed class RcsAlgorithmSettingsController(RcsAlgorithmSettingsService s
     public async Task<ActionResult<AlgorithmSettingsDto>> Save([FromBody] AlgorithmSettingsDto value, CancellationToken token)
     {
         try { return Ok(await settings.SaveAsync(value, token)); }
-        catch (ArgumentOutOfRangeException ex) { return BadRequest(new { message = ex.Message }); }
+        catch (ArgumentOutOfRangeException ex) { return BadRequest(RcsApiResponse.Rejected(ex.Message)); }
     }
 }

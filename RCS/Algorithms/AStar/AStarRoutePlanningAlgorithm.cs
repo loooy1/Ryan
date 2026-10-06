@@ -15,7 +15,7 @@ public sealed class AStarRoutePlanningAlgorithm(IAStarPathfinder pathfinder) : I
         var route = new List<VehicleRoutePoint>();
         if (!string.IsNullOrWhiteSpace(currentPointCode))
         {
-            if (!map.Points.TryGetValue(currentPointCode, out var current))
+            if (!map.TryGetPoint(currentPointCode, out var current))
                 throw new InvalidOperationException("车辆当前位置不在当前可用地图中，请先确认地图与车辆位置。");
             route.Add(ToPoint(current));
         }
@@ -28,7 +28,7 @@ public sealed class AStarRoutePlanningAlgorithm(IAStarPathfinder pathfinder) : I
         var stopIndex = 0;
         foreach (var stop in stops)
         {
-            if (!map.Points.TryGetValue(stop.PointCode, out var target))
+            if (!map.TryGetPoint(stop.PointCode, out var target))
                 throw new InvalidOperationException($"任务站点 {stop.PointCode} 不存在或已禁用。");
             if (route.Count == 0) route.Add(ToPoint(target));
             else if (string.Equals(route[^1].PointCode, target.PointCode, StringComparison.OrdinalIgnoreCase)
@@ -40,11 +40,11 @@ public sealed class AStarRoutePlanningAlgorithm(IAStarPathfinder pathfinder) : I
             }
             else
             {
-                var leg = pathfinder.FindPath(map, route[^1].PointCode, stop.PointCode, blockedPoints, blockedLines);
+                var leg = pathfinder.FindPath(map, route[^1].PointCode, target.PointCode, blockedPoints, blockedLines);
                 // If every path is temporarily occupied (for example the target is another vehicle's current point),
                 // retain the valid route. The traffic coordinator will hold it until resources are released.
-                if (!leg.Found) leg = pathfinder.FindPath(map, route[^1].PointCode, stop.PointCode);
-                if (!leg.Found) throw new InvalidOperationException($"{route[^1].PointCode} → {stop.PointCode}：{leg.Message}");
+                if (!leg.Found) leg = pathfinder.FindPath(map, route[^1].PointCode, target.PointCode);
+                if (!leg.Found) throw new InvalidOperationException($"{route[^1].PointCode} → {target.PointCode}：{leg.Message}");
                 route.AddRange(leg.PointCodes.Skip(1).Select(code => ToPoint(map.Points[code])));
             }
             stopIndex++;
@@ -80,5 +80,5 @@ public sealed class AStarRoutePlanningAlgorithm(IAStarPathfinder pathfinder) : I
     }
 
     private static VehicleRoutePoint ToPoint(RcsMapNode node) => new()
-        { PointCode = node.PointCode, X = node.X, Y = node.Y, Z = node.Z, Floor = node.Floor };
+        { PointCode = node.PointCode, X = node.X, Y = node.Y, Z = node.Z };
 }

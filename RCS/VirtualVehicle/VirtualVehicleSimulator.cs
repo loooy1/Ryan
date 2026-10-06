@@ -31,7 +31,7 @@ public sealed class VirtualVehicleSimulator(string vehicleId = "V-01") : IVirtua
                     RouteVersion = _routeVersion, LoadedContainerCode = _cargo, LastAction = _lastAction,
                     CompletedStepIds = _completedSteps.Keys.ToArray(), PointCode = _point?.PointCode ?? "",
                     LockPointCode = _lockPointCode,
-                    X = _point?.X ?? 0, Y = _point?.Y ?? 0, Z = _point?.Z ?? 0, Floor = _point?.Floor ?? 0,
+                    X = _point?.X ?? 0, Y = _point?.Y ?? 0, Z = _point?.Z ?? 0,
                     Status = _status, RouteIndex = _routeOffset + _routeIndex,
                     RouteLength = _totalRouteLength == 0 ? _routeLength : _totalRouteLength };
         }
@@ -121,7 +121,7 @@ public sealed class VirtualVehicleSimulator(string vehicleId = "V-01") : IVirtua
                             _completedSteps.Add(command.ActionStepId, new VehicleRoutePoint
                             {
                                 PointCode = _point.PointCode, X = _point.X, Y = _point.Y, Z = _point.Z,
-                                Floor = _point.Floor, Action = command.Action, StepId = command.ActionStepId
+                                Action = command.Action, StepId = command.ActionStepId
                             });
                         }
                         _commandId = command.CommandId;
@@ -138,7 +138,7 @@ public sealed class VirtualVehicleSimulator(string vehicleId = "V-01") : IVirtua
                             || command.ExpectedPointCode != (_point?.PointCode ?? "")
                             || command.Points[0].PointCode != command.ExpectedPointCode
                             || command.Points[0].X != _point!.X || command.Points[0].Y != _point.Y
-                            || command.Points[0].Z != _point.Z || command.Points[0].Floor != _point.Floor
+                            || command.Points[0].Z != _point.Z
                             || command.Points[0].Action != _currentPointAction
                             || command.Points[0].StepId != _currentPointStepId)
                             throw new ArgumentException("续发路径必须从车辆当前已确认的点及其动作开始。");

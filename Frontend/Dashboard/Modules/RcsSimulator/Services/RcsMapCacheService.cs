@@ -124,7 +124,6 @@ public sealed class RcsMapCacheService
             PointCode = point.PointCode,
             PointName = point.PointName,
             PointType = point.PointType,
-            Floor = point.Floor,
             X = point.X,
             Y = point.Y,
             Z = point.Z,

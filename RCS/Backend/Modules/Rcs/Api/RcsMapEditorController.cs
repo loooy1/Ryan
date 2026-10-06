@@ -1,4 +1,5 @@
 using Contracts.Rcs.Map;
+using Contracts.Rcs.Tasks;
 using Microsoft.AspNetCore.Mvc;
 using RCSBackend.Modules.Rcs.Infrastructure.Stores;
 
@@ -17,7 +18,7 @@ public sealed class RcsMapEditorController : ControllerBase
     public async Task<ActionResult<RcsMapEditorDto>> Get([FromQuery] string mapCode = "default", CancellationToken cancellationToken = default)
     {
         var map = await _maps.GetAsync(mapCode, cancellationToken);
-        return map == null ? NotFound(new { message = $"地图 {mapCode} 不存在。" }) : Ok(map);
+        return map == null ? NotFound(RcsApiResponse.Rejected($"地图 {mapCode} 不存在。")) : Ok(map);
     }
 
     [HttpPut]
@@ -27,11 +28,11 @@ public sealed class RcsMapEditorController : ControllerBase
         {
             await _maps.SaveAsync(dto, cancellationToken);
             await _cache.ReloadAsync(cancellationToken);
-            return Ok(new { success = true, mapCode = dto.MapCode });
+            return Ok(RcsApiResponse.Accepted());
         }
         catch (ArgumentException ex)
         {
-            return BadRequest(new { success = false, message = ex.Message });
+            return BadRequest(RcsApiResponse.Rejected(ex.Message));
         }
     }
 }

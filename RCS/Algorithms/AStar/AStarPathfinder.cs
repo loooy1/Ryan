@@ -49,7 +49,7 @@ public sealed class AStarPathfinder : IAStarPathfinder
 
     private static double Heuristic(RcsMapNode a, RcsMapNode b) => Distance(a, b);
     private static double Distance(RcsMapNode a, RcsMapNode b) =>
-        Math.Sqrt((a.X - b.X) * (a.X - b.X) + (a.Y - b.Y) * (a.Y - b.Y) + (a.Z - b.Z) * (a.Z - b.Z));
+        Math.Sqrt((a.X - b.X) * (a.X - b.X) + (a.Y - b.Y) * (a.Y - b.Y));
     private static IReadOnlyList<string> Rebuild(Dictionary<string, string> cameFrom, string current)
     {
         var result = new List<string> { current };

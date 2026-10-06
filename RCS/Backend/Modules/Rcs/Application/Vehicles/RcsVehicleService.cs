@@ -45,6 +45,7 @@ public sealed class RcsVehicleService(IRcsVehicleStore store, RcsVehicleRegistry
         ValidateName(request.Name);
         if (request.PointCode is null || request.PointCode.Length > 128) throw new ArgumentException("初始站点编码非法。");
         await registry.InitializeAsync(token);
+        var initialPointCode = ResolvePointCode(request.PointCode);
         await dispatchLock.Gate.WaitAsync(token);
         try
         {
@@ -55,13 +56,11 @@ public sealed class RcsVehicleService(IRcsVehicleStore store, RcsVehicleRegistry
                 traffic.ObserveStationaryPosition(vehicle.Id, vehicle.PointCode);
             }
             if (registry.Contains(request.Id)) throw new RcsTaskConflictException("车辆编号已存在。");
-            if (request.PointCode != "" && maps.Current?.Points.ContainsKey(request.PointCode) != true)
-                throw new ArgumentException("初始站点不存在或已禁用。");
             var protocol = NormalizeProtocol(request.Protocol);
             EnsureProtocolSupported(protocol);
             var now = DateTime.UtcNow;
             var operatingMode = NormalizeOperatingMode(request.OperatingMode);
-            var row = new RcsVehicleRow { VehicleId = request.Id, Name = request.Name.Trim(), InitialPointCode = request.PointCode,
+            var row = new RcsVehicleRow { VehicleId = request.Id, Name = request.Name.Trim(), InitialPointCode = initialPointCode,
                 Protocol = protocol, OperatingMode = operatingMode, IsEnabled = request.IsEnabled, CreatedAt = now, UpdatedAt = now };
             if (row.Name == "") row.Name = row.VehicleId;
             if (!traffic.TryAcquirePosition(row.VehicleId, "", row.InitialPointCode,
@@ -133,6 +132,7 @@ public sealed class RcsVehicleService(IRcsVehicleStore store, RcsVehicleRegistry
     public async Task ResetAsync(string id, string pointCode, CancellationToken token = default)
     {
         await registry.InitializeAsync(token);
+        pointCode = ResolvePointCode(pointCode);
         await tasks.ResetVehicleAsync(pointCode, token, id, async () => {
             var row = registry.GetDefinition(id);
             row.InitialPointCode = pointCode; row.UpdatedAt = DateTime.UtcNow;
@@ -142,9 +142,8 @@ public sealed class RcsVehicleService(IRcsVehicleStore store, RcsVehicleRegistry
     public async Task<VehicleStateDto> SetPositionAsync(string id, string pointCode, CancellationToken token = default)
     {
         if (pointCode is null || pointCode.Length > 128) throw new ArgumentException("当前位置站点编码非法。");
-        if (pointCode != "" && maps.Current?.Points.ContainsKey(pointCode) != true)
-            throw new ArgumentException("当前位置站点不存在或已禁用。");
         await registry.InitializeAsync(token);
+        pointCode = ResolvePointCode(pointCode);
         await tasks.SetVehiclePositionAsync(pointCode, token, id, async () =>
         {
             var row = registry.GetDefinition(id);
@@ -155,6 +154,12 @@ public sealed class RcsVehicleService(IRcsVehicleStore store, RcsVehicleRegistry
     }
     private static void ValidateName(string? name)
     { if (name is null || name.Length > 128) throw new ArgumentException("车辆名称最多 128 字符。"); }
+    private string ResolvePointCode(string pointCode)
+    {
+        if (pointCode == "") return "";
+        if (maps.Current is { } map && map.TryGetPoint(pointCode, out var node)) return node.PointCode;
+        throw new ArgumentException($"站点 {pointCode} 不存在、已禁用或楼层与地图 Z 不匹配。");
+    }
     private static string NormalizeOperatingMode(string? mode) => mode?.Trim().ToUpperInvariant() switch
     {
         RcsOperatingMode.Automatic => RcsOperatingMode.Automatic,

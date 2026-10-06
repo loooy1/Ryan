@@ -63,7 +63,12 @@ public sealed class RcsTaskExecutionService : IRcsTaskExecutionService, IDisposa
             ?? throw new ArgumentException($"车辆 {request.VehicleId} 不存在。");
         var map = _maps.Current ?? throw new InvalidOperationException("当前地图未加载。");
         EnsureMap(map.MapCode, map.SceneName, request.MapCode, request.Warehouse);
-        var stops = RcsTaskRoutePlanner.CreateStops(request);
+        var stops = RcsTaskRoutePlanner.CreateStops(request).Select(stop =>
+        {
+            if (!map.TryGetPoint(stop.PointCode, out var node))
+                throw new ArgumentException($"任务站点 {stop.PointCode} 不存在或楼层与地图 Z 不匹配。");
+            return stop with { PointCode = node.PointCode };
+        }).ToArray();
         try
         {
             var fetchIndex = stops.ToList().FindIndex(x => x.Action == VehiclePointAction.Fetch);
@@ -74,11 +79,27 @@ public sealed class RcsTaskExecutionService : IRcsTaskExecutionService, IDisposa
                 && stops.Count(x => x.Action == VehiclePointAction.Put) == 1;
             if (hasInventoryActions && (!syncInventory || string.IsNullOrWhiteSpace(request.ContainerCode)))
                 throw new ArgumentException("库存搬运任务必须先取货再放货，且只能各执行一次，并指定货物或托盘编码。");
-            var stagedTransfer = syncInventory;
-            var activeStops = stagedTransfer ? stops.Take(fetchIndex + 1).ToArray() : stops;
-            var deferredStops = stagedTransfer ? stops.Skip(fetchIndex + 1).ToArray() : Array.Empty<RcsTaskStop>();
-            // Traffic coordination must only know the active stage's goal. The destination remains
-            // deferred until the vehicle confirms the pickup action at the source station.
+            IReadOnlyList<RcsTaskStop> activeStops;
+            IReadOnlyList<RcsTaskStop> deferredStops;
+            if (syncInventory)
+            {
+                activeStops = stops.Take(fetchIndex + 1).ToArray();
+                deferredStops = stops.Skip(fetchIndex + 1).ToArray();
+            }
+            else if (stops.Length == 1)
+            {
+                // A one-station move task has no explicit origin. Use the vehicle's reported
+                // current point as the start phase, then defer the requested destination.
+                activeStops = [new RcsTaskStop($"{request.TaskId}:start", state.PointCode, VehiclePointAction.Move)];
+                deferredStops = stops;
+            }
+            else
+            {
+                activeStops = stops.Take(1).ToArray();
+                deferredStops = stops.Skip(1).ToArray();
+            }
+            // Only the active leg is given to traffic coordination. The next leg is planned after
+            // the vehicle reports arrival and confirms the start-point action.
             _traffic.SetVehicleGoals(state.Id, activeStops.Select(x => x.PointCode).ToArray());
             return new(request.TaskId, request.VehicleId, map,
                 _planner.Plan(map, _traffic.GetPlanningContext(state.Id), state.PointCode, activeStops,
@@ -137,6 +158,39 @@ public sealed class RcsTaskExecutionService : IRcsTaskExecutionService, IDisposa
         if (result.Status != "COMPLETED") throw new InvalidOperationException(result.Message);
     }
 
+    private void PlanNextLeg(Execution execution, IReadOnlyList<RcsTaskStop> stops)
+    {
+        var state = Vehicle(execution.Plan.VehicleId);
+        var currentMap = _maps.Current;
+        EnsureMap(execution.Plan.Map.MapCode, execution.Plan.Map.SceneName,
+            currentMap?.MapCode ?? "", currentMap?.SceneName ?? "");
+        _traffic.SetVehicleGoals(execution.Plan.VehicleId, stops.Select(stop => stop.PointCode).ToArray());
+        var route = _planner.Plan(execution.Plan.Map, _traffic.GetPlanningContext(execution.Plan.VehicleId),
+            state.PointCode, stops, _algorithmSettings.Current, retainAnchor: true);
+        var nextVersion = checked(execution.Plan.RouteVersion + 1);
+        execution.Plan = execution.Plan with
+        {
+            RoutePlan = route,
+            Stops = stops,
+            DeferredStops = [],
+            RouteVersion = nextVersion
+        };
+    }
+
+    private string ConfirmVehicleAtPoint(Execution execution, RcsTaskStop stop)
+    {
+        var state = Vehicle(execution.Plan.VehicleId);
+        if (state.TaskId != execution.Plan.TaskId || state.PointCode != stop.PointCode
+            || state.Status is "Running" or "Paused" || state.LastAction != VehiclePointAction.Move)
+            throw new InvalidOperationException($"车辆未确认在 {stop.PointCode} 完成 move 动作。");
+        return execution.CommandId;
+    }
+
+    private Task<string?> ExecutePointActionAsync(Execution execution, RcsTaskStop stop, CancellationToken token) =>
+        stop.Action is VehiclePointAction.Fetch or VehiclePointAction.Put
+            ? ExecuteStationActionAsync(execution, stop, token)
+            : Task.FromResult<string?>(ConfirmVehicleAtPoint(execution, stop));
+
     public async Task ExecuteAsync(RcsTaskExecutionPlan plan, bool startPaused,
         Func<RcsTaskExecutionStageDto, Task>? stageChanged, CancellationToken token)
     {
@@ -150,52 +204,50 @@ public sealed class RcsTaskExecutionService : IRcsTaskExecutionService, IDisposa
         try
         {
             await _inventory.ReserveAsync(plan, token);
-            if (!plan.SyncInventory)
-            {
-                await ExecuteCurrentStageAsync(execution, startPaused, token);
-                return;
-            }
-
-            var fetch = plan.TaskStops.Single(stop => stop.Action == VehiclePointAction.Fetch);
-            var put = plan.TaskStops.Single(stop => stop.Action == VehiclePointAction.Put);
-            var stage1From = Vehicle(plan.VehicleId).PointCode;
+            var startStop = plan.Stops.LastOrDefault()
+                ?? throw new InvalidOperationException("任务没有可执行的起点阶段。");
+            var endStops = plan.RemainingStageStops;
+            var endStop = endStops.LastOrDefault() ?? plan.TaskStops.LastOrDefault()
+                ?? throw new InvalidOperationException("任务没有可执行的终点阶段。");
+            var startFrom = Vehicle(plan.VehicleId).PointCode;
             await RunReportedStageAsync(stageChanged,
-                Stage(1, "VEHICLE_TO_PICKUP", "叫车任务", stage1From, fetch.PointCode, "", plan.VehicleId),
-                async () => { await ExecuteCurrentStageAsync(execution, startPaused, token); return execution.CommandId; });
+                Stage(1, "VEHICLE_TO_START", "车辆从当前位置前往起点", startFrom, startStop.PointCode,
+                    "", plan.VehicleId, plan.RoutePointCodes),
+                async () =>
+                {
+                    await ExecuteCurrentStageAsync(execution, startPaused, token);
+                    return ConfirmVehicleAtPoint(execution, startStop);
+                });
 
             await RunReportedStageAsync(stageChanged,
-                Stage(2, "PICKUP_ACTION", "取货命令", fetch.PointCode, fetch.PointCode, fetch.Action, plan.VehicleId),
-                () => ExecuteStationActionAsync(execution, fetch, token));
+                Stage(2, "START_ACTION", "车辆在起点执行起点动作", startStop.PointCode, startStop.PointCode,
+                    startStop.Action, plan.VehicleId),
+                () => ExecutePointActionAsync(execution, startStop, token));
 
             token.ThrowIfCancellationRequested();
-            var stateAtPickup = Vehicle(plan.VehicleId);
-            if (stateAtPickup.Status != "Arrived" || stateAtPickup.TaskId != plan.TaskId
-                || stateAtPickup.PointCode != fetch.PointCode
-                || !stateAtPickup.CompletedStepIds.Contains(fetch.StepId, StringComparer.Ordinal))
-                throw new InvalidOperationException("车辆尚未确认在取货点完成取货动作，不能规划去终点的路径。");
+            var stateAtStart = Vehicle(plan.VehicleId);
+            if (stateAtStart.Status != "Arrived" || stateAtStart.TaskId != plan.TaskId
+                || stateAtStart.PointCode != startStop.PointCode
+                || startStop.Action is VehiclePointAction.Fetch or VehiclePointAction.Put
+                    && !stateAtStart.CompletedStepIds.Contains(startStop.StepId, StringComparer.Ordinal))
+                throw new InvalidOperationException("车辆尚未确认起点动作完成，不能继续规划终点路径。");
 
-            var pendingStops = plan.RemainingStageStops;
-            var currentMap = _maps.Current;
-            EnsureMap(plan.Map.MapCode, plan.Map.SceneName, currentMap?.MapCode ?? "", currentMap?.SceneName ?? "");
-            _traffic.SetVehicleGoals(plan.VehicleId, pendingStops.Select(stop => stop.PointCode).ToArray());
-            _logger.LogInformation("开始计算取货后的目标路径 TaskId={TaskId} Vehicle={Vehicle} From={Point} To={Destination}",
-                plan.TaskId, plan.VehicleId, stateAtPickup.PointCode, put.PointCode);
-            var nextRoute = _planner.Plan(plan.Map, _traffic.GetPlanningContext(plan.VehicleId),
-                stateAtPickup.PointCode, pendingStops, _algorithmSettings.Current, retainAnchor: true);
-            var nextRouteVersion = checked(execution.RouteVersion + 1);
-            execution.Plan = execution.Plan with
-            {
-                RoutePlan = nextRoute, Stops = pendingStops, DeferredStops = [], RouteVersion = nextRouteVersion
-            };
-            _logger.LogInformation("取货已确认，第二段路径已生成 TaskId={TaskId} Vehicle={Vehicle} From={Point} To={Destination}",
-                plan.TaskId, plan.VehicleId, stateAtPickup.PointCode, put.PointCode);
+            _logger.LogInformation("开始计算起点动作确认后的目标路径 TaskId={TaskId} Vehicle={Vehicle} From={Point} To={Destination}",
+                plan.TaskId, plan.VehicleId, stateAtStart.PointCode, endStop.PointCode);
+            PlanNextLeg(execution, endStops);
 
             await RunReportedStageAsync(stageChanged,
-                Stage(3, "VEHICLE_TO_DROPOFF", "放货任务", fetch.PointCode, put.PointCode, "", plan.VehicleId),
-                async () => { await ExecuteCurrentStageAsync(execution, false, token); return execution.CommandId; });
+                Stage(3, "VEHICLE_TO_END", "车辆从起点前往终点", stateAtStart.PointCode,
+                    endStop.PointCode, "", plan.VehicleId, execution.Plan.RoutePointCodes),
+                async () =>
+                {
+                    await ExecuteCurrentStageAsync(execution, false, token);
+                    return ConfirmVehicleAtPoint(execution, endStop);
+                });
             await RunReportedStageAsync(stageChanged,
-                Stage(4, "DROPOFF_ACTION", "放货命令", put.PointCode, put.PointCode, put.Action, plan.VehicleId),
-                () => ExecuteStationActionAsync(execution, put, token));
+                Stage(4, "END_ACTION", "车辆在终点执行终点动作", endStop.PointCode, endStop.PointCode,
+                    endStop.Action, plan.VehicleId),
+                () => ExecutePointActionAsync(execution, endStop, token));
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested)
         {
@@ -298,7 +350,7 @@ public sealed class RcsTaskExecutionService : IRcsTaskExecutionService, IDisposa
     public void ValidateReset(string vehicleId, string pointCode)
     {
         Vehicle(vehicleId);
-        if (!string.IsNullOrEmpty(pointCode) && _maps.Current?.Points.ContainsKey(pointCode) != true)
+        if (!string.IsNullOrEmpty(pointCode) && _maps.Current?.TryGetPoint(pointCode, out _) != true)
             throw new ArgumentException("重置站点不在当前可用地图中。");
     }
 
@@ -309,7 +361,9 @@ public sealed class RcsTaskExecutionService : IRcsTaskExecutionService, IDisposa
         if (execution is not null) await execution.WindowGate.WaitAsync(token);
         try
         {
-            var point = string.IsNullOrEmpty(pointCode) ? null : RcsTaskRoutePlanner.ToPoint(_maps.Current!.Points[pointCode]);
+            var point = string.IsNullOrEmpty(pointCode) ? null
+                : _maps.Current!.TryGetPoint(pointCode, out var node) ? RcsTaskRoutePlanner.ToPoint(node)
+                : throw new ArgumentException("重置站点不在当前可用地图中。");
             var lockedPoints = point is null ? Array.Empty<string>() : [point.PointCode];
             using var lockLease = await _traffic.AcquirePositionAsync(vehicleId, Vehicle(vehicleId).TaskId,
                 lockedPoints.FirstOrDefault() ?? "", token);
@@ -464,10 +518,11 @@ public sealed class RcsTaskExecutionService : IRcsTaskExecutionService, IDisposa
     }
 
     private static RcsTaskExecutionStageDto Stage(int sequence, string code, string name, string from,
-        string to, string action, string vehicleId) => new()
+        string to, string action, string vehicleId, IReadOnlyList<string>? routePointCodes = null) => new()
     {
         Sequence = sequence, StageCode = code, Name = name,
-        FromPointCode = from, ToPointCode = to, Action = action, VehicleId = vehicleId
+        FromPointCode = from, ToPointCode = to, Action = action, VehicleId = vehicleId,
+        RoutePointCodes = routePointCodes ?? []
     };
 
     private static async Task RunReportedStageAsync(Func<RcsTaskExecutionStageDto, Task>? stageChanged,

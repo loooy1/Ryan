@@ -13,9 +13,10 @@ public sealed class RcsTaskRoutePlanner(IPathPlanningAlgorithm algorithm)
         if (request.StationActions is { Count: > 0 } actions)
             return request.StationCodes.Select((code, index) => new RcsTaskStop(
                 $"{request.TaskId}:{index}", code, actions[index])).ToArray();
-        var carry = request.TaskType.ToUpperInvariant() is "INBOUND" or "OUTBOUND";
+        // Keep old stored tasks executable; the upstream validator now accepts only Auto_Carry.
+        var carry = request.TaskType.ToUpperInvariant() is "AUTO_CARRY" or "INBOUND" or "OUTBOUND";
         if (carry && (request.StationCodes.Count < 2 || string.IsNullOrWhiteSpace(request.ContainerCode)))
-            throw new ArgumentException("INBOUND/OUTBOUND 至少需要两个站点及 ContainerCode。");
+            throw new ArgumentException("Auto_Carry 搬运任务至少需要两个站点及 ContainerCode。");
         return request.StationCodes.Select((code, index) => new RcsTaskStop($"{request.TaskId}:{index}", code,
             carry && index == 0 ? VehiclePointAction.Fetch
             : carry && index == request.StationCodes.Count - 1 ? VehiclePointAction.Put : VehiclePointAction.Move)).ToArray();
@@ -24,8 +25,11 @@ public sealed class RcsTaskRoutePlanner(IPathPlanningAlgorithm algorithm)
     public AlgorithmRoutePlanDto Plan(RcsMapSnapshot map, AlgorithmPlanningContextDto fleet, string current,
         IReadOnlyList<RcsTaskStop> stops, AlgorithmSettingsDto settings, bool retainAnchor = false)
     {
+        var resolvedStops = stops.Select(stop => map.TryGetPoint(stop.PointCode, out var node)
+            ? stop with { PointCode = node.PointCode }
+            : throw new ArgumentException($"任务站点 {stop.PointCode} 不存在或楼层与地图 Z 不匹配。")).ToArray();
         var route = algorithm.Plan(map, fleet, current,
-            stops.Select(x => new AlgorithmRouteStopDto(x.PointCode)).ToArray(), settings, retainAnchor);
+            resolvedStops.Select(x => new AlgorithmRouteStopDto(x.PointCode)).ToArray(), settings, retainAnchor);
         var points = route.TotalPath.Select(point => point with
         {
             Action = VehiclePointAction.Move,
@@ -33,7 +37,7 @@ public sealed class RcsTaskRoutePlanner(IPathPlanningAlgorithm algorithm)
         }).ToArray();
 
         var searchFrom = 0;
-        foreach (var stop in stops)
+        foreach (var stop in resolvedStops)
         {
             var index = Array.FindIndex(points, searchFrom,
                 point => string.Equals(point.PointCode, stop.PointCode, StringComparison.OrdinalIgnoreCase));
@@ -51,5 +55,5 @@ public sealed class RcsTaskRoutePlanner(IPathPlanningAlgorithm algorithm)
     }
 
     public static VehicleRoutePoint ToPoint(RcsMapNode node) => new()
-        { PointCode = node.PointCode, X = node.X, Y = node.Y, Z = node.Z, Floor = node.Floor };
+        { PointCode = node.PointCode, X = node.X, Y = node.Y, Z = node.Z };
 }

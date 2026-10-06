@@ -29,7 +29,6 @@ public sealed record VehicleStateDto
     public double X { get; init; }
     public double Y { get; init; }
     public double Z { get; init; }
-    public int Floor { get; init; }
     public string Status { get; init; } = "Idle";
     public int RouteIndex { get; init; }
     public int RouteLength { get; init; }
