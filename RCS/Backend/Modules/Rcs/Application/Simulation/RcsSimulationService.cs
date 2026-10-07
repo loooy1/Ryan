@@ -3,6 +3,7 @@ using Contracts.Rcs.Map;
 using Contracts.Rcs.Route;
 using Contracts.Rcs.Vehicle;
 using RCSBackend.Modules.Rcs.Application.Execution;
+using RCSBackend.Modules.Rcs.Application.Maps;
 using RCSBackend.Modules.Rcs.Infrastructure.Stores;
 using RCSBackend.Modules.Rcs.Application.Tasks;
 using Contracts.Rcs.Tasks;

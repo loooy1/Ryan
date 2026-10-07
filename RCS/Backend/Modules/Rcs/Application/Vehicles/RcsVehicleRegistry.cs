@@ -3,6 +3,7 @@ using Contracts.Rcs.Vehicle;
 using Rcs.VirtualVehicle;
 using RCSBackend.Modules.Rcs.Infrastructure.Entities;
 using RCSBackend.Modules.Rcs.Infrastructure.Stores;
+using RCSBackend.Modules.Rcs.Application.Maps;
 using RCSBackend.Modules.Rcs.Protocol;
 using System.Text.Json;
 
@@ -235,7 +236,8 @@ public sealed class RcsVehicleRegistry(IRcsVehicleStore store, RcsMapCache maps,
             logger.LogError("车辆 {VehicleId} 配置了未注册的协议适配器 {Protocol}，该车将保持离线。", row.VehicleId, row.Protocol);
             return new MissingProtocolSession(row.VehicleId, row.Protocol, position);
         }
-        return adapter.CreateSession(row, position);
+        return adapter.CreateSession(new VehicleProtocolDefinition(row.VehicleId, row.Name, row.Protocol,
+            row.OperatingMode, row.InitialPointCode, row.IsEnabled), position);
     }
     private sealed class MissingProtocolSession(string vehicleId, string protocol, VehicleRoutePoint? position) : IVehicleProtocolSession
     {

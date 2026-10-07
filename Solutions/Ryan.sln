@@ -25,6 +25,8 @@ Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Shared", "Shared", "{D3CAF7
 EndProject
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Frontend", "Frontend", "{E4DB0819-A253-4F74-CB68-44DB1A07F534}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Rcs.Architecture.Tests", "..\RCS\Tests\Rcs.Architecture.Tests.csproj", "{AAD04D53-2148-4191-A5FD-8973979D6B0F}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -119,6 +121,18 @@ Global
 		{97E41D56-DEC3-4361-8729-A8F78418C675}.Release|x64.Build.0 = Release|Any CPU
 		{97E41D56-DEC3-4361-8729-A8F78418C675}.Release|x86.ActiveCfg = Release|Any CPU
 		{97E41D56-DEC3-4361-8729-A8F78418C675}.Release|x86.Build.0 = Release|Any CPU
+		{AAD04D53-2148-4191-A5FD-8973979D6B0F}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{AAD04D53-2148-4191-A5FD-8973979D6B0F}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{AAD04D53-2148-4191-A5FD-8973979D6B0F}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{AAD04D53-2148-4191-A5FD-8973979D6B0F}.Debug|x64.Build.0 = Debug|Any CPU
+		{AAD04D53-2148-4191-A5FD-8973979D6B0F}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{AAD04D53-2148-4191-A5FD-8973979D6B0F}.Debug|x86.Build.0 = Debug|Any CPU
+		{AAD04D53-2148-4191-A5FD-8973979D6B0F}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{AAD04D53-2148-4191-A5FD-8973979D6B0F}.Release|Any CPU.Build.0 = Release|Any CPU
+		{AAD04D53-2148-4191-A5FD-8973979D6B0F}.Release|x64.ActiveCfg = Release|Any CPU
+		{AAD04D53-2148-4191-A5FD-8973979D6B0F}.Release|x64.Build.0 = Release|Any CPU
+		{AAD04D53-2148-4191-A5FD-8973979D6B0F}.Release|x86.ActiveCfg = Release|Any CPU
+		{AAD04D53-2148-4191-A5FD-8973979D6B0F}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

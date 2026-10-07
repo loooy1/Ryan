@@ -4,7 +4,7 @@ using RCSBackend.Modules.Rcs.Application.Vehicles;
 namespace RCSBackend.Modules.Rcs.Application.Scheduling;
 
 /// <summary>继续分配给其他空闲车，同时观察各车执行结果；停止宿主时等待所有车停止。</summary>
-public sealed class RcsTaskDispatchWorker(IRcsTaskService tasks, RcsVehicleRegistry vehicles) : BackgroundService
+public sealed class RcsTaskDispatchWorker(IRcsTaskDispatchRuntime tasks, RcsVehicleRegistry vehicles) : BackgroundService
 {
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {

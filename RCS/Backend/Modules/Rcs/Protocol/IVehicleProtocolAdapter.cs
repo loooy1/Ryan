@@ -1,6 +1,5 @@
 using Contracts.Rcs.Protocol;
 using Contracts.Rcs.Vehicle;
-using RCSBackend.Modules.Rcs.Infrastructure.Entities;
 
 namespace RCSBackend.Modules.Rcs.Protocol;
 
@@ -11,8 +10,13 @@ public interface IVehicleProtocolAdapter
     string DisplayName { get; }
     bool RequiresHeartbeat { get; }
     VehicleHeartbeatTelemetry DecodeHeartbeat(ReadOnlyMemory<byte> payload);
-    IVehicleProtocolSession CreateSession(RcsVehicleRow definition, VehicleRoutePoint? initialPosition);
+    IVehicleProtocolSession CreateSession(VehicleProtocolDefinition definition, VehicleRoutePoint? initialPosition);
 }
+
+/// <summary>传给车型适配器的车辆配置，不暴露数据库实体及其生命周期。</summary>
+public sealed record VehicleProtocolDefinition(
+    string VehicleId, string Name, string Protocol, string OperatingMode,
+    string InitialPointCode, bool IsEnabled);
 
 /// <summary>
 /// 统一车辆会话。适配器只有在车辆确认动作执行完成后，才能报告对应 CompletedStepIds、LoadedContainerCode 和完成结果；

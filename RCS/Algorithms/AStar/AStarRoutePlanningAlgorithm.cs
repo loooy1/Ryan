@@ -1,6 +1,5 @@
 using Contracts.Rcs.Algorithm;
 using Contracts.Rcs.Map;
-using Contracts.Rcs.Protocol;
 using Rcs.Algorithms.AStar;
 
 namespace Rcs.Algorithms;
@@ -12,7 +11,7 @@ public sealed class AStarRoutePlanningAlgorithm(IAStarPathfinder pathfinder) : I
         IReadOnlyList<AlgorithmRouteStopDto> stops, AlgorithmSettingsDto settings, bool retainAnchor = false)
     {
         Validate(settings);
-        var route = new List<VehicleRoutePoint>();
+        var route = new List<AlgorithmPathPointDto>();
         if (!string.IsNullOrWhiteSpace(currentPointCode))
         {
             if (!map.TryGetPoint(currentPointCode, out var current))
@@ -55,7 +54,7 @@ public sealed class AStarRoutePlanningAlgorithm(IAStarPathfinder pathfinder) : I
         return new AlgorithmRoutePlanDto { TotalPath = totalPath, Segments = segments };
     }
 
-    private static IReadOnlyList<RouteSegmentDto> BuildSegments(IReadOnlyList<VehicleRoutePoint> path, AlgorithmSettingsDto settings)
+    private static IReadOnlyList<RouteSegmentDto> BuildSegments(IReadOnlyList<AlgorithmPathPointDto> path, AlgorithmSettingsDto settings)
     {
         if (path.Count == 0) return Array.Empty<RouteSegmentDto>();
         var segments = new List<RouteSegmentDto>();
@@ -79,6 +78,6 @@ public sealed class AStarRoutePlanningAlgorithm(IAStarPathfinder pathfinder) : I
             throw new ArgumentOutOfRangeException(nameof(settings), "续发间隔必须大于等于 1，且小于每段点数，以确保续发时保留当前位置重叠点。");
     }
 
-    private static VehicleRoutePoint ToPoint(RcsMapNode node) => new()
-        { PointCode = node.PointCode, X = node.X, Y = node.Y, Z = node.Z };
+    private static AlgorithmPathPointDto ToPoint(RcsMapNode node) =>
+        new(node.PointCode, node.X, node.Y, node.Z);
 }

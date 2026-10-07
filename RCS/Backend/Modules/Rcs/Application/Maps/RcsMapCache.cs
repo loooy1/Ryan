@@ -1,6 +1,7 @@
 using Contracts.Rcs.Map;
+using RCSBackend.Modules.Rcs.Infrastructure.Stores;
 
-namespace RCSBackend.Modules.Rcs.Infrastructure.Stores;
+namespace RCSBackend.Modules.Rcs.Application.Maps;
 
 /// <summary>RCS 进程内地图缓存。数据库只在启动或显式刷新时读取，算法持有当前快照引用。</summary>
 public sealed class RcsMapCache

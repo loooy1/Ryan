@@ -1,12 +1,11 @@
 using Contracts.Rcs.Map;
-using Contracts.Rcs.Algorithm;
 using Contracts.Rcs.Protocol;
 
 namespace RCSBackend.Modules.Rcs.Application.Execution;
 
 /// <summary>规划和执行共用同一地图快照引用，避免运行期间换图影响已规划路径。</summary>
 public sealed record RcsTaskExecutionPlan(string TaskId, string VehicleId, RcsMapSnapshot Map,
-    AlgorithmRoutePlanDto RoutePlan, IReadOnlyList<RcsTaskStop> Stops, string ContainerCode, int RouteVersion = 1,
+    RcsVehicleRoutePlan RoutePlan, IReadOnlyList<RcsTaskStop> Stops, string ContainerCode, int RouteVersion = 1,
     bool SyncInventory = false, IReadOnlyList<RcsTaskStop>? DeferredStops = null,
     IReadOnlyList<RcsTaskStop>? AllStops = null, string Warehouse = "")
 {

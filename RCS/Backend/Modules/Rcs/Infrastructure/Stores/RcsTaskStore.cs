@@ -61,7 +61,7 @@ public sealed class RcsTaskStore(IDbContextFactory<GrcsDbContext> factory) : IRc
     {
         await using var db = await factory.CreateDbContextAsync(token);
         return await db.Set<RcsTaskRow>().AsNoTracking().Where(x => x.Status == RcsTaskStatus.Waiting && x.Source == source)
-            .Select(x => new RcsTaskCandidate(x.Id, x.TaskId, x.PriorityCode, x.RequestedVehicleId, x.Source)).ToListAsync(token);
+            .Select(x => new RcsTaskCandidate(x.Id, x.TaskId, x.PriorityCode, x.RequestedVehicleId)).ToListAsync(token);
     }
 
     public async Task<List<RcsTaskRow>> WaitingTasksAsync(string source, CancellationToken token = default)

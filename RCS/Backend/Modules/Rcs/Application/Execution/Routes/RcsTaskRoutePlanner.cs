@@ -22,7 +22,7 @@ public sealed class RcsTaskRoutePlanner(IPathPlanningAlgorithm algorithm)
             : carry && index == request.StationCodes.Count - 1 ? VehiclePointAction.Put : VehiclePointAction.Move)).ToArray();
     }
 
-    public AlgorithmRoutePlanDto Plan(RcsMapSnapshot map, AlgorithmPlanningContextDto fleet, string current,
+    public RcsVehicleRoutePlan Plan(RcsMapSnapshot map, AlgorithmPlanningContextDto fleet, string current,
         IReadOnlyList<RcsTaskStop> stops, AlgorithmSettingsDto settings, bool retainAnchor = false)
     {
         var resolvedStops = stops.Select(stop => map.TryGetPoint(stop.PointCode, out var node)
@@ -30,10 +30,10 @@ public sealed class RcsTaskRoutePlanner(IPathPlanningAlgorithm algorithm)
             : throw new ArgumentException($"任务站点 {stop.PointCode} 不存在或楼层与地图 Z 不匹配。")).ToArray();
         var route = algorithm.Plan(map, fleet, current,
             resolvedStops.Select(x => new AlgorithmRouteStopDto(x.PointCode)).ToArray(), settings, retainAnchor);
-        var points = route.TotalPath.Select(point => point with
+        var points = route.TotalPath.Select(point => new VehicleRoutePoint
         {
-            Action = VehiclePointAction.Move,
-            StepId = ""
+            PointCode = point.PointCode, X = point.X, Y = point.Y, Z = point.Z,
+            Action = VehiclePointAction.Move, StepId = ""
         }).ToArray();
 
         var searchFrom = 0;
@@ -47,11 +47,12 @@ public sealed class RcsTaskRoutePlanner(IPathPlanningAlgorithm algorithm)
         }
 
         // Path commands contain only movement points. RCS sends station actions as separate commands.
-        var segments = route.Segments.Select(segment => segment with
+        var segments = route.Segments.Select(segment => new RcsVehicleRouteSegment
         {
+            StartPointOffset = segment.StartPointOffset,
             Points = points.Skip(segment.StartPointOffset).Take(segment.Points.Count).ToArray()
         }).ToArray();
-        return route with { TotalPath = points, Segments = segments };
+        return new RcsVehicleRoutePlan { TotalPath = points, Segments = segments };
     }
 
     public static VehicleRoutePoint ToPoint(RcsMapNode node) => new()

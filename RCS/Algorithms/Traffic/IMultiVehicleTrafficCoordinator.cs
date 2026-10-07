@@ -1,6 +1,5 @@
 using Contracts.Rcs.Algorithm;
 using Contracts.Rcs.Map;
-using Contracts.Rcs.Protocol;
 
 namespace Rcs.Algorithms.Traffic;
 
@@ -15,10 +14,10 @@ public interface IMultiVehicleTrafficCoordinator
     IReadOnlyList<string> GetLockedPoints(string vehicleId);
     IReadOnlyList<string> GetLockedLines(string vehicleId);
     bool TryAcquireRouteWindow(RcsMapSnapshot map, string vehicleId, string routeId,
-        IReadOnlyList<VehicleRoutePoint> points, int routePointOffset, int routeVersion,
+        IReadOnlyList<string> pointCodes, int routePointOffset, int routeVersion,
         out IAlgorithmRouteLease? lease, out string? conflictingVehicle);
     Task<IAlgorithmRouteLease> AcquireRouteWindowAsync(RcsMapSnapshot map, string vehicleId, string routeId,
-        IReadOnlyList<VehicleRoutePoint> points, int routePointOffset, int routeVersion,
+        IReadOnlyList<string> pointCodes, int routePointOffset, int routeVersion,
         CancellationToken token = default);
     bool TryAcquirePosition(string vehicleId, string routeId, string pointCode,
         out IAlgorithmRouteLease? lease, out string? conflictingVehicle);

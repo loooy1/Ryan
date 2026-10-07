@@ -5,35 +5,44 @@ using Contracts.Rcs.Vehicle;
 using Rcs.Algorithms;
 using Rcs.Algorithms.Traffic;
 using RCSBackend.Modules.Rcs.Infrastructure.Stores;
+using RCSBackend.Modules.Rcs.Application.Maps;
+using RCSBackend.Modules.Rcs.Application.Inventory;
 using RCSBackend.Modules.Rcs.Protocol;
-using RCSBackend.Modules.Rcs.Application.StationBusiness;
 using Contracts.Rcs.StationBusiness;
 
 namespace RCSBackend.Modules.Rcs.Application.Execution;
 
-/// <summary>负责路径规划及协议执行；不选择任务、不更新任务表。</summary>
+/// <summary>编排叫车、起点动作、运送和终点动作；路径窗口与锁由 RcsRouteWindowManager 协调。</summary>
 public sealed class RcsTaskExecutionService : IRcsTaskExecutionService, IDisposable
 {
     private readonly RcsMapCache _maps;
     private readonly RcsTaskRoutePlanner _planner;
     private readonly RcsAlgorithmSettingsService _algorithmSettings;
     private readonly IMultiVehicleTrafficCoordinator _traffic;
+    private readonly RcsVehicleTrafficStateSynchronizer _trafficState;
     private readonly IVehicleCommandChannel _channel;
     private readonly RcsInventoryTransferService _inventory;
-    private readonly RcsStationBusinessRuleService _stationRules;
+    private readonly RcsTaskStationRuleCoordinator _stationRuleCoordinator;
+    private readonly RcsVehicleActionExecutor _vehicleActionExecutor;
+    private readonly RcsRouteWindowManager _routeWindows;
     private readonly ILogger<RcsTaskExecutionService> _logger;
     private readonly object _gate = new();
-    private readonly Dictionary<string, Execution> _current = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, RcsTaskExecutionSession> _current = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, string> _lastObservedPoints = new(StringComparer.OrdinalIgnoreCase);
     private event Action<VehicleStateDto>? _vehicleStateChanged;
     private event Action? _inventoryChanged;
 
     public RcsTaskExecutionService(RcsMapCache maps, RcsTaskRoutePlanner planner,
         RcsAlgorithmSettingsService algorithmSettings, IMultiVehicleTrafficCoordinator traffic,
-        IVehicleCommandChannel channel, RcsInventoryTransferService inventory, RcsStationBusinessRuleService stationRules, ILogger<RcsTaskExecutionService> logger)
+        RcsVehicleTrafficStateSynchronizer trafficState, IVehicleCommandChannel channel,
+        RcsInventoryTransferService inventory, RcsTaskStationRuleCoordinator stationRuleCoordinator,
+        RcsVehicleActionExecutor vehicleActionExecutor, RcsRouteWindowManager routeWindows,
+        ILogger<RcsTaskExecutionService> logger)
     {
         _maps = maps; _planner = planner; _algorithmSettings = algorithmSettings;
-        _traffic = traffic; _channel = channel; _inventory = inventory; _stationRules = stationRules; _logger = logger;
+        _traffic = traffic; _trafficState = trafficState; _channel = channel;
+        _inventory = inventory; _stationRuleCoordinator = stationRuleCoordinator;
+        _vehicleActionExecutor = vehicleActionExecutor; _routeWindows = routeWindows; _logger = logger;
         _channel.StateChanged += OnVehicleStateChanged;
         _inventory.InventoryChanged += OnInventoryChanged;
     }
@@ -53,16 +62,14 @@ public sealed class RcsTaskExecutionService : IRcsTaskExecutionService, IDisposa
     public IReadOnlyList<VehicleStateDto> GetVehicles()
     {
         var states = _channel.GetStates();
-        SyncFleet(states);
-        foreach (var state in states.Where(x => x.Status is not ("Running" or "Paused")))
-            ObserveStationaryPosition(state);
-        return states.Select(EnrichState).ToArray();
+        _trafficState.SyncFleet(states);
+        return states.Select(_trafficState.EnrichState).ToArray();
     }
 
     public RcsTaskExecutionPlan Prepare(RcsTaskExecutionRequest request)
     {
         var states = _channel.GetStates();
-        SyncFleet(states);
+        _trafficState.SyncFleet(states);
         var state = states.FirstOrDefault(x => string.Equals(x.Id, request.VehicleId, StringComparison.OrdinalIgnoreCase))
             ?? throw new ArgumentException($"车辆 {request.VehicleId} 不存在。");
         var map = _maps.Current ?? throw new InvalidOperationException("当前地图未加载。");
@@ -117,64 +124,9 @@ public sealed class RcsTaskExecutionService : IRcsTaskExecutionService, IDisposa
         }
     }
 
-    public void ClearVehiclePlanningGoal(string vehicleId) => _traffic.SetVehicleGoals(vehicleId, []);
+    public void ClearVehiclePlanningGoal(string vehicleId) => _trafficState.ClearGoal(vehicleId);
 
-    private async Task ExecuteCurrentStageAsync(Execution execution, bool startPaused, CancellationToken token)
-    {
-        execution.CommandId = Guid.NewGuid().ToString("N");
-        execution.SegmentIndex = 0;
-        execution.RouteVersion = execution.Plan.RouteVersion;
-        execution.RouteUpdateError = null;
-        await execution.WindowGate.WaitAsync(token);
-        try
-        {
-            var firstSegment = GetFirstSegment(execution.Plan.RoutePlan);
-            ValidateWaitPointGates(execution);
-            execution.AuthorizedEntryIndices.Clear();
-            execution.CheckedEntryIndices.Clear();
-            await WaitForGateAtCurrentPointAsync(execution, 0, token);
-            firstSegment = firstSegment with { Points = LimitWindowAtWaitPoint(execution, firstSegment.StartPointOffset, firstSegment.Points) };
-            await RunBeforeLeaveAsync(execution, Vehicle(execution.Plan.VehicleId).PointCode, token);
-            await RunBeforeEnterForSegmentAsync(execution, firstSegment.Points, firstSegment.StartPointOffset, token);
-            _logger.LogInformation("开始下发车辆路径阶段 TaskId={TaskId} Vehicle={Vehicle} RouteVersion={Version} From={From} To={To} Points={Points}",
-                execution.Plan.TaskId, execution.Plan.VehicleId, execution.Plan.RouteVersion,
-                Vehicle(execution.Plan.VehicleId).PointCode, execution.Plan.Stops.LastOrDefault()?.PointCode ?? "",
-                execution.Plan.RoutePointCodes.Count);
-            var lockLease = await AcquireFirstWindowAsync(execution, firstSegment, token);
-            ValidateWaitPointGates(execution);
-            await WaitForGateAtCurrentPointAsync(execution, 0, token);
-            var refreshedSegment = GetFirstSegment(execution.Plan.RoutePlan);
-            firstSegment = refreshedSegment with
-            { Points = LimitWindowAtWaitPoint(execution, refreshedSegment.StartPointOffset, refreshedSegment.Points) };
-            await RunBeforeEnterForSegmentAsync(execution, firstSegment.Points, firstSegment.StartPointOffset, token);
-            using (lockLease)
-            {
-                await SendCheckedAsync(new VehicleCommand
-                {
-                    CommandId = execution.CommandId, VehicleId = execution.Plan.VehicleId, TaskId = execution.Plan.TaskId,
-                    Type = VehicleCommandType.Move, RouteVersion = execution.Plan.RouteVersion,
-                    RoutePointOffset = firstSegment.StartPointOffset, TotalRoutePoints = execution.Plan.Points.Count,
-                    HasMorePoints = firstSegment.StartPointOffset + firstSegment.Points.Count < execution.Plan.Points.Count,
-                    ContainerCode = execution.Plan.ContainerCode, Points = firstSegment.Points, StartPaused = startPaused
-                }, token);
-                execution.HasAcceptedCommand = true;
-                lockLease.Commit();
-                _logger.LogInformation("车辆已确认接收路径阶段 TaskId={TaskId} Vehicle={Vehicle} RouteVersion={Version} CommandId={CommandId}",
-                    execution.Plan.TaskId, execution.Plan.VehicleId, execution.Plan.RouteVersion, execution.CommandId);
-                PublishCurrentState(execution.Plan.VehicleId);
-            }
-        }
-        finally { execution.WindowGate.Release(); }
-
-        var commandId = execution.CommandId;
-        var result = await _channel.WaitForCompletionAsync(execution.Plan.VehicleId, commandId, token);
-        if (execution.RouteUpdateError is { } routeError)
-            throw new InvalidOperationException($"路径分段下发失败：{routeError.Message}", routeError);
-        token.ThrowIfCancellationRequested();
-        if (result.Status != "COMPLETED") throw new InvalidOperationException(result.Message);
-    }
-
-    private void PlanNextLeg(Execution execution, IReadOnlyList<RcsTaskStop> stops)
+    private void PlanNextLeg(RcsTaskExecutionSession execution, IReadOnlyList<RcsTaskStop> stops)
     {
         var state = Vehicle(execution.Plan.VehicleId);
         var currentMap = _maps.Current;
@@ -195,7 +147,7 @@ public sealed class RcsTaskExecutionService : IRcsTaskExecutionService, IDisposa
         execution.CheckedEntryIndices.Clear();
     }
 
-    private string ConfirmVehicleAtPoint(Execution execution, RcsTaskStop stop)
+    private string ConfirmVehicleAtPoint(RcsTaskExecutionSession execution, RcsTaskStop stop)
     {
         var state = Vehicle(execution.Plan.VehicleId);
         if (state.TaskId != execution.Plan.TaskId || state.PointCode != stop.PointCode
@@ -204,14 +156,25 @@ public sealed class RcsTaskExecutionService : IRcsTaskExecutionService, IDisposa
         return execution.CommandId;
     }
 
-    private async Task<string?> ExecutePointActionAsync(Execution execution, RcsTaskStop stop, CancellationToken token)
+    private async Task<string?> ExecutePointActionAsync(RcsTaskExecutionSession execution, RcsTaskStop stop, CancellationToken token)
     {
-        await RunStationRuleAsync(execution, stop.PointCode, RcsStationEvents.BeforeAction, stop.Action, token);
+        await _stationRuleCoordinator.RunAsync(execution.Plan, stop.PointCode, RcsStationEvents.BeforeAction, stop.Action, token);
         var command = stop.Action is VehiclePointAction.Fetch or VehiclePointAction.Put
             ? await ExecuteStationActionAsync(execution, stop, token)
             : ConfirmVehicleAtPoint(execution, stop);
-        await RunStationRuleAsync(execution, stop.PointCode, RcsStationEvents.AfterAction, stop.Action, token);
+        await _stationRuleCoordinator.RunAsync(execution.Plan, stop.PointCode, RcsStationEvents.AfterAction, stop.Action, token);
         return command;
+    }
+
+    private async Task ReserveInventoryAsync(RcsTaskExecutionPlan plan, CancellationToken token)
+    {
+        if (!plan.SyncInventory) return;
+        var fetch = plan.TaskStops.SingleOrDefault(x => x.Action == VehiclePointAction.Fetch);
+        var put = plan.TaskStops.SingleOrDefault(x => x.Action == VehiclePointAction.Put);
+        if (fetch is null || put is null || fetch.PointCode == put.PointCode || string.IsNullOrWhiteSpace(plan.ContainerCode))
+            throw new InvalidOperationException("库存搬运任务必须包含不同起终点的一次取货和一次放货，并指定货物或托盘编码。");
+        await _inventory.ReserveAsync(new RcsInventoryMove(plan.TaskId, plan.Map.MapCode,
+            plan.ContainerCode, fetch.PointCode, put.PointCode), token);
     }
 
     public async Task ExecuteAsync(RcsTaskExecutionPlan plan, bool startPaused,
@@ -219,14 +182,14 @@ public sealed class RcsTaskExecutionService : IRcsTaskExecutionService, IDisposa
     {
         Vehicle(plan.VehicleId);
         token.ThrowIfCancellationRequested();
-        var execution = new Execution(plan, Guid.NewGuid().ToString("N"), token);
+        var execution = new RcsTaskExecutionSession(plan, Guid.NewGuid().ToString("N"), token);
         lock (_gate)
         {
             if (!_current.TryAdd(plan.VehicleId, execution)) throw new InvalidOperationException("该车辆已有执行任务。");
         }
         try
         {
-            await _inventory.ReserveAsync(plan, token);
+            await ReserveInventoryAsync(plan, token);
             var startStop = plan.Stops.LastOrDefault()
                 ?? throw new InvalidOperationException("任务没有可执行的起点阶段。");
             var endStops = plan.RemainingStageStops;
@@ -238,7 +201,7 @@ public sealed class RcsTaskExecutionService : IRcsTaskExecutionService, IDisposa
                     "", plan.VehicleId, plan.RoutePointCodes),
                 async () =>
                 {
-                    await ExecuteCurrentStageAsync(execution, startPaused, token);
+                    await _routeWindows.ExecuteLegAsync(execution, startPaused, PublishCurrentState, token);
                     return ConfirmVehicleAtPoint(execution, startStop);
                 });
 
@@ -264,7 +227,7 @@ public sealed class RcsTaskExecutionService : IRcsTaskExecutionService, IDisposa
                     endStop.PointCode, "", plan.VehicleId, execution.Plan.RoutePointCodes),
                 async () =>
                 {
-                    await ExecuteCurrentStageAsync(execution, false, token);
+                    await _routeWindows.ExecuteLegAsync(execution, false, PublishCurrentState, token);
                     return ConfirmVehicleAtPoint(execution, endStop);
                 });
             await RunReportedStageAsync(stageChanged,
@@ -326,59 +289,12 @@ public sealed class RcsTaskExecutionService : IRcsTaskExecutionService, IDisposa
     }
 
     /// <summary>任务服务先暂停并持久化，再改路；只发送新路线的首个窗口。</summary>
-    public async Task<RcsTaskExecutionPlan> ReplanAsync(string taskId, CancellationToken token = default)
+    public Task<RcsTaskExecutionPlan> ReplanAsync(string taskId, CancellationToken token = default)
     {
-        Execution execution;
+        RcsTaskExecutionSession execution;
         lock (_gate) execution = _current.Values.FirstOrDefault(x => x.Plan.TaskId == taskId) is { } current ? current
             : throw new InvalidOperationException("任务尚未开始车辆执行或已经结束。");
-        await execution.WindowGate.WaitAsync(token);
-        try
-        {
-            var oldPlan = execution.Plan;
-            var state = Vehicle(oldPlan.VehicleId);
-            if (state.Status != "Paused" || state.TaskId != taskId || string.IsNullOrWhiteSpace(state.PointCode))
-                throw new InvalidOperationException("车辆需要暂停且有确认的位置，才能更新路径。");
-            var remaining = oldPlan.Stops.Where(x => !state.CompletedStepIds.Contains(x.StepId, StringComparer.Ordinal)).ToArray();
-            if (remaining.Length == 0) throw new InvalidOperationException("所有任务站点已经执行，无需重新规划。");
-            var map = _maps.Current ?? throw new InvalidOperationException("当前地图未加载。");
-            EnsureMap(map.MapCode, map.SceneName, oldPlan.Map.MapCode, oldPlan.Map.SceneName);
-            _traffic.SetVehicleGoals(state.Id, remaining.Select(x => x.PointCode).ToArray());
-            var plan = oldPlan with
-            {
-                Map = map, RoutePlan = _planner.Plan(map, _traffic.GetPlanningContext(state.Id), state.PointCode,
-                    remaining, _algorithmSettings.Current, retainAnchor: true),
-                RouteVersion = checked(state.RouteVersion + 1)
-            };
-            execution.Plan = plan;
-            try
-            {
-                ValidateWaitPointGates(execution);
-                execution.AuthorizedEntryIndices.Clear(); execution.CheckedEntryIndices.Clear();
-                await WaitForGateAtCurrentPointAsync(execution, 0, token);
-                var rawSegment = GetFirstSegment(plan.RoutePlan);
-                var firstSegment = rawSegment with { Points = LimitWindowAtWaitPoint(execution, rawSegment.StartPointOffset, rawSegment.Points) };
-                await RunBeforeLeaveAsync(execution, state.PointCode, token);
-                await RunBeforeEnterForSegmentAsync(execution, firstSegment.Points, firstSegment.StartPointOffset, token);
-                using var lockLease = await _traffic.AcquireRouteWindowAsync(plan.Map, plan.VehicleId, plan.TaskId,
-                    firstSegment.Points, firstSegment.StartPointOffset, plan.RouteVersion, token);
-                await SendCheckedAsync(new VehicleCommand
-                {
-                    CommandId = Guid.NewGuid().ToString("N"), VehicleId = plan.VehicleId, TaskId = taskId,
-                    Type = VehicleCommandType.UpdateRoute, RouteVersion = plan.RouteVersion,
-                    RoutePointOffset = firstSegment.StartPointOffset, TotalRoutePoints = plan.Points.Count,
-                    HasMorePoints = firstSegment.StartPointOffset + firstSegment.Points.Count < plan.Points.Count,
-                    ContainerCode = plan.ContainerCode, Points = firstSegment.Points,
-                    ExpectedPointCode = state.PointCode
-                }, token);
-                lockLease.Commit();
-                PublishCurrentState(plan.VehicleId);
-                execution.SegmentIndex = 0;
-                execution.RouteVersion = plan.RouteVersion; execution.RouteUpdateError = null;
-                return plan;
-            }
-            catch { execution.Plan = oldPlan; throw; }
-        }
-        finally { execution.WindowGate.Release(); }
+        return _routeWindows.ReplanAsync(execution, taskId, PublishCurrentState, token);
     }
 
     public void ValidateReset(string vehicleId, string pointCode)
@@ -414,122 +330,26 @@ public sealed class RcsTaskExecutionService : IRcsTaskExecutionService, IDisposa
         lock (_gate) { _lastObservedPoints.TryGetValue(state.Id, out previousPoint); if (!string.IsNullOrWhiteSpace(state.PointCode)) _lastObservedPoints[state.Id] = state.PointCode; }
         if (!string.IsNullOrWhiteSpace(previousPoint) && !string.Equals(previousPoint, state.PointCode, StringComparison.OrdinalIgnoreCase))
         {
-            Execution? observed; lock (_gate) _current.TryGetValue(state.Id, out observed);
+            RcsTaskExecutionSession? observed; lock (_gate) _current.TryGetValue(state.Id, out observed);
             if (observed is not null && observed.Plan.TaskId == state.TaskId)
             {
-                _ = RunStationRuleSafelyAsync(observed, previousPoint, RcsStationEvents.AfterLeave, "", CancellationToken.None);
-                _ = RunStationRuleSafelyAsync(observed, state.PointCode, RcsStationEvents.AfterEnter, "", CancellationToken.None);
+                _ = _stationRuleCoordinator.RunSafelyAsync(observed.Plan, previousPoint, RcsStationEvents.AfterLeave, "", CancellationToken.None);
+                _ = _stationRuleCoordinator.RunSafelyAsync(observed.Plan, state.PointCode, RcsStationEvents.AfterEnter, "", CancellationToken.None);
             }
         }
-        ObserveVehiclePosition(state);
+        _trafficState.ObservePosition(state);
         if (state.Status is "Running" or "Paused")
             _traffic.ObserveProgress(state.Id, state.TaskId, state.RouteVersion, state.RouteIndex, state.PointCode);
-        else ObserveStationaryPosition(state);
-        _vehicleStateChanged?.Invoke(EnrichState(state));
+        else _trafficState.ObserveStationaryPosition(state);
+        _vehicleStateChanged?.Invoke(_trafficState.EnrichState(state));
         if (state.Status != "Running") return;
-        Execution? execution;
+        RcsTaskExecutionSession? execution;
         lock (_gate) _current.TryGetValue(state.Id, out execution);
         if (execution is not null && execution.Plan.TaskId == state.TaskId)
-            _ = AdvanceRouteWindowAsync(execution);
+            _ = _routeWindows.AdvanceAsync(execution, PublishCurrentState);
     }
 
-    private async Task AdvanceRouteWindowAsync(Execution execution)
-    {
-        try { await execution.WindowGate.WaitAsync(execution.Token); }
-        catch (OperationCanceledException) when (execution.Token.IsCancellationRequested) { return; }
-        try
-        {
-            for (var attempt = 0; attempt < 3; attempt++)
-            {
-                if (execution.Token.IsCancellationRequested) return;
-                var state = Vehicle(execution.Plan.VehicleId);
-                if (state.Status != "Running" || state.TaskId != execution.Plan.TaskId
-                    || state.RouteVersion != execution.RouteVersion || state.RouteIndex < 1) return;
-                var currentIndex = state.RouteIndex - 1;
-                var nextSegmentIndex = execution.SegmentIndex + 1;
-                if (currentIndex >= execution.Plan.Points.Count - 1) return;
-                var nextSegment = GetSegment(execution, nextSegmentIndex, currentIndex);
-                // The algorithm's segment offset is the advance threshold. If the vehicle has already
-                // passed that anchor, rebase the same size window on its latest confirmed point.
-                var reachedBusinessWaitPoint = await WaitForGateAtCurrentPointAsync(execution, currentIndex, execution.Token);
-                if (currentIndex < nextSegment.StartPointOffset && !reachedBusinessWaitPoint) return;
-                var windowPoints = execution.Plan.Points.Skip(currentIndex).Take(nextSegment.Points.Count).ToArray();
-                windowPoints = LimitWindowAtWaitPoint(execution, currentIndex, windowPoints);
-                if (windowPoints.Length == 0) return;
-                await RunBeforeLeaveAsync(execution, state.PointCode, execution.Token);
-                await RunBeforeEnterForSegmentAsync(execution, windowPoints, currentIndex, execution.Token);
-                var nextVersion = checked(execution.RouteVersion + 1);
-                IAlgorithmRouteLease lockLease;
-                if (!_traffic.TryAcquireRouteWindow(execution.Plan.Map, execution.Plan.VehicleId, execution.Plan.TaskId,
-                    windowPoints, currentIndex, nextVersion, out var immediateLease, out _))
-                {
-                    if (await TryAutomaticReplanAsync(execution, state)) return;
-                    lockLease = await _traffic.AcquireRouteWindowAsync(execution.Plan.Map, execution.Plan.VehicleId,
-                        execution.Plan.TaskId, windowPoints, currentIndex, nextVersion, execution.Token);
-                }
-                else lockLease = immediateLease!;
-                using (lockLease)
-                {
-                    // Acquiring traffic locks can wait while this vehicle continues on its current
-                    // window. Never send a continuation whose anchor is stale by the time it is ready.
-                    var latest = Vehicle(execution.Plan.VehicleId);
-                    if (latest.Status != "Running" || latest.TaskId != execution.Plan.TaskId
-                        || latest.RouteVersion != execution.RouteVersion) return;
-                    if (latest.RouteIndex != state.RouteIndex || latest.PointCode != state.PointCode)
-                        continue;
-
-                    var command = new VehicleCommand
-                    {
-                        CommandId = Guid.NewGuid().ToString("N"), VehicleId = execution.Plan.VehicleId,
-                        TaskId = execution.Plan.TaskId, Type = VehicleCommandType.SlideRoute, RouteVersion = nextVersion,
-                        RoutePointOffset = currentIndex, TotalRoutePoints = execution.Plan.Points.Count,
-                        HasMorePoints = currentIndex + windowPoints.Length < execution.Plan.Points.Count,
-                        ContainerCode = execution.Plan.ContainerCode, ExpectedPointCode = state.PointCode, Points = windowPoints
-                    };
-                    var ack = await _channel.SendAsync(command, execution.Token);
-                    if (!ack.Accepted)
-                    {
-                        var afterSend = Vehicle(execution.Plan.VehicleId);
-                        if (afterSend.Status == "Running" && afterSend.TaskId == execution.Plan.TaskId
-                            && afterSend.RouteVersion == execution.RouteVersion
-                            && (afterSend.RouteIndex != state.RouteIndex || afterSend.PointCode != state.PointCode))
-                        {
-                            // The vehicle advanced during transport; retry using its confirmed point.
-                            continue;
-                        }
-                        throw new InvalidOperationException(ack.Message);
-                    }
-                    lockLease.Commit();
-                    PublishCurrentState(execution.Plan.VehicleId);
-                    execution.SegmentIndex = nextSegmentIndex;
-                    execution.RouteVersion = nextVersion;
-                    _logger.LogInformation("算法路径段已续发 TaskId={TaskId} Vehicle={Vehicle} RouteVersion={Version} Segment={Segment}/{Count} Offset={Offset} Points={Points}",
-                        execution.Plan.TaskId, execution.Plan.VehicleId, nextVersion, nextSegmentIndex + 1,
-                        execution.Plan.RoutePlan.Segments.Count, currentIndex, windowPoints.Length);
-                    return;
-                }
-            }
-            _logger.LogDebug("续发时车辆连续前进，等待新位置事件 TaskId={TaskId} Vehicle={Vehicle}",
-                execution.Plan.TaskId, execution.Plan.VehicleId);
-        }
-        catch (OperationCanceledException) when (execution.Token.IsCancellationRequested) { }
-        catch (Exception ex)
-        {
-            execution.RouteUpdateError = ex;
-            _logger.LogError(ex, "续发车辆路径失败 TaskId={TaskId} Vehicle={Vehicle}", execution.Plan.TaskId, execution.Plan.VehicleId);
-            try
-            {
-                await _channel.SendAsync(Control(execution.Plan.VehicleId, execution.Plan.TaskId, VehicleCommandType.Stop), CancellationToken.None);
-            }
-            catch (Exception stopError)
-            {
-                _logger.LogError(stopError, "续发失败后停止车辆也失败 TaskId={TaskId} Vehicle={Vehicle}", execution.Plan.TaskId, execution.Plan.VehicleId);
-            }
-        }
-        finally { execution.WindowGate.Release(); }
-    }
-
-    private async Task<string?> ExecuteStationActionAsync(Execution execution, RcsTaskStop stop, CancellationToken token)
+    private async Task<string?> ExecuteStationActionAsync(RcsTaskExecutionSession execution, RcsTaskStop stop, CancellationToken token)
     {
         var commandId = Guid.NewGuid().ToString("N");
         execution.CommandId = commandId;
@@ -540,126 +360,18 @@ public sealed class RcsTaskExecutionService : IRcsTaskExecutionService, IDisposa
             var state = Vehicle(execution.Plan.VehicleId);
             if (state.Status != "Arrived" || state.TaskId != execution.Plan.TaskId || state.PointCode != stop.PointCode)
                 throw new InvalidOperationException($"车辆未确认到达动作站点 {stop.PointCode}。");
-            await SendCheckedAsync(new VehicleCommand
+            await _vehicleActionExecutor.SendAsync(new VehicleCommand
             {
                 CommandId = commandId, VehicleId = execution.Plan.VehicleId, TaskId = execution.Plan.TaskId,
                 Type = VehicleCommandType.ExecuteAction, RouteVersion = execution.RouteVersion,
                 Action = stop.Action, ActionStepId = stop.StepId, ExpectedPointCode = stop.PointCode,
                 ContainerCode = execution.Plan.ContainerCode
-            }, token);
-            execution.HasAcceptedCommand = true;
-            PublishCurrentState(execution.Plan.VehicleId);
+            }, () => execution.HasAcceptedCommand = true, () => PublishCurrentState(execution.Plan.VehicleId), token);
         }
         finally { execution.WindowGate.Release(); }
 
-        var result = await _channel.WaitForCompletionAsync(execution.Plan.VehicleId, commandId, token);
-        if (result.Status != "COMPLETED") throw new InvalidOperationException(result.Message);
-        var confirmed = Vehicle(execution.Plan.VehicleId);
-        if (confirmed.TaskId != execution.Plan.TaskId || confirmed.PointCode != stop.PointCode
-            || !confirmed.CompletedStepIds.Contains(stop.StepId, StringComparer.Ordinal)
-            || confirmed.LastAction != stop.Action)
-            throw new InvalidOperationException($"车辆未确认在 {stop.PointCode} 完成 {stop.Action} 命令。");
-
-        // Persist inventory only after the protocol reports the action completed.
-        await _inventory.ApplyCompletedActionAsync(execution.Plan, stop, token);
-        PublishCurrentState(execution.Plan.VehicleId);
-        return commandId;
-    }
-
-    private Task RunBeforeLeaveAsync(Execution execution, string pointCode, CancellationToken token) =>
-        RunStationRuleAsync(execution, pointCode, RcsStationEvents.BeforeLeave, "", token);
-
-    private void ValidateWaitPointGates(Execution execution)
-    {
-        var path = execution.Plan.RoutePointCodes;
-        for (var targetIndex = 1; targetIndex < path.Count; targetIndex++)
-        {
-            var gatedRules = _stationRules.Get(execution.Plan.Map.MapCode, path[targetIndex])
-                .Where(x => x.IsEnabled && x.Event == RcsStationEvents.BeforeEnter && !string.IsNullOrWhiteSpace(x.WaitPointCode));
-            foreach (var rule in gatedRules)
-                if (!path.Take(targetIndex).Contains(rule.WaitPointCode, StringComparer.OrdinalIgnoreCase))
-                    throw new InvalidOperationException($"业务站点 {rule.PointCode} 的等待站点 {rule.WaitPointCode} 不在当前路径上，无法安全等待放行。");
-        }
-    }
-
-    private async Task<bool> WaitForGateAtCurrentPointAsync(Execution execution, int currentIndex, CancellationToken token)
-    {
-        if (currentIndex < 0 || currentIndex >= execution.Plan.RoutePointCodes.Count) return false;
-        var pointCode = execution.Plan.RoutePointCodes[currentIndex];
-        var reachedGate = false;
-        for (var targetIndex = currentIndex + 1; targetIndex < execution.Plan.RoutePointCodes.Count; targetIndex++)
-        {
-            var targetCode = execution.Plan.RoutePointCodes[targetIndex];
-            var gates = _stationRules.Get(execution.Plan.Map.MapCode, targetCode)
-                .Where(x => x.IsEnabled && x.Event == RcsStationEvents.BeforeEnter
-                    && string.Equals(x.WaitPointCode, pointCode, StringComparison.OrdinalIgnoreCase)).ToArray();
-            if (gates.Length == 0) continue;
-            reachedGate = true;
-            if (execution.AuthorizedEntryIndices.Contains(targetIndex)) continue;
-            await _stationRules.WaitForGateAsync(new(execution.Plan.TaskId, execution.Plan.VehicleId,
-                execution.Plan.Map.MapCode, execution.Plan.Warehouse, targetCode, RcsStationEvents.BeforeEnter,
-                execution.Plan.ContainerCode, "", pointCode), token);
-            execution.AuthorizedEntryIndices.Add(targetIndex);
-        }
-        return reachedGate;
-    }
-
-    private VehicleRoutePoint[] LimitWindowAtWaitPoint(Execution execution, int startOffset, IReadOnlyList<VehicleRoutePoint> points)
-    {
-        for (var relativeTarget = 1; relativeTarget < points.Count; relativeTarget++)
-        {
-            var targetIndex = startOffset + relativeTarget;
-            if (targetIndex >= execution.Plan.RoutePointCodes.Count || execution.AuthorizedEntryIndices.Contains(targetIndex)) continue;
-            var targetCode = execution.Plan.RoutePointCodes[targetIndex];
-            foreach (var rule in _stationRules.Get(execution.Plan.Map.MapCode, targetCode)
-                .Where(x => x.IsEnabled && x.Event == RcsStationEvents.BeforeEnter && !string.IsNullOrWhiteSpace(x.WaitPointCode)))
-            {
-                var waitIndex = execution.Plan.RoutePointCodes.Take(targetIndex)
-                    .Select((code, index) => (code, index)).Where(x => string.Equals(x.code, rule.WaitPointCode, StringComparison.OrdinalIgnoreCase))
-                    .Select(x => x.index).DefaultIfEmpty(-1).Max();
-                if (waitIndex < startOffset)
-                    throw new InvalidOperationException($"车辆已越过业务站点 {targetCode} 配置的等待站点 {rule.WaitPointCode}，本次路径无法安全执行。");
-                if (waitIndex == startOffset) continue;
-                if (waitIndex - startOffset < points.Count) return points.Take(waitIndex - startOffset + 1).ToArray();
-            }
-        }
-        return points.ToArray();
-    }
-
-    private RouteSegmentDto GetSegment(Execution execution, int index, int currentIndex)
-    {
-        if (index < execution.Plan.RoutePlan.Segments.Count) return execution.Plan.RoutePlan.Segments[index];
-        var settings = _algorithmSettings.Current;
-        var start = Math.Min(currentIndex + settings.AdvanceAfterPoints, execution.Plan.Points.Count - 1);
-        return new RouteSegmentDto
-        {
-            StartPointOffset = start,
-            Points = execution.Plan.Points.Skip(currentIndex).Take(settings.SegmentPointCount).ToArray()
-        };
-    }
-
-    private async Task RunBeforeEnterForSegmentAsync(Execution execution, IReadOnlyList<VehicleRoutePoint> points, int startOffset, CancellationToken token)
-    {
-        for (var i = 1; i < points.Count; i++)
-        {
-            var routeIndex = startOffset + i;
-            if (execution.CheckedEntryIndices.Contains(routeIndex)) continue;
-            var rules = _stationRules.Get(execution.Plan.Map.MapCode, points[i].PointCode)
-                .Where(x => x.IsEnabled && x.Event == RcsStationEvents.BeforeEnter && string.IsNullOrWhiteSpace(x.WaitPointCode)).ToArray();
-            if (rules.Length == 0) continue;
-            await RunStationRuleAsync(execution, points[i].PointCode, RcsStationEvents.BeforeEnter, "", token);
-            execution.CheckedEntryIndices.Add(routeIndex);
-        }
-    }
-
-    private Task RunStationRuleAsync(Execution execution, string pointCode, string eventCode, string action, CancellationToken token) =>
-        _stationRules.ExecuteAsync(new(execution.Plan.TaskId, execution.Plan.VehicleId, execution.Plan.Map.MapCode,
-            execution.Plan.Warehouse, pointCode, eventCode, execution.Plan.ContainerCode, action), token);
-
-    private async Task RunStationRuleSafelyAsync(Execution execution, string pointCode, string eventCode, string action, CancellationToken token)
-    {
-        try { await RunStationRuleAsync(execution, pointCode, eventCode, action, token); }
-        catch (Exception ex) { _logger.LogWarning(ex, "站点异步业务规则执行失败 TaskId={TaskId} Vehicle={Vehicle} Point={Point} Event={Event}", execution.Plan.TaskId, execution.Plan.VehicleId, pointCode, eventCode); }
+        return await _vehicleActionExecutor.WaitForCompletionAndApplyInventoryAsync(execution.Plan, stop, commandId,
+            () => Vehicle(execution.Plan.VehicleId), () => PublishCurrentState(execution.Plan.VehicleId), token);
     }
 
     private static RcsTaskExecutionStageDto Stage(int sequence, string code, string name, string from,
@@ -707,158 +419,13 @@ public sealed class RcsTaskExecutionService : IRcsTaskExecutionService, IDisposa
     private VehicleStateDto Vehicle(string id) => _channel.GetStates().FirstOrDefault(x => string.Equals(x.Id, id, StringComparison.OrdinalIgnoreCase))
         ?? throw new ArgumentException($"车辆 {id} 不存在。");
 
-    private async Task<bool> TryAutomaticReplanAsync(Execution execution, VehicleStateDto observedState)
-    {
-        if (observedState.Status != "Running" || string.IsNullOrWhiteSpace(observedState.PointCode)) return false;
-        var vehicleId = execution.Plan.VehicleId;
-        var taskId = execution.Plan.TaskId;
-        var originalPlan = execution.Plan;
-        await SendCheckedAsync(Control(vehicleId, taskId, VehicleCommandType.Pause), execution.Token);
-        var routeUpdated = false;
-        try
-        {
-            var state = Vehicle(vehicleId);
-            if (state.Status != "Paused" || state.TaskId != taskId || string.IsNullOrWhiteSpace(state.PointCode))
-                return false;
-            var remaining = execution.Plan.Stops
-                .Where(x => !state.CompletedStepIds.Contains(x.StepId, StringComparer.Ordinal)).ToArray();
-            if (remaining.Length == 0) return false;
-
-            var candidate = execution.Plan with
-            {
-                Stops = remaining,
-                RoutePlan = _planner.Plan(execution.Plan.Map, _traffic.GetPlanningContext(vehicleId),
-                    state.PointCode, remaining, _algorithmSettings.Current, retainAnchor: true),
-                RouteVersion = checked(state.RouteVersion + 1)
-            };
-            execution.Plan = candidate;
-            ValidateWaitPointGates(execution);
-            execution.AuthorizedEntryIndices.Clear(); execution.CheckedEntryIndices.Clear();
-            await WaitForGateAtCurrentPointAsync(execution, 0, execution.Token);
-            var rawSegment = GetFirstSegment(candidate.RoutePlan);
-            var segment = rawSegment with { Points = LimitWindowAtWaitPoint(execution, rawSegment.StartPointOffset, rawSegment.Points) };
-            var anchor = segment.Points.FirstOrDefault();
-            // UPDATE_ROUTE requires the confirmed current position as a plain move anchor.
-            if (anchor is null || !string.Equals(anchor.PointCode, state.PointCode, StringComparison.OrdinalIgnoreCase)
-                || anchor.Action != VehiclePointAction.Move || anchor.StepId != "") return false;
-
-            await RunBeforeLeaveAsync(execution, state.PointCode, execution.Token);
-            await RunBeforeEnterForSegmentAsync(execution, segment.Points, segment.StartPointOffset, execution.Token);
-
-            if (!_traffic.TryAcquireRouteWindow(candidate.Map, vehicleId, taskId, segment.Points,
-                segment.StartPointOffset, candidate.RouteVersion, out var lease, out _)) return false;
-
-            using (lease!)
-            {
-                var ack = await _channel.SendAsync(new VehicleCommand
-                {
-                    CommandId = Guid.NewGuid().ToString("N"), VehicleId = vehicleId, TaskId = taskId,
-                    Type = VehicleCommandType.UpdateRoute, RouteVersion = candidate.RouteVersion,
-                    RoutePointOffset = segment.StartPointOffset, TotalRoutePoints = candidate.Points.Count,
-                    HasMorePoints = segment.StartPointOffset + segment.Points.Count < candidate.Points.Count, ContainerCode = candidate.ContainerCode,
-                    ExpectedPointCode = state.PointCode, Points = segment.Points
-                }, execution.Token);
-                if (!ack.Accepted) return false;
-
-                lease!.Commit();
-                execution.Plan = candidate;
-                execution.SegmentIndex = 0;
-                execution.RouteVersion = candidate.RouteVersion;
-                execution.RouteUpdateError = null;
-                _traffic.SetVehicleGoals(vehicleId, remaining.Select(x => x.PointCode).ToArray());
-                routeUpdated = true;
-            }
-
-            PublishCurrentState(vehicleId);
-            await SendCheckedAsync(Control(vehicleId, taskId, VehicleCommandType.Resume), execution.Token);
-            _logger.LogInformation("算法根据车队位置及路径占用完成自动改路 TaskId={TaskId} Vehicle={Vehicle} RouteVersion={Version} Points={PointCount}",
-                taskId, vehicleId, candidate.RouteVersion, candidate.Points.Count);
-            return true;
-        }
-        catch (InvalidOperationException ex) when (!routeUpdated)
-        {
-            _logger.LogInformation(ex, "当前没有可立即预约的替代路线，车辆恢复原路线并等待资源 TaskId={TaskId} Vehicle={Vehicle}", taskId, vehicleId);
-            return false;
-        }
-        finally
-        {
-            if (!routeUpdated)
-            {
-                execution.Plan = originalPlan;
-                var latest = _channel.GetStates().FirstOrDefault(x => string.Equals(x.Id, vehicleId, StringComparison.OrdinalIgnoreCase));
-                if (latest?.Status == "Paused" && latest.TaskId == taskId)
-                {
-                    try { await SendCheckedAsync(Control(vehicleId, taskId, VehicleCommandType.Resume), CancellationToken.None); }
-                    catch (Exception ex) { _logger.LogError(ex, "改路未完成且恢复原路线失败 TaskId={TaskId} Vehicle={Vehicle}", taskId, vehicleId); }
-                }
-            }
-        }
-    }
-
-    private async Task<IAlgorithmRouteLease> AcquireFirstWindowAsync(
-        Execution execution, RouteSegmentDto initialSegment, CancellationToken token)
-    {
-        var state = Vehicle(execution.Plan.VehicleId);
-        var segment = initialSegment;
-        for (var attempt = 0; attempt < 3; attempt++)
-        {
-            if (_traffic.TryAcquireRouteWindow(execution.Plan.Map, execution.Plan.VehicleId, execution.Plan.TaskId,
-                segment.Points, segment.StartPointOffset, execution.Plan.RouteVersion, out var lease, out _)) return lease!;
-
-            var context = _traffic.GetPlanningContext(execution.Plan.VehicleId);
-            var candidate = execution.Plan with
-            {
-                RoutePlan = _planner.Plan(execution.Plan.Map, context, state.PointCode,
-                    execution.Plan.Stops, _algorithmSettings.Current)
-            };
-            execution.Plan = candidate;
-            var candidateFirst = GetFirstSegment(candidate.RoutePlan);
-            segment = candidateFirst with { Points = LimitWindowAtWaitPoint(execution, candidateFirst.StartPointOffset, candidateFirst.Points) };
-        }
-
-        return await _traffic.AcquireRouteWindowAsync(execution.Plan.Map, execution.Plan.VehicleId,
-            execution.Plan.TaskId, segment.Points, segment.StartPointOffset, execution.Plan.RouteVersion, token);
-    }
-
-    private void ObserveStationaryPosition(VehicleStateDto state)
-    {
-        if (!_traffic.ObserveStationaryPosition(state.Id, state.PointCode) && !string.IsNullOrWhiteSpace(state.PointCode))
-            _logger.LogError("车辆当前位置与另一车辆的地图锁冲突 Vehicle={Vehicle} Point={Point}", state.Id, state.PointCode);
-    }
-
-    private void SyncFleet(IReadOnlyList<VehicleStateDto> states)
-    {
-        foreach (var state in states)
-        {
-            ObserveVehiclePosition(state);
-            if (state.Status is not ("Running" or "Paused")) ObserveStationaryPosition(state);
-        }
-    }
-
-    private void ObserveVehiclePosition(VehicleStateDto state) => _traffic.ObserveVehiclePosition(
-        new AlgorithmVehiclePositionDto(state.Id, state.PointCode,
-            state.Status is "Running" or "Paused", DateTimeOffset.UtcNow));
-
-    private VehicleStateDto EnrichState(VehicleStateDto state)
-    {
-        var points = _traffic.GetLockedPoints(state.Id);
-        var lines = _traffic.GetLockedLines(state.Id);
-        return state with
-        {
-            LockPointCode = state.Status is "Running" or "Paused" && points.Count > 0
-                ? points.Last() : "",
-            LockedPointCodes = points,
-            LockedLineCodes = lines
-        };
-    }
-
     private void PublishCurrentState(string vehicleId)
     {
         var state = _channel.GetStates().FirstOrDefault(x => string.Equals(x.Id, vehicleId, StringComparison.OrdinalIgnoreCase));
-        if (state is not null) _vehicleStateChanged?.Invoke(EnrichState(state));
+        if (state is not null) _vehicleStateChanged?.Invoke(_trafficState.EnrichState(state));
     }
 
-    private Execution? FindExecution(string vehicleId)
+    private RcsTaskExecutionSession? FindExecution(string vehicleId)
     {
         lock (_gate) return _current.GetValueOrDefault(vehicleId);
     }
@@ -878,26 +445,9 @@ public sealed class RcsTaskExecutionService : IRcsTaskExecutionService, IDisposa
             throw new InvalidOperationException("当前地图已切换，任务需要的地图或场景不再可用。");
     }
 
-    private static RouteSegmentDto GetFirstSegment(AlgorithmRoutePlanDto routePlan) => routePlan.Segments.FirstOrDefault()
-        ?? throw new InvalidOperationException("路径算法未返回可下发的路径段。");
-
     public void Dispose()
     {
         _channel.StateChanged -= OnVehicleStateChanged;
         _inventory.InventoryChanged -= OnInventoryChanged;
-    }
-
-    private sealed class Execution(RcsTaskExecutionPlan plan, string commandId, CancellationToken token)
-    {
-        public RcsTaskExecutionPlan Plan { get; set; } = plan;
-        public string CommandId { get; set; } = commandId;
-        public CancellationToken Token { get; } = token;
-        public SemaphoreSlim WindowGate { get; } = new(1, 1);
-        public int SegmentIndex { get; set; }
-        public int RouteVersion { get; set; } = plan.RouteVersion;
-        public bool HasAcceptedCommand { get; set; }
-        public Exception? RouteUpdateError { get; set; }
-        public HashSet<int> AuthorizedEntryIndices { get; } = [];
-        public HashSet<int> CheckedEntryIndices { get; } = [];
     }
 }

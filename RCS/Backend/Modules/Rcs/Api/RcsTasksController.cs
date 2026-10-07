@@ -6,7 +6,7 @@ using System.Text.Json;
 namespace RCSBackend.Modules.Rcs.Api;
 
 [ApiController]
-public sealed class RcsTasksController(IRcsTaskService tasks) : ControllerBase
+public sealed class RcsTasksController(IRcsTaskService tasks, IRcsTaskQueryService queries) : ControllerBase
 {
     [HttpPost("/api/v1/task_receive")]
     public async Task<ActionResult<RcsApiResponse>> Receive(CancellationToken token)
@@ -64,12 +64,12 @@ public sealed class RcsTasksController(IRcsTaskService tasks) : ControllerBase
 
     [HttpGet("/api/rcs/tasks")]
     public async Task<ActionResult<IReadOnlyList<RcsTaskDto>>> List([FromQuery] int limit = 100, CancellationToken token = default) =>
-        Ok(await tasks.ListAsync(limit, token));
+        Ok(await queries.ListAsync(limit, token));
 
     [HttpGet("/api/rcs/tasks/page")]
     public async Task<ActionResult<RcsTaskPageDto>> ListPage([FromQuery] int page = 1, [FromQuery] int pageSize = 10,
         [FromQuery] string status = "", [FromQuery] string search = "", CancellationToken token = default) =>
-        Ok(await tasks.ListPageAsync(page, pageSize, status, search, token));
+        Ok(await queries.ListPageAsync(page, pageSize, status, search, token));
 
     [HttpDelete("/api/rcs/tasks/all")]
     public async Task<ActionResult<RcsTaskClearResultDto>> ClearAll(CancellationToken token)
@@ -80,7 +80,7 @@ public sealed class RcsTasksController(IRcsTaskService tasks) : ControllerBase
 
     [HttpGet("/api/rcs/tasks/{taskId}")]
     public async Task<ActionResult<RcsTaskDto>> Get(string taskId, CancellationToken token) =>
-        await tasks.GetAsync(taskId, token) is { } task ? Ok(task) : NotFound(Error("任务不存在。"));
+        await queries.GetAsync(taskId, token) is { } task ? Ok(task) : NotFound(Error("任务不存在。"));
 
     [HttpPost("/api/rcs/tasks/{taskId}/pause")]
     public async Task<IActionResult> Pause(string taskId, CancellationToken token) =>

@@ -4,7 +4,7 @@ using Contracts.Rcs.Inventory;
 using Microsoft.EntityFrameworkCore;
 using RCSBackend.Modules.Rcs.Infrastructure.Entities;
 
-namespace RCSBackend.Modules.Rcs.Application.Execution;
+namespace RCSBackend.Modules.Rcs.Application.Inventory;
 
 /// <summary>任务确认取货和放货动作后同步更新 RCS 库存，与任务来源和类型无关。</summary>
 public sealed class RcsInventoryTransferService(IDbContextFactory<GrcsDbContext> factory)
@@ -66,48 +66,46 @@ public sealed class RcsInventoryTransferService(IDbContextFactory<GrcsDbContext>
         finally { _gate.Release(); }
     }
 
-    public async Task ReserveAsync(RcsTaskExecutionPlan plan, CancellationToken token)
+    public async Task ReserveAsync(RcsInventoryMove move, CancellationToken token)
     {
-        if (!plan.SyncInventory) return;
-        var fetch = plan.TaskStops.SingleOrDefault(x => x.Action == Contracts.Rcs.Protocol.VehiclePointAction.Fetch);
-        var put = plan.TaskStops.SingleOrDefault(x => x.Action == Contracts.Rcs.Protocol.VehiclePointAction.Put);
-        if (fetch is null || put is null || fetch.PointCode == put.PointCode || string.IsNullOrWhiteSpace(plan.ContainerCode))
+        if (string.IsNullOrWhiteSpace(move.FetchPointCode) || string.IsNullOrWhiteSpace(move.PutPointCode)
+            || move.FetchPointCode == move.PutPointCode || string.IsNullOrWhiteSpace(move.ContainerCode))
             throw new InvalidOperationException("库存搬运任务必须包含不同起终点的一次取货和一次放货，并指定货物或托盘编码。");
 
-        var destinationKey = LocationKey(plan.Map.MapCode, put.PointCode);
+        var destinationKey = LocationKey(move.MapCode, move.PutPointCode);
         await _gate.WaitAsync(token);
         try
         {
-            if (_reservations.ContainsKey(plan.TaskId)) return;
+            if (_reservations.ContainsKey(move.TaskId)) return;
             if (_reservedDestinations.Contains(destinationKey))
-                throw new InvalidOperationException($"目标站点 {put.PointCode} 已被另一搬运任务预约。");
+                throw new InvalidOperationException($"目标站点 {move.PutPointCode} 已被另一搬运任务预约。");
 
             await using var db = await factory.CreateDbContextAsync(token);
             var item = await db.Set<RcsInventoryInstanceRow>().FirstOrDefaultAsync(x =>
                 (x.ItemType == RcsInventoryItemTypes.Pallet || x.ItemType == RcsInventoryItemTypes.Cargo)
-                && x.InstanceCode == plan.ContainerCode
-                && x.ParentInstanceCode == "" && x.MapCode == plan.Map.MapCode && x.PointCode == fetch.PointCode
+                && x.InstanceCode == move.ContainerCode
+                && x.ParentInstanceCode == "" && x.MapCode == move.MapCode && x.PointCode == move.FetchPointCode
                 && x.Status == "AVAILABLE", token);
             if (item is null)
-                throw new InvalidOperationException($"起点 {fetch.PointCode} 没有可取的独立货物或托盘 {plan.ContainerCode}。");
+                throw new InvalidOperationException($"起点 {move.FetchPointCode} 没有可取的独立货物或托盘 {move.ContainerCode}。");
             var itemKey = ItemKey(item.ItemType, item.InstanceCode);
             if (_reservedItems.Contains(itemKey))
-                throw new InvalidOperationException($"库存 {plan.ContainerCode} 已被另一任务预约。");
+                throw new InvalidOperationException($"库存 {move.ContainerCode} 已被另一任务预约。");
             var destinationOccupied = await db.Set<RcsInventoryInstanceRow>().AnyAsync(x =>
-                x.MapCode == plan.Map.MapCode && x.PointCode == put.PointCode && x.ParentInstanceCode == "", token);
-            if (destinationOccupied) throw new InvalidOperationException($"目标站点 {put.PointCode} 已有独立库存，不能放置新的货物或托盘。");
+                x.MapCode == move.MapCode && x.PointCode == move.PutPointCode && x.ParentInstanceCode == "", token);
+            if (destinationOccupied) throw new InvalidOperationException($"目标站点 {move.PutPointCode} 已有独立库存，不能放置新的货物或托盘。");
 
-            _reservations.Add(plan.TaskId, new(item.ItemType, item.InstanceCode, plan.Map.MapCode, fetch.PointCode, put.PointCode));
+            _reservations.Add(move.TaskId, new(item.ItemType, item.InstanceCode, move.MapCode, move.FetchPointCode, move.PutPointCode));
             _reservedItems.Add(itemKey);
             _reservedDestinations.Add(destinationKey);
         }
         finally { _gate.Release(); }
     }
 
-    public async Task ApplyCompletedActionAsync(RcsTaskExecutionPlan plan, RcsTaskStop stop, CancellationToken token)
+    public async Task ApplyCompletedActionAsync(string taskId, string action, CancellationToken token)
     {
-        if (!plan.SyncInventory || stop.Action is not (Contracts.Rcs.Protocol.VehiclePointAction.Fetch or Contracts.Rcs.Protocol.VehiclePointAction.Put)) return;
-        if (!_reservations.TryGetValue(plan.TaskId, out var reservation))
+        if (action is not (Contracts.Rcs.Protocol.VehiclePointAction.Fetch or Contracts.Rcs.Protocol.VehiclePointAction.Put)) return;
+        if (!_reservations.TryGetValue(taskId, out var reservation))
             throw new InvalidOperationException("库存预约已失效，不能提交取放货状态。");
 
         await using var strategyContext = await factory.CreateDbContextAsync(token);
@@ -122,7 +120,7 @@ public sealed class RcsInventoryTransferService(IDbContextFactory<GrcsDbContext>
                 x.ItemType == reservation.ItemType && x.InstanceCode == reservation.InstanceCode, token)
                 ?? throw new InvalidOperationException($"库存中找不到{KindName(reservation.ItemType)} {reservation.InstanceCode}。");
             var now = DateTime.UtcNow;
-            if (stop.Action == Contracts.Rcs.Protocol.VehiclePointAction.Fetch)
+            if (action == Contracts.Rcs.Protocol.VehiclePointAction.Fetch)
             {
                 // A retry may run after the first transaction committed but its acknowledgement was lost.
                 // Treat the already-applied transition as success so the vehicle can continue to delivery.

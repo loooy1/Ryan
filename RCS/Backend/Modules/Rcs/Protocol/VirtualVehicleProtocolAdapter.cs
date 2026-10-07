@@ -1,7 +1,6 @@
 using Contracts.Rcs.Protocol;
 using Contracts.Rcs.Vehicle;
 using Rcs.VirtualVehicle;
-using RCSBackend.Modules.Rcs.Infrastructure.Entities;
 using System.Text.Json;
 
 namespace RCSBackend.Modules.Rcs.Protocol;
@@ -18,7 +17,7 @@ public sealed class VirtualVehicleProtocolAdapter : IVehicleProtocolAdapter
             new JsonSerializerOptions(JsonSerializerDefaults.Web))
         ?? throw new JsonException("心跳报文为空或不是有效 JSON。");
 
-    public IVehicleProtocolSession CreateSession(RcsVehicleRow definition, VehicleRoutePoint? initialPosition) =>
+    public IVehicleProtocolSession CreateSession(VehicleProtocolDefinition definition, VehicleRoutePoint? initialPosition) =>
         new Session(definition.VehicleId, initialPosition);
 
     private sealed class Session : IVehicleProtocolSession

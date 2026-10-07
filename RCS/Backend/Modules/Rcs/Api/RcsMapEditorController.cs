@@ -1,6 +1,7 @@
 using Contracts.Rcs.Map;
 using Contracts.Rcs.Tasks;
 using Microsoft.AspNetCore.Mvc;
+using RCSBackend.Modules.Rcs.Application.Maps;
 using RCSBackend.Modules.Rcs.Infrastructure.Stores;
 
 namespace RCSBackend.Modules.Rcs.Api;
@@ -10,9 +11,9 @@ namespace RCSBackend.Modules.Rcs.Api;
 public sealed class RcsMapEditorController : ControllerBase
 {
     private readonly RcsMapStore _maps;
-    private readonly RcsMapCache _cache;
+    private readonly RcsMapPublicationService _publication;
 
-    public RcsMapEditorController(RcsMapStore maps, RcsMapCache cache) { _maps = maps; _cache = cache; }
+    public RcsMapEditorController(RcsMapStore maps, RcsMapPublicationService publication) { _maps = maps; _publication = publication; }
 
     [HttpGet]
     public async Task<ActionResult<RcsMapEditorDto>> Get([FromQuery] string mapCode = "default", CancellationToken cancellationToken = default)
@@ -26,8 +27,7 @@ public sealed class RcsMapEditorController : ControllerBase
     {
         try
         {
-            await _maps.SaveAsync(dto, cancellationToken);
-            await _cache.ReloadAsync(cancellationToken);
+            await _publication.SaveAsync(dto, cancellationToken);
             return Ok(RcsApiResponse.Accepted());
         }
         catch (ArgumentException ex)

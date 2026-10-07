@@ -1,6 +1,5 @@
 using Contracts.Rcs.Algorithm;
 using Contracts.Rcs.Map;
-using Contracts.Rcs.Protocol;
 
 namespace Rcs.Algorithms.Traffic;
 
@@ -89,10 +88,10 @@ public sealed class MultiVehicleTrafficCoordinator : IMultiVehicleTrafficCoordin
     }
 
     public bool TryAcquireRouteWindow(RcsMapSnapshot map, string vehicleId, string routeId,
-        IReadOnlyList<VehicleRoutePoint> points, int routePointOffset, int routeVersion,
+        IReadOnlyList<string> pointCodes, int routePointOffset, int routeVersion,
         out IAlgorithmRouteLease? lease, out string? conflictingVehicle)
     {
-        var resources = GetRouteResources(map, points);
+        var resources = GetRouteResources(map, pointCodes);
         var acquired = TryAcquire(vehicleId, routeId, resources.All, resources.Points, resources.Lines,
             out var concreteLease, out conflictingVehicle, routePointOffset, routeVersion);
         lease = concreteLease;
@@ -100,10 +99,10 @@ public sealed class MultiVehicleTrafficCoordinator : IMultiVehicleTrafficCoordin
     }
 
     public async Task<IAlgorithmRouteLease> AcquireRouteWindowAsync(RcsMapSnapshot map, string vehicleId,
-        string routeId, IReadOnlyList<VehicleRoutePoint> points, int routePointOffset, int routeVersion,
+        string routeId, IReadOnlyList<string> pointCodes, int routePointOffset, int routeVersion,
         CancellationToken token = default)
     {
-        var resources = GetRouteResources(map, points);
+        var resources = GetRouteResources(map, pointCodes);
         return await AcquireAsync(vehicleId, routeId, resources.All, resources.Points, resources.Lines,
             routePointOffset, routeVersion, token);
     }
@@ -217,14 +216,13 @@ public sealed class MultiVehicleTrafficCoordinator : IMultiVehicleTrafficCoordin
     public static string LineResource(string lineCode) => "L:" + lineCode;
 
     public static (IReadOnlyList<string> All, IReadOnlyList<string> Points, IReadOnlyList<string> Lines)
-        GetRouteResources(RcsMapSnapshot map, IReadOnlyList<VehicleRoutePoint> points)
+        GetRouteResources(RcsMapSnapshot map, IReadOnlyList<string> pointCodes)
     {
-        var pointCodes = points.Select(x => x.PointCode).ToArray();
         var lineCodes = new List<string>();
-        for (var index = 1; index < points.Count; index++)
+        for (var index = 1; index < pointCodes.Count; index++)
         {
-            var from = points[index - 1].PointCode;
-            var to = points[index].PointCode;
+            var from = pointCodes[index - 1];
+            var to = pointCodes[index];
             if (Same(from, to)) continue;
             var edge = map.Adjacency.TryGetValue(from, out var edges)
                 ? edges.FirstOrDefault(candidate => Same(candidate.ToPointCode, to)) : null;
