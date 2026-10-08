@@ -27,6 +27,7 @@ public interface ITaskStageService
     event Action<string, string?>? TaskFinished;
     event Action<string>? TaskStarted;
     event Action<string>? TaskLoadFinished;
+    Task WaitForStageAsync(string taskId, string stage, TimeSpan timeout);
     Task WaitFinishedAsync(string taskId, TimeSpan? timeout = null);
     /// <summary>等待 WCS 收尾完成。数据库中的 WCS_COMPLETED / WCS_FINALIZATION_FAILED 是唯一判断依据。</summary>
     Task<bool> WaitWcsCompletedAsync(string taskId, TimeSpan? timeout = null);
@@ -43,6 +44,7 @@ public class TaskStageService : ITaskStageService
     private readonly ILogger<TaskStageService> _logger;
     private readonly HashSet<string> _forcedFinished = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, TaskCompletionSource<bool>> _waiters = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, TaskCompletionSource<bool>> _stageWaiters = new(StringComparer.OrdinalIgnoreCase);
     private int _forceGeneration;
     private const int MaxRecords = 50000;
 
@@ -194,6 +196,7 @@ public class TaskStageService : ITaskStageService
         }
 
         _ = _hub.Clients.All.SendAsync("EventAdded", record);
+        CompleteStageWaiter(change.TaskId, change.Stage);
         if (raiseStarted) TaskStarted?.Invoke(change.TaskId);
         finishedWaiter?.TrySetResult(true);
         if (raiseLoadFinished) TaskLoadFinished?.Invoke(change.TaskId);
@@ -225,11 +228,17 @@ public class TaskStageService : ITaskStageService
     {
         if (string.IsNullOrWhiteSpace(taskId)) return;
         lock (_writeLock) RemoveByTaskIdDb(taskId);
+        List<TaskCompletionSource<bool>> cancelled;
         lock (_waitLock)
         {
             _forcedFinished.Remove(taskId);
             _waiters.Remove(taskId, out _);
+            cancelled = _stageWaiters.Where(pair => pair.Key.StartsWith(taskId.Trim() + "|", StringComparison.OrdinalIgnoreCase))
+                .Select(pair => pair.Value).ToList();
+            foreach (var key in _stageWaiters.Keys.Where(key => key.StartsWith(taskId.Trim() + "|", StringComparison.OrdinalIgnoreCase)).ToList())
+                _stageWaiters.Remove(key);
         }
+        foreach (var waiter in cancelled) waiter.TrySetResult(false);
         _lifecycle.Remove(taskId);
         _ = _hub.Clients.All.SendAsync("TaskRemoved", taskId);
     }
@@ -237,11 +246,15 @@ public class TaskStageService : ITaskStageService
     public void ClearAll()
     {
         lock (_writeLock) ClearAllDb();
+        List<TaskCompletionSource<bool>> cancelled;
         lock (_waitLock)
         {
             _forcedFinished.Clear();
             _waiters.Clear();
+            cancelled = _stageWaiters.Values.ToList();
+            _stageWaiters.Clear();
         }
+        foreach (var waiter in cancelled) waiter.TrySetResult(false);
         _lifecycle.Clear();
         _ = _hub.Clients.All.SendAsync("EventsReset", new List<TaskRecord>());
     }
@@ -257,6 +270,13 @@ public class TaskStageService : ITaskStageService
             _waiters.Clear();
         }
         foreach (var waiter in pending) waiter.TrySetResult(true);
+        List<TaskCompletionSource<bool>> stageWaiters;
+        lock (_waitLock)
+        {
+            stageWaiters = _stageWaiters.Values.ToList();
+            _stageWaiters.Clear();
+        }
+        foreach (var waiter in stageWaiters) waiter.TrySetResult(false);
     }
 
     public Task WaitFinishedAsync(string taskId, TimeSpan? timeout = null)
@@ -275,6 +295,52 @@ public class TaskStageService : ITaskStageService
         }
         return timeout is { } value && value > TimeSpan.Zero ? waiter.Task.WaitAsync(value) : waiter.Task;
     }
+
+    public async Task WaitForStageAsync(string taskId, string stage, TimeSpan timeout)
+    {
+        if (string.IsNullOrWhiteSpace(taskId)) throw new ArgumentException("任务号不能为空", nameof(taskId));
+        if (string.IsNullOrWhiteSpace(stage)) throw new ArgumentException("阶段不能为空", nameof(stage));
+        if (timeout <= TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(timeout));
+
+        var key = StageWaitKey(taskId, stage);
+        TaskCompletionSource<bool> waiter;
+        lock (_waitLock)
+        {
+            // 先检查持久化记录，覆盖“回调先到、流程等待后注册”的竞态。
+            if (HasStage(taskId, stage)) return;
+            if (_stageWaiters.ContainsKey(key))
+                throw new InvalidOperationException($"任务 {taskId} 已有相同阶段的等待流程");
+            waiter = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            _stageWaiters[key] = waiter;
+        }
+
+        try
+        {
+            if (!await waiter.Task.WaitAsync(timeout))
+                throw new OperationCanceledException($"任务 {taskId} 的流程等待已取消。");
+        }
+        catch (TimeoutException ex)
+        {
+            throw new TimeoutException($"等待任务 {taskId} 上报阶段 {stage} 超时（{timeout.TotalSeconds:0} 秒）", ex);
+        }
+        finally
+        {
+            lock (_waitLock)
+                if (_stageWaiters.TryGetValue(key, out var current) && ReferenceEquals(current, waiter))
+                    _stageWaiters.Remove(key);
+        }
+    }
+
+    private void CompleteStageWaiter(string taskId, string stage)
+    {
+        lock (_waitLock)
+        {
+            if (_stageWaiters.TryGetValue(StageWaitKey(taskId, stage), out var waiter))
+                waiter.TrySetResult(true);
+        }
+    }
+
+    private static string StageWaitKey(string taskId, string stage) => $"{taskId.Trim()}|{stage.Trim()}";
 
     public async Task<bool> WaitWcsCompletedAsync(string taskId, TimeSpan? timeout = null)
     {

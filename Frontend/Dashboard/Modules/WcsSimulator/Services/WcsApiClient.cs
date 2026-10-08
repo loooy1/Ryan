@@ -2,6 +2,7 @@ using System.Net.Http.Json;
 using System.Text.Json;
 using Contracts.Dtos;
 using Contracts.Entities;
+using Dashboard.Modules.WcsSimulator.Models;
 using Microsoft.JSInterop;
 
 namespace Dashboard.Modules.WcsSimulator.Services;
@@ -287,6 +288,39 @@ public class WcsApiClient
         return await DeleteAsync($"/api/wcs/modules/{Uri.EscapeDataString(id)}");
     }
 
+    /// <summary>获取 RCS 配置集及其协议模板。</summary>
+    public async Task<RcsProtocolProfilesDto?> GetRcsProtocolProfilesAsync()
+        => (await GetAsync<RcsProtocolProfilesResponse>("/api/wcs/rcs-profiles"))?.Data;
+
+    /// <summary>保存全部 RCS 配置集；原有功能模板由后端迁入默认配置集并继续保留。</summary>
+    public async Task<(bool Success, string Message, RcsProtocolProfilesDto? Data)> SaveRcsProtocolProfilesAsync(RcsProtocolProfilesDto config)
+    {
+        var result = await PutAsync<RcsProtocolProfilesDto, RcsProtocolSaveResponse>("/api/wcs/rcs-profiles", config);
+        return (result?.Success == true, result?.Message ?? "", result?.Data);
+    }
+
+    public async Task<(bool Success, string Message, RcsProtocolProfilesDto? Data)> ActivateRcsProtocolProfileAsync(string profileId)
+    {
+        var result = await PostAsync<object, RcsProtocolSaveResponse>(
+            $"/api/wcs/rcs-profiles/activate/{Uri.EscapeDataString(profileId)}", new { });
+        return (result?.Success == true, result?.Message ?? "", result?.Data);
+    }
+
+    public async Task<(bool Success, string Message, RcsProtocolProfilesDto? Data)> DeleteRcsProtocolProfileAsync(string profileId)
+    {
+        if (!ConnectionReady()) return (false, "WCS 后端未连接。", null);
+        var response = await DeleteRawAsync($"/api/wcs/rcs-profiles/{Uri.EscapeDataString(profileId)}");
+        try
+        {
+            var result = JsonSerializer.Deserialize<RcsProtocolSaveResponse>(response.Json, JsonOpts);
+            return (response.Ok && result?.Success == true, result?.Message ?? (response.Ok ? "" : response.Json), result?.Data);
+        }
+        catch
+        {
+            return (false, response.Json, null);
+        }
+    }
+
 
 
     /// <summary>停止归巢（中断等待与后续下发，已下发的不撤销）。</summary>
@@ -570,6 +604,19 @@ public class WcsApiClient
     {
         public bool Success { get; set; }
         public List<FeatureModuleDto>? Items { get; set; }
+    }
+
+    private class RcsProtocolProfilesResponse
+    {
+        public bool Success { get; set; }
+        public RcsProtocolProfilesDto? Data { get; set; }
+    }
+
+    private class RcsProtocolSaveResponse
+    {
+        public bool Success { get; set; }
+        public string Message { get; set; } = "";
+        public RcsProtocolProfilesDto? Data { get; set; }
     }
 
     private class SaveResponse

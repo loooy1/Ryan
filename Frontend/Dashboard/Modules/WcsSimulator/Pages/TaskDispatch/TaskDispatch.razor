@@ -69,7 +69,8 @@
             var tt = TaskTypeRegistry.All[ci];
             var isSelected = tt.Value == _selectedType;
             var isCustom = TaskTypeRegistry.IsCustom(tt.Value);
-            var moduleCount = (tt.Start.BeforeModules?.Count ?? 0) + (tt.Start.AfterModules?.Count ?? 0) + (tt.End.AfterModules?.Count ?? 0);
+            var moduleCount = tt.WorkflowSteps?.Count(step => step.Enabled && step.Kind == TaskWorkflowStepKinds.BusinessTemplate)
+                ?? ((tt.Start.BeforeModules?.Count ?? 0) + (tt.Start.AfterModules?.Count ?? 0) + (tt.End.AfterModules?.Count ?? 0));
             <div class="tt-card @(isSelected ? "selected" : "")"
                  @onclick="() => SelectType(tt)">
                 @if (isCustom)
@@ -385,7 +386,7 @@
                     <span class="tpl-modal-icon">🧩</span>
                     <div>
                         <div>@(_editingTemplate == null ? "添加任务类型模板" : "编辑任务类型模板")</div>
-                        <div class="tpl-modal-sub">起点（之前/之后）+ 终点（之后）· 每点可绑定功能模块</div>
+                        <div class="tpl-modal-sub">按任务阶段组装流程，绑定业务模板并等待 RCS 阶段回报</div>
                     </div>
                 </div>
                 <button type="button" class="tpl-modal-close" @onclick="CloseTemplateModal" title="关闭">✕</button>
@@ -552,6 +553,59 @@
                     </div>
                 </div>
 
+                <div class="tpl-section">
+                    <div class="tpl-section-title">📍 站点约束</div>
+                    <div class="form-grid2">
+                        <div class="form-group"><label>起点站点类型</label><select class="tpl-type-select" @onchange="e => SetPointType(_draft.Start, e.Value)"><option value="0" selected="@(SelectedPointBits(_draft.Start) == 0)">未指定（不限）</option>@foreach (var (bit, name) in MapStationTypeBits.All) { <option value="@bit" selected="@(SelectedPointBits(_draft.Start) == bit)">@name</option> }</select></div>
+                        <div class="form-group"><label>终点站点类型</label><select class="tpl-type-select" @onchange="e => SetPointType(_draft.End, e.Value)"><option value="0" selected="@(SelectedPointBits(_draft.End) == 0)">未指定（不限）</option>@foreach (var (bit, name) in MapStationTypeBits.All) { <option value="@bit" selected="@(SelectedPointBits(_draft.End) == bit)">@name</option> }</select></div>
+                    </div>
+                </div>
+                <div class="tpl-section workflow-builder">
+                    <div class="tpl-section-title">🔀 任务执行流程</div>
+                    <div class="hint-text" style="margin:0 0 12px;">按顺序运行。业务模板收到成功响应后继续；等待阶段节点会等到 RCS 上报对应阶段。RCS 下发节点等待接口回复后再继续。</div>
+                    <div class="workflow-fixed-step"><span>1</span><div><strong>WCS 任务生成</strong><small>收到任务并写入任务记录</small></div><b>系统节点</b></div>
+                    @for (var i = 0; i < _draft.WorkflowSteps.Count; i++)
+                    {
+                        var index = i;
+                        var step = _draft.WorkflowSteps[index];
+                        var isDispatch = step.Kind == TaskWorkflowStepKinds.Dispatch;
+                        <div class="workflow-step @(step.Enabled ? "" : "disabled") @(isDispatch ? "dispatch-step" : "")">
+                            <div class="workflow-step-number">@(index + 2)</div>
+                            <div class="workflow-step-content">
+                                @if (isDispatch)
+                                {
+                                    <strong>下发任务给 RCS</strong><small>使用当前 RCS 模板；等待接口成功回复后继续</small>
+                                }
+                                else
+                                {
+                                    <select value="@step.Kind" @onchange="e => ChangeWorkflowKind(step, e.Value?.ToString())"><option value="@TaskWorkflowStepKinds.BusinessTemplate">执行业务模板</option><option value="@TaskWorkflowStepKinds.WaitRcsStage">等待 RCS 阶段</option></select>
+                                    @if (step.Kind == TaskWorkflowStepKinds.BusinessTemplate)
+                                    {
+                                        <select value="@step.TemplateId" @onchange="e => step.TemplateId = e.Value?.ToString() ?? string.Empty"><option value="">选择业务模板</option>@foreach (var module in WorkflowModules) { <option value="@module.Id">@module.Name</option> }</select>
+                                        <small>模板接口返回成功后，流程进入下一步</small>
+                                    }
+                                    else
+                                    {
+                                        <input type="text" @bind="step.StageCode" placeholder="RCS 阶段码，例如 LOAD_FINISH" />
+                                        <small>常用阶段：START、LOAD_FINISH、PUT_FINISH、FINISHED；也可填写车型协议的阶段码。</small>
+                                        <label class="workflow-timeout">超时秒数 <input type="number" min="1" max="86400" @bind="step.TimeoutSeconds" /></label>
+                                    }
+                                }
+                            </div>
+                            <label class="workflow-enabled"><input type="checkbox" @bind="step.Enabled" disabled="@isDispatch" />启用</label>
+                            @if (!isDispatch)
+                            {
+                                <div class="workflow-tools">
+                                    <button type="button" class="btn btn-outline btn-xs" @onclick="@(() => MoveWorkflowStep(index, -1))" disabled="@(!CanMoveWorkflowStep(index, -1))">↑</button>
+                                    <button type="button" class="btn btn-outline btn-xs" @onclick="@(() => MoveWorkflowStep(index, 1))" disabled="@(!CanMoveWorkflowStep(index, 1))">↓</button>
+                                    <button type="button" class="btn btn-danger btn-xs" @onclick="@(() => RemoveWorkflowStep(index))">删除</button>
+                                </div>
+                            }
+                        </div>
+                    }
+                    <div class="workflow-add-actions"><button type="button" class="btn btn-outline btn-sm" @onclick="() => AddWorkflowTemplateStep(true)">＋ 下发前模板</button><button type="button" class="btn btn-outline btn-sm" @onclick="() => AddWorkflowTemplateStep(false)">＋ 下发后模板</button><button type="button" class="btn btn-outline btn-sm" @onclick="AddWorkflowWaitStep">＋ 等待 RCS 阶段</button></div>
+                </div>
+
                 @if (!string.IsNullOrEmpty(_templateError))
                 {
                     <div class="tpl-error">@_templateError</div>
@@ -650,6 +704,10 @@
     private TaskTemplateDto? _editingTemplate;             // 非空=编辑已有模板；null=新建
     private TemplateDraft _draft = new();
     private string _templateError = "";
+    private List<FeatureModuleDto> WorkflowModules => ModuleRegistry.All
+        .Where(module => !string.Equals(module.Id, "task.carry", StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(module.Id, "task.move", StringComparison.OrdinalIgnoreCase))
+        .ToList();
 
     // ════════════ 卡片折叠 ════════════
     private async void ToggleContainer() => await Toggle("container");
@@ -801,7 +859,10 @@
     private void OpenTemplateModal()
     {
         _editingTemplate = null;
-        _draft = new TemplateDraft();
+        _draft = new TemplateDraft
+        {
+            WorkflowSteps = [new TaskWorkflowStepDto { Kind = TaskWorkflowStepKinds.Dispatch }]
+        };
         _templateError = "";
         _showTemplateModal = true;
     }
@@ -824,6 +885,7 @@
             ContainerMode = tt.ContainerMode,
             Start = ClonePoint(tt.Start),
             End = ClonePoint(tt.End),
+            WorkflowSteps = CloneWorkflow(tt),
         };
         _templateError = "";
         _showTemplateModal = true;
@@ -838,10 +900,88 @@
         StationTypeBits = src?.StationTypeBits ?? 0,
     };
 
+    private static List<TaskWorkflowStepDto> CloneWorkflow(TaskTemplateDto template)
+    {
+        if (template.WorkflowSteps is { Count: > 0 })
+            return template.WorkflowSteps.Select(step => new TaskWorkflowStepDto
+            {
+                Id = step.Id,
+                Kind = step.Kind,
+                TemplateId = step.TemplateId,
+                StageCode = step.StageCode,
+                TimeoutSeconds = step.TimeoutSeconds,
+                Enabled = step.Enabled,
+            }).ToList();
+
+        // 将旧版“起点前/起点后/终点后”关联迁移成线性流程，第一次保存时写入新结构。
+        var steps = new List<TaskWorkflowStepDto>();
+        steps.AddRange((template.Start?.BeforeModules ?? []).Select(CreateTemplateStep));
+        steps.Add(new TaskWorkflowStepDto { Kind = TaskWorkflowStepKinds.Dispatch });
+        steps.AddRange((template.Start?.AfterModules ?? []).Select(CreateTemplateStep));
+        if (template.End?.AfterModules?.Count > 0)
+        {
+            steps.Add(new TaskWorkflowStepDto { Kind = TaskWorkflowStepKinds.WaitRcsStage, StageCode = "FINISHED" });
+            steps.AddRange(template.End.AfterModules.Select(CreateTemplateStep));
+        }
+        return steps;
+    }
+
+    private static TaskWorkflowStepDto CreateTemplateStep(string id)
+        => new() { Kind = TaskWorkflowStepKinds.BusinessTemplate, TemplateId = id };
+
     private void CloseTemplateModal()
     {
         _showTemplateModal = false;
         _editingTemplate = null;
+    }
+
+    private void AddWorkflowTemplateStep(bool beforeDispatch)
+    {
+        var dispatchIndex = _draft.WorkflowSteps.FindIndex(step => step.Kind == TaskWorkflowStepKinds.Dispatch);
+        var step = new TaskWorkflowStepDto { Kind = TaskWorkflowStepKinds.BusinessTemplate };
+        var index = dispatchIndex < 0 ? _draft.WorkflowSteps.Count
+            : beforeDispatch ? dispatchIndex : dispatchIndex + 1;
+        _draft.WorkflowSteps.Insert(index, step);
+    }
+
+    private void AddWorkflowWaitStep()
+    {
+        var dispatchIndex = _draft.WorkflowSteps.FindIndex(step => step.Kind == TaskWorkflowStepKinds.Dispatch);
+        var step = new TaskWorkflowStepDto { Kind = TaskWorkflowStepKinds.WaitRcsStage, StageCode = "LOAD_FINISH" };
+        _draft.WorkflowSteps.Insert(dispatchIndex < 0 ? _draft.WorkflowSteps.Count : dispatchIndex + 1, step);
+    }
+
+    private void ChangeWorkflowKind(TaskWorkflowStepDto step, string? kind)
+    {
+        step.Kind = kind == TaskWorkflowStepKinds.WaitRcsStage
+            ? TaskWorkflowStepKinds.WaitRcsStage : TaskWorkflowStepKinds.BusinessTemplate;
+        step.TemplateId = "";
+        step.StageCode = step.Kind == TaskWorkflowStepKinds.WaitRcsStage ? "LOAD_FINISH" : "";
+    }
+
+    private void MoveWorkflowStep(int index, int offset)
+    {
+        var target = index + offset;
+        if (index < 0 || target < 0 || index >= _draft.WorkflowSteps.Count || target >= _draft.WorkflowSteps.Count) return;
+        if (_draft.WorkflowSteps[index].Kind == TaskWorkflowStepKinds.Dispatch
+            || _draft.WorkflowSteps[target].Kind == TaskWorkflowStepKinds.Dispatch) return;
+        (_draft.WorkflowSteps[index], _draft.WorkflowSteps[target]) = (_draft.WorkflowSteps[target], _draft.WorkflowSteps[index]);
+    }
+
+    private bool CanMoveWorkflowStep(int index, int offset)
+    {
+        var target = index + offset;
+        return index >= 0 && index < _draft.WorkflowSteps.Count
+            && target >= 0 && target < _draft.WorkflowSteps.Count
+            && _draft.WorkflowSteps[index].Kind != TaskWorkflowStepKinds.Dispatch
+            && _draft.WorkflowSteps[target].Kind != TaskWorkflowStepKinds.Dispatch;
+    }
+
+    private void RemoveWorkflowStep(int index)
+    {
+        if (index < 0 || index >= _draft.WorkflowSteps.Count
+            || _draft.WorkflowSteps[index].Kind == TaskWorkflowStepKinds.Dispatch) return;
+        _draft.WorkflowSteps.RemoveAt(index);
     }
 
     /// <summary>在模板草稿的起点「之前」中勾选/取消关联模块。</summary>
@@ -909,14 +1049,40 @@
         if (string.IsNullOrEmpty(value)) { _templateError = "❌ 协议值 Value 不能为空"; return; }
         if (string.IsNullOrEmpty(label)) { _templateError = "❌ 显示名称 Label 不能为空"; return; }
 
+        var dispatchCount = _draft.WorkflowSteps.Count(step => step.Enabled && step.Kind == TaskWorkflowStepKinds.Dispatch);
+        if (dispatchCount != 1) { _templateError = "流程必须且只能保留一个启用的“下发任务给 RCS”节点。"; return; }
+        var dispatchIndex = _draft.WorkflowSteps.FindIndex(step => step.Kind == TaskWorkflowStepKinds.Dispatch);
+        if (dispatchIndex < 0) { _templateError = "流程缺少“下发任务给 RCS”节点。"; return; }
+        for (var i = 0; i < dispatchIndex; i++)
+        {
+            if (_draft.WorkflowSteps[i].Enabled && _draft.WorkflowSteps[i].Kind != TaskWorkflowStepKinds.BusinessTemplate)
+            { _templateError = "RCS 下发之前只能执行业务模板，不能等待车辆阶段。"; return; }
+        }
+        var missingModule = _draft.WorkflowSteps.FirstOrDefault(step => step.Enabled
+            && step.Kind == TaskWorkflowStepKinds.BusinessTemplate
+            && (string.IsNullOrWhiteSpace(step.TemplateId) || !WorkflowModules.Any(module => module.Id == step.TemplateId)));
+        if (missingModule != null) { _templateError = "请为所有启用的业务模板节点选择有效模板。"; return; }
+        if (_draft.WorkflowSteps.Any(step => step.Enabled && step.Kind == TaskWorkflowStepKinds.WaitRcsStage
+            && string.IsNullOrWhiteSpace(step.StageCode)))
+        { _templateError = "请为所有启用的等待节点选择 RCS 阶段。"; return; }
+
         var tpl = new TaskTemplateDto
         {
             Value = value,
             Label = label,
             Description = _draft.Description.Trim(),
             Category = string.IsNullOrWhiteSpace(_draft.Category) ? "other" : _draft.Category.Trim(),
-            Start = new TaskPointDto { Label = "起点", BeforeModules = _draft.Start.BeforeModules, AfterModules = _draft.Start.AfterModules, StationTypeBits = _draft.Start.StationTypeBits },
-            End = new TaskPointDto { Label = "终点", AfterModules = _draft.End.AfterModules, StationTypeBits = _draft.End.StationTypeBits },
+            Start = new TaskPointDto { Label = "起点", StationTypeBits = _draft.Start.StationTypeBits },
+            End = new TaskPointDto { Label = "终点", StationTypeBits = _draft.End.StationTypeBits },
+            WorkflowSteps = _draft.WorkflowSteps.Select(step => new TaskWorkflowStepDto
+            {
+                Id = step.Id,
+                Kind = step.Kind,
+                TemplateId = step.TemplateId,
+                StageCode = step.StageCode,
+                TimeoutSeconds = Math.Clamp(step.TimeoutSeconds, 1, 86400),
+                Enabled = step.Enabled,
+            }).ToList(),
             NeedsContainer = _draft.NeedsContainer,
             ContainerPrefix = _draft.ContainerPrefix.Trim(),
             RandomContainer = _draft.RandomContainer,
@@ -1050,6 +1216,7 @@
         public string Category { get; set; } = "other";
         public TaskPointDto Start { get; set; } = new();
         public TaskPointDto End { get; set; } = new();
+        public List<TaskWorkflowStepDto> WorkflowSteps { get; set; } = [new TaskWorkflowStepDto { Kind = TaskWorkflowStepKinds.Dispatch }];
         public bool NeedsContainer { get; set; } = true;
         public string ContainerPrefix { get; set; } = "";
         public bool RandomContainer { get; set; }

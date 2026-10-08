@@ -27,6 +27,7 @@ public static class WcsModuleExtensions
         services.AddSingleton<ProjectLogStore>();
         services.AddSingleton<TaskTemplateStore>();
         services.AddSingleton<FeatureModuleStore>();
+        services.AddSingleton<RcsProtocolTemplateStore>();
         services.AddSingleton<AutoTemplateStore>();
         services.AddSingleton<MockRuleStore>();
         services.AddSingleton<MockApprovalService>();

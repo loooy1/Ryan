@@ -45,16 +45,16 @@ public class TaskTemplateController : ControllerBase
 }
 
 /// <summary>
-/// 功能模板存储接口（/api/wcs/modules）。
+/// 当前 RCS 配置集的功能模板接口（/api/wcs/modules）。
 /// </summary>
 [ApiController]
 [Route("api/wcs/modules")]
 public class FeatureModuleController : ControllerBase
 {
-    private readonly FeatureModuleStore _store;
+    private readonly RcsProtocolTemplateStore _store;
     private readonly IHubContext<TaskStageRealtimeHub> _hub;
 
-    public FeatureModuleController(FeatureModuleStore store, IHubContext<TaskStageRealtimeHub> hub)
+    public FeatureModuleController(RcsProtocolTemplateStore store, IHubContext<TaskStageRealtimeHub> hub)
     {
         _store = store;
         _hub = hub;
@@ -62,22 +62,25 @@ public class FeatureModuleController : ControllerBase
 
     /// <summary>全部功能模板。</summary>
     [HttpGet]
-    public ActionResult<object> GetAll() => Ok(new { success = true, items = _store.GetAll() });
+    public ActionResult<object> GetAll() => Ok(new { success = true, items = _store.GetActive().FeatureModules });
 
     /// <summary>整体替换功能模板列表（前端保存整个自定义集）。</summary>
     [HttpPost]
     public ActionResult<object> ReplaceAll([FromBody] List<FeatureModuleDto> items)
     {
-        _store.ReplaceAll(items ?? []);
+        _store.ReplaceActiveFeatureModules(items ?? []);
         _ = _hub.Clients.All.SendAsync("ConfigurationChanged", "feature-modules");
-        return Ok(new { success = true, count = _store.GetAll().Count });
+        return Ok(new { success = true, count = _store.GetActive().FeatureModules.Count });
     }
 
     /// <summary>按 Id 删除一条功能模板。</summary>
     [HttpDelete("{id}")]
     public ActionResult<object> Remove(string id)
     {
-        var ok = _store.Remove(id);
+        var profile = _store.GetActive();
+        var remaining = profile.FeatureModules.Where(x => !string.Equals(x.Id, id, StringComparison.OrdinalIgnoreCase)).ToList();
+        var ok = remaining.Count != profile.FeatureModules.Count;
+        if (ok) _store.ReplaceActiveFeatureModules(remaining);
         if (ok) _ = _hub.Clients.All.SendAsync("ConfigurationChanged", "feature-modules");
         return Ok(new { success = ok, id });
     }

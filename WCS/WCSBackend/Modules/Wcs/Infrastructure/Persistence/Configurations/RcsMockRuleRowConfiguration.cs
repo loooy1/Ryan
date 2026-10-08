@@ -1,26 +1,25 @@
 using System.Text.Json;
-using Contracts.Entities;
 using Contracts.Dtos;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.ChangeTracking;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
+using WCSBackend.Modules.Wcs.Infrastructure.Persistence.Entities;
 
 namespace WCSBackend.Modules.Wcs.Infrastructure.Configurations;
 
-public class MockRuleRowConfiguration : IEntityTypeConfiguration<MockRuleRow>
+public sealed class RcsMockRuleRowConfiguration : IEntityTypeConfiguration<RcsMockRuleRow>
 {
-    public void Configure(EntityTypeBuilder<MockRuleRow> builder)
+    public void Configure(EntityTypeBuilder<RcsMockRuleRow> builder)
     {
         builder.ToTable("mock_rules");
-        builder.HasKey(x => x.Id);
-        builder.Property(x => x.Id).HasColumnName("rule_id").IsRequired();
+        builder.HasKey(x => new { x.RcsType, x.Id });
+        builder.Property(x => x.RcsType).HasColumnName("rcs_type").HasMaxLength(64).IsRequired();
+        builder.Property(x => x.Id).HasColumnName("rule_id").HasMaxLength(255).IsRequired();
         builder.Property(x => x.Name).HasColumnName("name");
         builder.Property(x => x.Method).HasColumnName("method");
         builder.Property(x => x.PathPattern).HasColumnName("path_pattern");
         builder.Property(x => x.Matchers).HasColumnName("matchers_json")
-            .HasConversion(
-                v => JsonSerializer.Serialize(v),
-                v => string.IsNullOrWhiteSpace(v) ? new List<MockMatcher>() : JsonSerializer.Deserialize<List<MockMatcher>>(v) ?? new List<MockMatcher>())
+            .HasConversion(v => JsonSerializer.Serialize(v), v => string.IsNullOrWhiteSpace(v) ? new List<MockMatcher>() : JsonSerializer.Deserialize<List<MockMatcher>>(v) ?? new List<MockMatcher>())
             .Metadata.SetValueComparer(ValueComparer.CreateDefault<List<MockMatcher>>(favorStructuralComparisons: false));
         builder.Property(x => x.ResponseCode).HasColumnName("response_code");
         builder.Property(x => x.ResponseBody).HasColumnName("response_body");

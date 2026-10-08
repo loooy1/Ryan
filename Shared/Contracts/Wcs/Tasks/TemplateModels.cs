@@ -74,6 +74,27 @@ public class TaskTemplateDto
     public TaskPointDto Start { get; set; } = new();
 
     public TaskPointDto End { get; set; } = new();
+
+    /// <summary>按顺序执行的任务流程。下发 RCS 是必需节点，其余节点可启停或调整顺序。</summary>
+    public List<TaskWorkflowStepDto> WorkflowSteps { get; set; } = [];
+}
+
+public static class TaskWorkflowStepKinds
+{
+    public const string Dispatch = "dispatch";
+    public const string BusinessTemplate = "business_template";
+    public const string WaitRcsStage = "wait_rcs_stage";
+}
+
+/// <summary>任务流程节点：执行业务模板、下发任务给 RCS，或等待 RCS 上报阶段。</summary>
+public class TaskWorkflowStepDto
+{
+    public string Id { get; set; } = Guid.NewGuid().ToString("N");
+    public string Kind { get; set; } = TaskWorkflowStepKinds.BusinessTemplate;
+    public string TemplateId { get; set; } = "";
+    public string StageCode { get; set; } = "";
+    public int TimeoutSeconds { get; set; } = 300;
+    public bool Enabled { get; set; } = true;
 }
 
 /// <summary>功能模板 DTO（与前端 WcsModule 同构）。</summary>
@@ -84,6 +105,18 @@ public class FeatureModuleDto
     public string Name { get; set; } = "";
 
     public string ApiUrl { get; set; } = "";
+
+    /// <summary>统一模板的 HTTP 配置；普通功能模板默认使用 POST，请求体由参数生成。</summary>
+    public string HttpMethod { get; set; } = "POST";
+
+    /// <summary>可选原始请求体模板，任务下发协议用此字段构造报文。</summary>
+    public string RequestBodyTemplate { get; set; } = "";
+
+    public string SuccessProperty { get; set; } = "";
+
+    public string SuccessValue { get; set; } = "true";
+
+    public int TimeoutSeconds { get; set; } = 10;
 
     /// <summary>模块 HTTP 请求前执行的预处理效果。</summary>
     public string PreExecutionEffect { get; set; } = "";

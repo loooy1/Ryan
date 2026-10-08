@@ -1,20 +1,27 @@
 using WCSBackend.Modules.Wcs.Infrastructure;
 using Contracts.Dtos;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.SignalR;
 using System.Text;
+using WCSBackend.Modules.Wcs.Realtime;
 
 namespace WCSBackend.Modules.Wcs.Console.Controllers;
 
 /// <summary>
-/// 通用 Mock 规则管理接口（/api/wcs/mocks）。
-/// 前端在信号交互页可配任意入站 URL + 参数匹配 → 自定义返回值，无需硬编码。
+/// 当前 RCS 配置集的 Mock 规则管理接口（/api/wcs/mocks）。
+/// 前端可配置任意入站 URL + 参数匹配与返回值；切换 RCS 后使用对应配置集规则。
 /// </summary>
 [ApiController]
 [Route("api/wcs/mocks")]
 public class MockRuleController : ControllerBase
 {
     private readonly MockRuleStore _store;
-    public MockRuleController(MockRuleStore store) => _store = store;
+    private readonly IHubContext<TaskStageRealtimeHub> _hub;
+    public MockRuleController(MockRuleStore store, IHubContext<TaskStageRealtimeHub> hub)
+    {
+        _store = store;
+        _hub = hub;
+    }
 
     [HttpGet]
     public ActionResult<object> GetAll() => Ok(new { success = true, items = _store.GetAll() });
@@ -23,6 +30,7 @@ public class MockRuleController : ControllerBase
     public ActionResult<object> ReplaceAll([FromBody] List<MockRuleDto> items)
     {
         _store.ReplaceAll(items ?? []);
+        _ = _hub.Clients.All.SendAsync("ConfigurationChanged", "mock-rules");
         return Ok(new { success = true, count = _store.GetAll().Count });
     }
 }

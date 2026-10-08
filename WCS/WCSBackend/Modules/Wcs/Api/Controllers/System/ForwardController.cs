@@ -18,12 +18,14 @@ public class ForwardController : ControllerBase
 {
     private readonly GrcsHttpClient _grcs;
     private readonly WcsSettingsService _settings;
+    private readonly RcsProtocolTemplateStore _protocols;
     private readonly ILogger<ForwardController> _logger;
 
-    public ForwardController(GrcsHttpClient grcs, WcsSettingsService settings, ILogger<ForwardController> logger)
+    public ForwardController(GrcsHttpClient grcs, WcsSettingsService settings, RcsProtocolTemplateStore protocols, ILogger<ForwardController> logger)
     {
         _grcs = grcs;
         _settings = settings;
+        _protocols = protocols;
         _logger = logger;
     }
 
@@ -48,7 +50,7 @@ public class ForwardController : ControllerBase
             return BadRequest(new { ok = false, code = 400, json = "url 不能为空" });
 
         var settings = _settings.Get();
-        var target = settings.GrcsBaseUrl.TrimEnd('/') + req.Url;
+        var target = _protocols.ResolveBaseUrl(settings.GrcsBaseUrl).TrimEnd('/') + req.Url;
         var method = ParseMethod(req.Method);
 
         // 注入 Warehouse（场景名），保证后端为唯一数据源

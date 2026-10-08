@@ -15,5 +15,6 @@ public class TaskTemplateRow
     public string ContainerMode { get; set; } = TaskContainerModes.ExistingInventory;
     public TaskPointDto Start { get; set; } = new();
     public TaskPointDto End { get; set; } = new();
+    public List<TaskWorkflowStepDto> WorkflowSteps { get; set; } = [];
     public string UpdatedAt { get; set; } = "";
 }

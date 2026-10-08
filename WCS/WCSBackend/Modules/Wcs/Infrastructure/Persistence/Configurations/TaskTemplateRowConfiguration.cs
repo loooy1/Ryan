@@ -10,6 +10,8 @@ public class TaskTemplateRowConfiguration : IEntityTypeConfiguration<TaskTemplat
 {
     private static TaskPointDto ReadPoint(string json) =>
         string.IsNullOrWhiteSpace(json) ? new() : JsonSerializer.Deserialize<TaskPointDto>(json)!;
+    private static List<TaskWorkflowStepDto> ReadWorkflow(string json) =>
+        string.IsNullOrWhiteSpace(json) ? [] : JsonSerializer.Deserialize<List<TaskWorkflowStepDto>>(json) ?? [];
 
     public void Configure(EntityTypeBuilder<TaskTemplateRow> builder)
     {
@@ -27,6 +29,8 @@ public class TaskTemplateRowConfiguration : IEntityTypeConfiguration<TaskTemplat
             .HasConversion(v => JsonSerializer.Serialize(v), v => ReadPoint(v));
         builder.Property(x => x.End).HasColumnName("end_json")
             .HasConversion(v => JsonSerializer.Serialize(v), v => ReadPoint(v));
+        builder.Property(x => x.WorkflowSteps).HasColumnName("workflow_json")
+            .HasConversion(v => JsonSerializer.Serialize(v), v => ReadWorkflow(v));
         builder.Property(x => x.UpdatedAt).HasColumnName("updated_at");
     }
 }

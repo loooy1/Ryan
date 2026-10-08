@@ -19,13 +19,15 @@ public class GrcsProxyController : ControllerBase
 {
     private readonly GrcsHttpClient _grcs;
     private readonly WcsSettingsService _settings;
+    private readonly RcsProtocolTemplateStore _protocols;
     private readonly ModuleRunService _moduleRun;
     private readonly ILogger<GrcsProxyController> _logger;
 
-    public GrcsProxyController(GrcsHttpClient grcs, WcsSettingsService settings, ModuleRunService moduleRun, ILogger<GrcsProxyController> logger)
+    public GrcsProxyController(GrcsHttpClient grcs, WcsSettingsService settings, RcsProtocolTemplateStore protocols, ModuleRunService moduleRun, ILogger<GrcsProxyController> logger)
     {
         _grcs = grcs;
         _settings = settings;
+        _protocols = protocols;
         _moduleRun = moduleRun;
         _logger = logger;
     }
@@ -38,7 +40,7 @@ public class GrcsProxyController : ControllerBase
             endpoint, JsonSerializer.Serialize(payload), ok, code, json);
     }
 
-    private string BaseUrl => _settings.Get().GrcsBaseUrl;
+    private string BaseUrl => _protocols.ResolveBaseUrl(_settings.Get().GrcsBaseUrl);
     private string SceneName => _settings.Get().SceneName;
 
     /// <summary>任务组下发代理（GRCS /api/v1/task_receive）。</summary>

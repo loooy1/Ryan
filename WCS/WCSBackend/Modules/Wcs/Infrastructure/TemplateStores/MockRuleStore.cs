@@ -1,118 +1,38 @@
-using Backend.Shared.Infrastructure.Repository;
-using Contracts.Entities;
 using Contracts.Dtos;
-using Mapster;
 using Microsoft.AspNetCore.Http;
 
 namespace WCSBackend.Modules.Wcs.Infrastructure;
 public class MockRuleStore
 {
-    private readonly IUnitOfWorkFactory _uow;
-    private readonly object _lock = new();
-    private List<MockRuleDto> _items = [];
+    private readonly RcsProtocolTemplateStore _templates;
 
-    public MockRuleStore(IUnitOfWorkFactory uowFactory)
-    {
-        _uow = uowFactory;
-        try
-        {
-            using var uow = _uow.Create();
-            _items = uow.Repository<MockRuleRow>().FindAllAsync().GetAwaiter().GetResult()
-                .Select(r => r.Adapt<MockRuleDto>()).ToList();
-        }
-        catch { }
-        EnsureDefaultRule();
-    }
-
-    /// <summary>确保任务阶段模板卡存在：已有任何启用的任务阶段卡（BoardSync）则不干预；MOCK_DEFAULT 缺失时插入，路径非模板时迁移。</summary>
-    private void EnsureDefaultRule()
-    {
-        lock (_lock)
-        {
-            var existing = _items.FirstOrDefault(x => string.Equals(x.Id, "MOCK_DEFAULT", StringComparison.OrdinalIgnoreCase));
-            if (existing != null && string.Equals(existing.PathPattern, "/api/v1/task_stage_change", StringComparison.OrdinalIgnoreCase))
-                return;
-            // 已有用户自建的任务阶段卡（任意 URL）→ 不再强制模板卡
-            if (existing == null && _items.Any(x => x.Enabled && x.BoardSync))
-                return;
-            var rule = new MockRuleDto
-            {
-                Id = "MOCK_DEFAULT",
-                Method = "POST",
-                PathPattern = "/api/v1/task_stage_change",
-                Matchers = [],
-                ResponseCode = 200,
-                ResponseBody = "{\"success\":true,\"message\":\"ok\"}",
-                Enabled = true,
-                Priority = 0,
-                Description = "任务阶段模板卡：勾选「关联任务看板」即为任务阶段卡（URL 可任意改），命中时自动提取 taskId/stage 推送任务看板。系统要求至少存在一张任务阶段卡才允许下发任务。",
-                AlsoRecord = true,
-                BoardSync = true,
-                RequiresApproval = false,
-            };
-            if (existing == null) _items.Add(rule);
-            else
-            {
-                var idx = _items.FindIndex(x => string.Equals(x.Id, "MOCK_DEFAULT", StringComparison.OrdinalIgnoreCase));
-                _items[idx] = rule;
-            }
-            PersistAll();
-        }
-    }
+    public MockRuleStore(RcsProtocolTemplateStore templates) => _templates = templates;
 
     /// <summary>是否存在启用的任务阶段卡（BoardSync=true，URL 任意）——无此卡时禁止下发任务。</summary>
     public bool HasTaskStageRule()
     {
-        lock (_lock) return _items.Any(r => r.Enabled && r.BoardSync);
+        return GetAll().Any(r => r.Enabled && r.BoardSync);
     }
 
     public List<MockRuleDto> GetAll()
     {
-        lock (_lock) return _items.ToList();
+        return _templates.GetActive().MockRules;
     }
 
     public void ReplaceAll(IEnumerable<MockRuleDto> items)
     {
-        lock (_lock)
-        {
-            _items = items?.ToList() ?? [];
-            EnforceSingleBoardSync();
-            PersistAll();
-        }
-    }
-
-    /// <summary>任务阶段卡（BoardSync）最多一张：保留第一张，其余强制关闭（防多卡争抢看板数据）；且与「需审批」互斥。</summary>
-    private void EnforceSingleBoardSync()
-    {
-        var first = _items.FirstOrDefault(x => x.BoardSync);
-        if (first == null) return;
-        foreach (var r in _items)
-        {
-            if (!ReferenceEquals(r, first)) r.BoardSync = false;
-            if (r.BoardSync) r.RequiresApproval = false;
-        }
+        _templates.ReplaceActiveMockRules(items ?? []);
     }
 
     public bool Remove(string id)
     {
-        lock (_lock)
-        {
-            var n = _items.RemoveAll(x => string.Equals(x.Id, id, StringComparison.OrdinalIgnoreCase));
-            if (n > 0)
-            {
-                using var uow = _uow.Create();
-                uow.Repository<MockRuleRow>().DeleteWhereAsync(x => x.Id == id).GetAwaiter().GetResult();
-                uow.CommitAsync().GetAwaiter().GetResult();
-            }
-            return n > 0;
-        }
+        return _templates.RemoveActiveMockRule(id);
     }
 
     /// <summary>按优先级匹配首条命中规则（Enabled 且 Method+Path 匹配且所有 Matcher 满足）。</summary>
     public MockRuleDto? Match(string method, string path, IQueryCollection query, string? bodyJson)
     {
-        List<MockRuleDto> snapshot;
-        lock (_lock) snapshot = _items.Where(r => r.Enabled).OrderByDescending(r => r.Priority).ThenBy(r => r.Id).ToList();
+        var snapshot = GetAll().Where(r => r.Enabled).OrderByDescending(r => r.Priority).ThenBy(r => r.Id).ToList();
         foreach (var rule in snapshot)
         {
             if (!string.Equals(rule.Method, method, StringComparison.OrdinalIgnoreCase) && rule.Method != "*") continue;
@@ -126,8 +46,7 @@ public class MockRuleStore
     /// <summary>未命中诊断：对 Method+Path 匹配的候选卡，返回第一个不满足的匹配条件及实际值（便于排查 404 原因）。</summary>
     public string? Diagnose(string method, string path, IQueryCollection query, string? bodyJson)
     {
-        List<MockRuleDto> snapshot;
-        lock (_lock) snapshot = _items.Where(r => r.Enabled).OrderByDescending(r => r.Priority).ThenBy(r => r.Id).ToList();
+        var snapshot = GetAll().Where(r => r.Enabled).OrderByDescending(r => r.Priority).ThenBy(r => r.Id).ToList();
         Newtonsoft.Json.Linq.JObject? body = null;
         if (!string.IsNullOrEmpty(bodyJson))
         {
@@ -161,16 +80,6 @@ public class MockRuleStore
             }
         }
         return null;
-    }
-
-    private void PersistAll()
-    {
-        using var uow = _uow.Create();
-        var repo = uow.Repository<MockRuleRow>();
-        repo.DeleteWhereAsync(_ => true).GetAwaiter().GetResult();
-        foreach (var dto in _items)
-            repo.AddAsync(dto.Adapt<MockRuleRow>()).GetAwaiter().GetResult();
-        uow.CommitAsync().GetAwaiter().GetResult();
     }
 
     private static bool IsPathMatch(string pattern, string path)

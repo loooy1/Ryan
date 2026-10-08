@@ -117,47 +117,6 @@ namespace WCSBackend.Migrations
                     b.ToTable("exception_records", (string)null);
                 });
 
-            modelBuilder.Entity("Contracts.Entities.FeatureModuleRow", b =>
-                {
-                    b.Property<string>("Id")
-                        .HasColumnType("varchar(255)")
-                        .HasColumnName("module_id");
-
-                    b.Property<string>("ApiUrl")
-                        .IsRequired()
-                        .HasColumnType("longtext")
-                        .HasColumnName("api_url");
-
-                    b.Property<string>("InventoryEffect")
-                        .IsRequired()
-                        .HasColumnType("longtext")
-                        .HasColumnName("inventory_effect");
-
-                    b.Property<string>("Name")
-                        .IsRequired()
-                        .HasColumnType("longtext")
-                        .HasColumnName("name");
-
-                    b.Property<string>("Params")
-                        .IsRequired()
-                        .HasColumnType("longtext")
-                        .HasColumnName("params_json");
-
-                    b.Property<string>("PreExecutionEffect")
-                        .IsRequired()
-                        .HasColumnType("longtext")
-                        .HasColumnName("pre_execution_effect");
-
-                    b.Property<string>("UpdatedAt")
-                        .IsRequired()
-                        .HasColumnType("longtext")
-                        .HasColumnName("updated_at");
-
-                    b.HasKey("Id");
-
-                    b.ToTable("feature_modules", (string)null);
-                });
-
             modelBuilder.Entity("Contracts.Entities.KvRow", b =>
                 {
                     b.Property<string>("Key")
@@ -240,91 +199,6 @@ namespace WCSBackend.Migrations
                     b.HasKey("Key");
 
                     b.ToTable("mock_request_events", (string)null);
-                });
-
-            modelBuilder.Entity("Contracts.Entities.MockRuleRow", b =>
-                {
-                    b.Property<string>("Id")
-                        .HasColumnType("varchar(255)")
-                        .HasColumnName("rule_id");
-
-                    b.Property<bool>("AlsoRecord")
-                        .HasColumnType("tinyint(1)")
-                        .HasColumnName("also_record");
-
-                    b.Property<string>("ApprovalFalseValue")
-                        .IsRequired()
-                        .HasColumnType("longtext")
-                        .HasColumnName("approval_false_value");
-
-                    b.Property<string>("ApprovalTrueValue")
-                        .IsRequired()
-                        .HasColumnType("longtext")
-                        .HasColumnName("approval_true_value");
-
-                    b.Property<string>("ApprovalVariable")
-                        .IsRequired()
-                        .HasColumnType("longtext")
-                        .HasColumnName("approval_variable");
-
-                    b.Property<bool>("BoardSync")
-                        .HasColumnType("tinyint(1)")
-                        .HasColumnName("board_sync");
-
-                    b.Property<string>("Description")
-                        .IsRequired()
-                        .HasColumnType("longtext")
-                        .HasColumnName("description");
-
-                    b.Property<bool>("Enabled")
-                        .HasColumnType("tinyint(1)")
-                        .HasColumnName("enabled");
-
-                    b.Property<string>("Matchers")
-                        .IsRequired()
-                        .HasColumnType("longtext")
-                        .HasColumnName("matchers_json");
-
-                    b.Property<string>("Method")
-                        .IsRequired()
-                        .HasColumnType("longtext")
-                        .HasColumnName("method");
-
-                    b.Property<string>("Name")
-                        .IsRequired()
-                        .HasColumnType("longtext")
-                        .HasColumnName("name");
-
-                    b.Property<string>("PathPattern")
-                        .IsRequired()
-                        .HasColumnType("longtext")
-                        .HasColumnName("path_pattern");
-
-                    b.Property<int>("Priority")
-                        .HasColumnType("int")
-                        .HasColumnName("priority");
-
-                    b.Property<bool>("RequiresApproval")
-                        .HasColumnType("tinyint(1)")
-                        .HasColumnName("requires_approval");
-
-                    b.Property<string>("ResponseBody")
-                        .IsRequired()
-                        .HasColumnType("longtext")
-                        .HasColumnName("response_body");
-
-                    b.Property<int>("ResponseCode")
-                        .HasColumnType("int")
-                        .HasColumnName("response_code");
-
-                    b.Property<string>("UpdatedAt")
-                        .IsRequired()
-                        .HasColumnType("longtext")
-                        .HasColumnName("updated_at");
-
-                    b.HasKey("Id");
-
-                    b.ToTable("mock_rules", (string)null);
                 });
 
             modelBuilder.Entity("Contracts.Entities.ModuleExecLogRow", b =>
@@ -566,6 +440,11 @@ namespace WCSBackend.Migrations
                         .HasColumnType("longtext")
                         .HasColumnName("updated_at");
 
+                    b.Property<string>("WorkflowSteps")
+                        .IsRequired()
+                        .HasColumnType("longtext")
+                        .HasColumnName("workflow_json");
+
                     b.HasKey("Value");
 
                     b.ToTable("task_templates", (string)null);
@@ -643,6 +522,200 @@ namespace WCSBackend.Migrations
                         .HasDatabaseName("idx_slot_pallet");
 
                     b.ToTable("wcs_slots", (string)null);
+                });
+
+            modelBuilder.Entity("WCSBackend.Modules.Wcs.Infrastructure.Persistence.Entities.RcsFeatureModuleRow", b =>
+                {
+                    b.Property<string>("RcsType")
+                        .HasMaxLength(64)
+                        .HasColumnType("varchar(64)")
+                        .HasColumnName("rcs_type");
+
+                    b.Property<string>("Id")
+                        .HasMaxLength(255)
+                        .HasColumnType("varchar(255)")
+                        .HasColumnName("module_id");
+
+                    b.Property<string>("ApiUrl")
+                        .IsRequired()
+                        .HasColumnType("longtext")
+                        .HasColumnName("api_url");
+
+                    b.Property<string>("BaseUrl")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(2048)
+                        .HasColumnType("varchar(2048)")
+                        .HasDefaultValue("")
+                        .HasColumnName("base_url");
+
+                    b.Property<string>("HttpMethod")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(16)
+                        .HasColumnType("varchar(16)")
+                        .HasDefaultValue("POST")
+                        .HasColumnName("http_method");
+
+                    b.Property<string>("InventoryEffect")
+                        .IsRequired()
+                        .HasColumnType("longtext")
+                        .HasColumnName("inventory_effect");
+
+                    b.Property<bool>("IsActive")
+                        .HasColumnType("tinyint(1)")
+                        .HasColumnName("is_active");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasColumnType("longtext")
+                        .HasColumnName("name");
+
+                    b.Property<string>("Params")
+                        .IsRequired()
+                        .HasColumnType("longtext")
+                        .HasColumnName("params_json");
+
+                    b.Property<string>("PreExecutionEffect")
+                        .IsRequired()
+                        .HasColumnType("longtext")
+                        .HasColumnName("pre_execution_effect");
+
+                    b.Property<string>("ProfileName")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(255)
+                        .HasColumnType("varchar(255)")
+                        .HasDefaultValue("")
+                        .HasColumnName("profile_name");
+
+                    b.Property<string>("RequestBodyTemplate")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("longtext")
+                        .HasDefaultValue("")
+                        .HasColumnName("request_body_template");
+
+                    b.Property<string>("SuccessProperty")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("longtext")
+                        .HasDefaultValue("")
+                        .HasColumnName("success_property");
+
+                    b.Property<string>("SuccessValue")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(255)
+                        .HasColumnType("varchar(255)")
+                        .HasDefaultValue("true")
+                        .HasColumnName("success_value");
+
+                    b.Property<int>("TimeoutSeconds")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int")
+                        .HasDefaultValue(10)
+                        .HasColumnName("timeout_seconds");
+
+                    b.Property<string>("UpdatedAt")
+                        .IsRequired()
+                        .HasColumnType("longtext")
+                        .HasColumnName("updated_at");
+
+                    b.HasKey("RcsType", "Id");
+
+                    b.ToTable("feature_modules", (string)null);
+                });
+
+            modelBuilder.Entity("WCSBackend.Modules.Wcs.Infrastructure.Persistence.Entities.RcsMockRuleRow", b =>
+                {
+                    b.Property<string>("RcsType")
+                        .HasMaxLength(64)
+                        .HasColumnType("varchar(64)")
+                        .HasColumnName("rcs_type");
+
+                    b.Property<string>("Id")
+                        .HasMaxLength(255)
+                        .HasColumnType("varchar(255)")
+                        .HasColumnName("rule_id");
+
+                    b.Property<bool>("AlsoRecord")
+                        .HasColumnType("tinyint(1)")
+                        .HasColumnName("also_record");
+
+                    b.Property<string>("ApprovalFalseValue")
+                        .IsRequired()
+                        .HasColumnType("longtext")
+                        .HasColumnName("approval_false_value");
+
+                    b.Property<string>("ApprovalTrueValue")
+                        .IsRequired()
+                        .HasColumnType("longtext")
+                        .HasColumnName("approval_true_value");
+
+                    b.Property<string>("ApprovalVariable")
+                        .IsRequired()
+                        .HasColumnType("longtext")
+                        .HasColumnName("approval_variable");
+
+                    b.Property<bool>("BoardSync")
+                        .HasColumnType("tinyint(1)")
+                        .HasColumnName("board_sync");
+
+                    b.Property<string>("Description")
+                        .IsRequired()
+                        .HasColumnType("longtext")
+                        .HasColumnName("description");
+
+                    b.Property<bool>("Enabled")
+                        .HasColumnType("tinyint(1)")
+                        .HasColumnName("enabled");
+
+                    b.Property<string>("Matchers")
+                        .IsRequired()
+                        .HasColumnType("longtext")
+                        .HasColumnName("matchers_json");
+
+                    b.Property<string>("Method")
+                        .IsRequired()
+                        .HasColumnType("longtext")
+                        .HasColumnName("method");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasColumnType("longtext")
+                        .HasColumnName("name");
+
+                    b.Property<string>("PathPattern")
+                        .IsRequired()
+                        .HasColumnType("longtext")
+                        .HasColumnName("path_pattern");
+
+                    b.Property<int>("Priority")
+                        .HasColumnType("int")
+                        .HasColumnName("priority");
+
+                    b.Property<bool>("RequiresApproval")
+                        .HasColumnType("tinyint(1)")
+                        .HasColumnName("requires_approval");
+
+                    b.Property<string>("ResponseBody")
+                        .IsRequired()
+                        .HasColumnType("longtext")
+                        .HasColumnName("response_body");
+
+                    b.Property<int>("ResponseCode")
+                        .HasColumnType("int")
+                        .HasColumnName("response_code");
+
+                    b.Property<string>("UpdatedAt")
+                        .IsRequired()
+                        .HasColumnType("longtext")
+                        .HasColumnName("updated_at");
+
+                    b.HasKey("RcsType", "Id");
+
+                    b.ToTable("mock_rules", (string)null);
                 });
 #pragma warning restore 612, 618
         }

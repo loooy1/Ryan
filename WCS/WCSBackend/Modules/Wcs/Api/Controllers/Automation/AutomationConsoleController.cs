@@ -26,6 +26,7 @@ public class AutomationConsoleController : ControllerBase
     private readonly AutomationLogService _logs;
     private readonly RangeConfigService _rangeConfig;
     private readonly WcsSettingsService _settings;
+    private readonly RcsProtocolTemplateStore _rcsProtocols;
     private readonly MoveLoopRunner _moveLoop;
     private readonly NestRunner _nest;
     private readonly NestConfigService _nestConfig;
@@ -37,6 +38,7 @@ public class AutomationConsoleController : ControllerBase
     public AutomationConsoleController(AutoTemplateRunner auto, AutoTemplateStore templates, AutomationLogService logs,
         RangeConfigService rangeConfig, WcsSettingsService settings,
         MoveLoopRunner moveLoop, NestRunner nest, NestConfigService nestConfig, GrcsHttpClient grcs, WcsInventoryStore inventory,
+        RcsProtocolTemplateStore rcsProtocols,
         ITaskStageService taskStages, IHubContext<TaskStageRealtimeHub> hub)
     {
         _auto = auto;
@@ -44,6 +46,7 @@ public class AutomationConsoleController : ControllerBase
         _logs = logs;
         _rangeConfig = rangeConfig;
         _settings = settings;
+        _rcsProtocols = rcsProtocols;
         _moveLoop = moveLoop;
         _nest = nest;
         _nestConfig = nestConfig;
@@ -270,6 +273,7 @@ public class AutomationConsoleController : ControllerBase
     public ActionResult<object> SaveSettings([FromBody] WcsSettingsDto settings)
     {
         _settings.Set(settings);
+        _rcsProtocols.UpdateActiveBaseUrl(settings.GrcsBaseUrl);
         _ = _hub.Clients.All.SendAsync("ConfigurationChanged", "settings");
         return Ok(new { success = true });
     }
