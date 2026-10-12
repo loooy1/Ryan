@@ -333,7 +333,7 @@ public class TaskDispatcher
         }
         var bits = tpl.End?.StationTypeBits ?? 0;
         if (bits != 0) return RandomPick(station => (station.StationType & bits) != 0 && Free(station));
-        var value = $"{tpl.Value} {tpl.Category} {tpl.Label}".ToLowerInvariant();
+        var value = $"{tpl.Value} {tpl.Label}".ToLowerInvariant();
         if (value.Contains("sort") || value.Contains("\u5206\u62e3"))
             return RandomPick(s => (s.StationType & MapStationTypeBits.PickingStation) != 0 && Free(s))
                 ?? RandomPick(s => (s.StationType & MapStationTypeBits.TransferPoint) != 0 && Free(s))

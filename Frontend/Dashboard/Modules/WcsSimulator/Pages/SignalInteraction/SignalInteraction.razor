@@ -144,6 +144,14 @@
                     <div class="mod-card-url">@m.ApiUrl</div>
                     <div class="mod-card-meta">
                         <span class="badge-info">@m.HttpMethod</span>
+                        @if (m.TaskInterfaceType == TaskInterfaceTypes.Carry)
+                        {
+                            <span class="badge-warning">搬运任务接口</span>
+                        }
+                        else if (m.TaskInterfaceType == TaskInterfaceTypes.Move)
+                        {
+                            <span class="badge-warning">移动任务接口</span>
+                        }
                         @if (IsRequiredTaskTemplate(m.Id))
                         {
                             <span class="badge-warning">任务下发模板</span>
@@ -328,6 +336,15 @@
 
                 <div class="tpl-modal-body">
                     <div class="form-grid2">
+                        <div class="form-group" style="grid-column:1/-1;">
+                            <label>任务下发接口</label>
+                            <div style="display:flex;gap:8px;flex-wrap:wrap;">
+                                <button type="button" class="btn btn-outline btn-xs" @onclick="() => SetTaskInterfaceType(TaskInterfaceTypes.None)">不设为任务接口</button>
+                                <button type="button" class="btn @(m.TaskInterfaceType == TaskInterfaceTypes.Carry ? "btn-primary" : "btn-outline") btn-xs" @onclick="() => SetTaskInterfaceType(TaskInterfaceTypes.Carry)">@(m.TaskInterfaceType == TaskInterfaceTypes.Carry ? "✓ 搬运任务接口" : "设置为搬运任务接口")</button>
+                                <button type="button" class="btn @(m.TaskInterfaceType == TaskInterfaceTypes.Move ? "btn-primary" : "btn-outline") btn-xs" @onclick="() => SetTaskInterfaceType(TaskInterfaceTypes.Move)">@(m.TaskInterfaceType == TaskInterfaceTypes.Move ? "✓ 移动任务接口" : "设置为移动任务接口")</button>
+                            </div>
+                            <span class="hint-text">同一 RCS 模板中，每种任务接口只能指定一个功能模板；未指定时，相应任务将被拒绝下发。</span>
+                        </div>
                         <div class="form-group">
                             <label>名称 <span class="req-star">*</span></label>
                             <input type="text" @bind="m.Name" placeholder="如：出库-接驳位移除" />
@@ -773,9 +790,11 @@
         _ => effect,
     };
 
-    private static bool IsRequiredTaskTemplate(string? id)
+    private bool IsRequiredTaskTemplate(string? id)
         => string.Equals(id, "task.carry", StringComparison.OrdinalIgnoreCase)
-            || string.Equals(id, "task.move", StringComparison.OrdinalIgnoreCase);
+            || string.Equals(id, "task.move", StringComparison.OrdinalIgnoreCase)
+            || ModuleRegistry.All.Any(module => string.Equals(module.Id, id, StringComparison.OrdinalIgnoreCase)
+                && !string.IsNullOrWhiteSpace(module.TaskInterfaceType));
 
     /// <summary>创建新模块：生成唯一 Id、默认名称/API/参数，并打开编辑弹窗。</summary>
     private void CreateModule()
@@ -808,6 +827,7 @@
         {
             Id = m.Id,
             Name = m.Name,
+            TaskInterfaceType = m.TaskInterfaceType,
             ApiUrl = m.ApiUrl,
             HttpMethod = m.HttpMethod,
             RequestBodyTemplate = m.RequestBodyTemplate,
@@ -839,6 +859,12 @@
         StateHasChanged();
     }
 
+    private void SetTaskInterfaceType(string role)
+    {
+        if (_moduleDraft is null) return;
+        _moduleDraft.TaskInterfaceType = role;
+    }
+
     private async Task SaveModuleEdit()
     {
         if (_moduleDraft is null) return;
@@ -847,10 +873,18 @@
         if (string.IsNullOrWhiteSpace(d.Name)) { _moduleError = "❌ 模块名称不能为空"; return; }
         if (string.IsNullOrWhiteSpace(d.ApiUrl)) { _moduleError = "❌ API 地址不能为空"; return; }
 
+        d.TaskInterfaceType = d.TaskInterfaceType?.Trim().ToUpperInvariant() switch
+        {
+            TaskInterfaceTypes.Carry => TaskInterfaceTypes.Carry,
+            TaskInterfaceTypes.Move => TaskInterfaceTypes.Move,
+            _ => TaskInterfaceTypes.None,
+        };
+
         if (_editingModule is not null)
         {
             // 更新已有模块
             _editingModule.Name = d.Name.Trim();
+            _editingModule.TaskInterfaceType = d.TaskInterfaceType;
             _editingModule.ApiUrl = d.ApiUrl.Trim();
             _editingModule.HttpMethod = d.HttpMethod;
             _editingModule.RequestBodyTemplate = d.RequestBodyTemplate;
@@ -869,6 +903,12 @@
                 _moduleError = "❌ 模块 Id 冲突，请重试";
                 return;
             }
+        }
+        if (!string.IsNullOrWhiteSpace(d.TaskInterfaceType))
+        {
+            foreach (var other in ModuleRegistry.All.Where(m => !string.Equals(m.Id, d.Id, StringComparison.OrdinalIgnoreCase)
+                && string.Equals(m.TaskInterfaceType, d.TaskInterfaceType, StringComparison.OrdinalIgnoreCase)))
+                other.TaskInterfaceType = TaskInterfaceTypes.None;
         }
         await SaveModules();
         _editingModule = null;

@@ -81,15 +81,13 @@
                     </div>
                 }
                 <div class="tt-card-head">
-                    <span class="tt-card-icon">@CategoryIcon(tt.Category)</span>
+                    <span class="tt-card-icon">📦</span>
                     <span class="chip-title">@tt.Label</span>
                 </div>
-                <div class="chip-desc">@tt.Description</div>
                 <div class="tt-card-foot">
                     <code class="chip-type-code">@tt.Value</code>
                 </div>
                 <div class="tt-card-meta">
-                    <span class="badge-info">@CategoryName(tt.Category)</span>
             @if (tt.NeedsContainer)
             {
                 <span class="badge-selected">需容器</span>
@@ -274,7 +272,7 @@
     {
 
     <div class="hint-text">
-        MOVE_ONLY 支持多站点，车辆将按顺序依次前往每个目标站点执行纯移动任务；
+        MOVE_ONLY 只需指定终点，RCS 根据车辆当前位置规划路径；
         不指定车辆时由调度器自动匹配空闲车辆；优先级 ≤10 时转为停车待命（Standby）。
     </div>
 
@@ -303,60 +301,34 @@
 
     <div style="border-top:1px solid #334155;margin:14px 0;padding-top:14px;"></div>
 
-    <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;">
-        <span style="font-weight:600;font-size:0.85rem;">目标站点</span>
-        <button class="btn btn-primary btn-sm" @onclick="AddVehicleStation">+ 添加站点</button>
-    </div>
-
-    <div style="display:flex;flex-direction:column;gap:8px;">
-        @for (int j = 0; j < _stations.Count; j++)
-        {
-            var sj = j;
-            <div style="display:flex;gap:8px;align-items:center;">
-                <span class="station-label">站点 @(sj+1)</span>
-                <div style="position:relative;flex:1;display:flex;min-width:0;">
-                    <input type="text" value="@_stations[sj]"
-                           @oninput="(e) => OnVehicleStationInput(sj, e)"
-                           @onfocus="() => OpenVehiclePicker(sj)"
-                           placeholder="输入搜索 / 选择站点编码"
-                           style="flex:1;border-top-right-radius:0;border-bottom-right-radius:0;min-width:0;">
-                    <button type="button" class="picker-toggle" @onclick="() => ToggleVehiclePicker(sj)" title="选择站点">▾</button>
-                    @if (_openVehiclePicker == sj)
+    <div class="form-group" style="margin:0;max-width:520px;">
+        <label>终点站点</label>
+        <div style="position:relative;display:flex;min-width:0;">
+            <input type="text" value="@_endStation" @oninput="OnVehicleStationInput" @onfocus="OpenVehiclePicker" placeholder="输入搜索 / 选择终点站点编码" style="flex:1;border-top-right-radius:0;border-bottom-right-radius:0;min-width:0;">
+            <button type="button" class="picker-toggle" @onclick="ToggleVehiclePicker" title="选择终点站点">&#9662;</button>
+            @if (_vehiclePickerOpen)
+            {
+                <div class="picker-overlay" @onclick="CloseVehiclePicker"></div>
+                <div class="picker-panel"><div class="picker-list">
+                    @if (string.IsNullOrWhiteSpace(_endStation))
                     {
-                        <div class="picker-overlay" @onclick="CloseVehiclePicker"></div>
-                        <div class="picker-panel">
-                            <div class="picker-list">
-                                @if (string.IsNullOrWhiteSpace(_stations[sj]))
-                                {
-                                    <div class="hint-text" style="padding:8px;">请输入关键词搜索站点</div>
-                                }
-                                else
-                                {
-                                    @foreach (var st in VehiclePickerResults(sj))
-                                    {
-                                        <div class="picker-item" @onclick="() => PickVehicleStation(sj, st)">
-                                            <span class="picker-mark">@st.Mark</span>
-                                            <span class="picker-type">@string.Join("+", MapStationTypeBits.DecodeNames(st.StationType))</span>
-                                        </div>
-                                    }
-                                    @if (VehiclePickerResults(sj).Count == 0)
-                                    {
-                                        <div class="hint-text" style="padding:8px;">无匹配站点</div>
-                                    }
-                                }
-                            </div>
-                        </div>
+                        <div class="hint-text" style="padding:8px;">请输入关键词搜索终点站点</div>
                     }
-                </div>
-                @if (_stations.Count > 1)
-                {
-                    <button class="btn btn-danger btn-xs" @onclick="() => RemoveVehicleStation(sj)">✕</button>
-                }
-            </div>
-        }
+                    else
+                    {
+                        @foreach (var st in VehiclePickerResults())
+                        {
+                            <div class="picker-item" @onclick="() => PickVehicleStation(st)">
+                                <span class="picker-mark">@st.Mark</span>
+                                <span class="picker-type">@string.Join("+", MapStationTypeBits.DecodeNames(st.StationType))</span>
+                            </div>
+                        }
+                        @if (VehiclePickerResults().Count == 0) { <div class="hint-text" style="padding:8px;">无匹配站点</div> }
+                    }
+                </div></div>
+            }
+        </div>
     </div>
-
-    @* 操作按钮行 *@
     <div style="display:flex;gap:10px;align-items:center;margin-top:14px;flex-wrap:wrap;">
         <button class="btn btn-primary" @onclick="SendVehicleOrder" disabled="@_vehicleSending">
             @(_vehicleSending ? "⏳ 发送中..." : "🚚 下发车辆任务")
@@ -404,20 +376,6 @@
                         <div class="form-group">
                             <label>显示名称 Label <span class="req-star">*</span></label>
                             <input type="text" @bind="_draft.Label" placeholder="如 出库-段1：搬运带载">
-                        </div>
-                        <div class="form-group">
-                            <label>描述 Description</label>
-                            <input type="text" @bind="_draft.Description" placeholder="如 AMR库→输送线">
-                        </div>
-                        <div class="form-group">
-                            <label>分类 Category</label>
-                            <select @bind="_draft.Category">
-                                <option value="in">in（入库）</option>
-                                <option value="out">out（出库）</option>
-                                <option value="sort">sort（分拣）</option>
-                                <option value="move">move（移库）</option>
-                                <option value="other">other（其他）</option>
-                            </select>
                         </div>
                     </div>
                     <div class="tpl-container-box">
@@ -829,26 +787,6 @@
     // ════════════ 模板注册表 / 弹窗 ════════════
     private TaskTemplateDto? SelectedTemplate => TaskTypeRegistry.All.FirstOrDefault(t => t.Value == _selectedType);
 
-    /// <summary>分类图标（任务类型卡片头部）。</summary>
-    private static string CategoryIcon(string category) => category.Trim().ToLowerInvariant() switch
-    {
-        "in" => "📥",
-        "out" => "📤",
-        "sort" => "🔀",
-        "move" => "🔄",
-        _ => "📦"
-    };
-
-    /// <summary>分类中文名（任务类型卡片元信息）。</summary>
-    private static string CategoryName(string category) => category.Trim().ToLowerInvariant() switch
-    {
-        "in" => "入库",
-        "out" => "出库",
-        "sort" => "分拣",
-        "move" => "移库",
-        _ => "其他"
-    };
-
     /// <summary>下发表单第 sj 行站点输入框的标签：取自模板起点/终点 Label，未配置时回退默认。</summary>
     private string PointLabel(int sj)
     {
@@ -877,8 +815,6 @@
         {
             Value = tt.Value,
             Label = tt.Label,
-            Description = tt.Description,
-            Category = tt.Category,
             NeedsContainer = tt.NeedsContainer,
             ContainerPrefix = tt.ContainerPrefix,
             RandomContainer = tt.RandomContainer,
@@ -1070,8 +1006,6 @@
         {
             Value = value,
             Label = label,
-            Description = _draft.Description.Trim(),
-            Category = string.IsNullOrWhiteSpace(_draft.Category) ? "other" : _draft.Category.Trim(),
             Start = new TaskPointDto { Label = "起点", StationTypeBits = _draft.Start.StationTypeBits },
             End = new TaskPointDto { Label = "终点", StationTypeBits = _draft.End.StationTypeBits },
             WorkflowSteps = _draft.WorkflowSteps.Select(step => new TaskWorkflowStepDto
@@ -1212,8 +1146,6 @@
     {
         public string Value { get; set; } = "";
         public string Label { get; set; } = "";
-        public string Description { get; set; } = "";
-        public string Category { get; set; } = "other";
         public TaskPointDto Start { get; set; } = new();
         public TaskPointDto End { get; set; } = new();
         public List<TaskWorkflowStepDto> WorkflowSteps { get; set; } = [new TaskWorkflowStepDto { Kind = TaskWorkflowStepKinds.Dispatch }];
@@ -1473,8 +1405,13 @@
         var ok = sendResult.Ok;
         var code = sendResult.Code;
         var json = sendResult.Json;
-        Console.WriteLine($"[TaskDispatch] task/send 结果: ok={ok} code={code} resp={json}");
-        var resp = (ok ? "✅" : "❌") + $" HTTP {code}\n\n{json}";
+        var requestJson = System.Text.Json.JsonSerializer.Serialize(payload,
+            new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web) { WriteIndented = true });
+        var outboundBody = string.IsNullOrWhiteSpace(sendResult.RequestBody)
+            ? "(尚未生成 RCS 协议请求体；任务可能在前置校验或业务模板阶段失败)"
+            : sendResult.RequestBody;
+        Console.WriteLine($"[TaskDispatch] task/send 结果: ok={ok} code={code} WCS请求体={requestJson} RCS请求体={outboundBody} resp={json}");
+        var resp = (ok ? "✅" : "❌") + $" HTTP {code}\n\nWCS → RCS 模板接口请求体:\n{requestJson}\n\n实际发送给 RCS 的协议请求体:\n{outboundBody}\n\nRCS 响应:\n{json}";
         // 模块明细（起点/起点之后/终点）统一在后端执行，结果见「信号交互 → 模块执行记录」面板。
         ShowResp(resp, ok ? "success" : "error");
         if (!ok) ShowNotice(json ?? "下发任务失败，请查看响应面板");
@@ -1518,16 +1455,16 @@
     private string _orderName = "";                        // 任务名称
     private string _vehicleName = "";                      // 指定车辆（留空=自动分配）
     private int _vehiclePriority = 50;                     // 车辆任务优先级
-    private List<string> _stations = [""];                 // 目标站点列表
+    private string _endStation = "";
     private bool _vehicleSending;                          // 车辆任务发送中标志
-    private int _openVehiclePicker = -1;                   // 展开的站点选择器行（-1=无）
+    private bool _vehiclePickerOpen;
     private string _vehicleRespText = "等待发送任务...";   // 移动任务响应面板文字
     private string _vehicleRespClass = "";                 // 移动任务响应面板样式
 
     /// <summary>车辆站点选择器候选项：启用站点 + 关键词过滤编码或类型名。</summary>
-    private List<MapStationLite> VehiclePickerResults(int idx)
+    private List<MapStationLite> VehiclePickerResults()
     {
-        var keyword = idx >= 0 && idx < _stations.Count ? _stations[idx] : "";
+        var keyword = _endStation;
         return _mapStations
             .Where(s => s.StaEnable)
             .Where(s => keyword == ""
@@ -1536,17 +1473,15 @@
             .ToList();
     }
 
-    private void OnVehicleStationInput(int idx, ChangeEventArgs e)
+    private void OnVehicleStationInput(ChangeEventArgs e)
     {
-        _stations[idx] = e.Value?.ToString() ?? "";
-        if (_openVehiclePicker != idx) _openVehiclePicker = idx;
+        _endStation = e.Value?.ToString() ?? "";
+        _vehiclePickerOpen = true;
     }
-    private void OpenVehiclePicker(int idx) => _openVehiclePicker = idx;
-    private void ToggleVehiclePicker(int idx) => _openVehiclePicker = _openVehiclePicker == idx ? -1 : idx;
-    private void CloseVehiclePicker() => _openVehiclePicker = -1;
-    private void PickVehicleStation(int idx, MapStationLite st) { _stations[idx] = st.Mark; _openVehiclePicker = -1; }
-    private void AddVehicleStation() => _stations.Add("");
-    private void RemoveVehicleStation(int i) => _stations.RemoveAt(i);
+    private void OpenVehiclePicker() => _vehiclePickerOpen = true;
+    private void ToggleVehiclePicker() => _vehiclePickerOpen = !_vehiclePickerOpen;
+    private void CloseVehiclePicker() => _vehiclePickerOpen = false;
+    private void PickVehicleStation(MapStationLite st) { _endStation = st.Mark; _vehiclePickerOpen = false; }
 
     /// <summary>更新移动任务响应面板内容。</summary>
     private void ShowVehicleResp(string msg, string cls)
@@ -1560,8 +1495,12 @@
     {
         if (string.IsNullOrEmpty(_orderId)) { ShowVehicleResp("❌ 任务 ID 为空", "error"); return; }
 
-        var stations = _stations.Where(s => !string.IsNullOrWhiteSpace(s)).ToList();
-        if (stations.Count == 0) { ShowVehicleResp("❌ 请至少填写一个站点", "error"); return; }
+        var endStation = _endStation.Trim();
+        if (string.IsNullOrWhiteSpace(endStation))
+        {
+            ShowVehicleResp("\u274c \u8bf7\u586b\u5199\u7ec8\u70b9\u7ad9\u70b9", "error"); return;
+        }
+        var stations = new List<string> { endStation };
 
         // 有地图数据时校验站点必须精确存在
         if (_mapStations.Count > 0)
@@ -1592,8 +1531,18 @@
         _vehicleSending = true;
         StateHasChanged();
 
-        var (ok, code, json) = await Api.SendVehicleOrderAsync("", payload);
-        ShowVehicleResp((ok ? "✅" : "❌") + $" HTTP {code}\n\n{json}", ok ? "success" : "error");
+        var sendResult = await Api.SendVehicleOrderAsync("", payload);
+        var ok = sendResult.Ok;
+        var code = sendResult.Code;
+        var json = sendResult.Json;
+        var requestJson = System.Text.Json.JsonSerializer.Serialize(payload,
+            new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web) { WriteIndented = true });
+        var outboundBody = string.IsNullOrWhiteSpace(sendResult.RequestBody)
+            ? "(后端未返回实际 RCS 协议请求体；请求可能在接口校验阶段失败)"
+            : sendResult.RequestBody;
+        var responseText = (ok ? "✅" : "❌") + $" HTTP {code}\n\nWCS → 后端代理请求体:\n{requestJson}\n\n实际发送给 RCS 的协议请求体:\n{outboundBody}\n\nRCS 响应:\n{json}";
+        Console.WriteLine($"[TaskDispatch] 移动任务下发: ok={ok} code={code} WCS请求体={requestJson} RCS请求体={outboundBody} response={json}");
+        ShowVehicleResp(responseText, ok ? "success" : "error");
 
         _vehicleSending = false;
 
@@ -1608,7 +1557,7 @@
         _orderName = "";
         _vehicleName = "";
         _vehiclePriority = 50;
-        _stations = [""];
+        _endStation = "";
         ShowVehicleResp("等待发送任务...", "");
     }
 

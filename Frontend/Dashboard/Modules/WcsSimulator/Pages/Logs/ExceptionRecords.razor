@@ -109,10 +109,10 @@
                             <th style="width:150px;">发生时间</th>
                             <th style="width:110px;">车号</th>
                             <th>现象</th>
-                            <th>原因</th>
                             <th>进度</th>
                             <th style="width:100px;">责任部门</th>
                             <th style="width:100px;">状态</th>
+                            <th>研发/实施回复</th>
                             <th style="width:130px;">复现时间</th>
                             <th style="width:70px;">复现次数</th>
                             <th style="width:170px;">操作</th>
@@ -148,7 +148,6 @@
                                     }
                                 </td>
                                 <td style="max-width:15em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="@r.Phenomenon">@r.Phenomenon</td>
-                                <td style="max-width:15em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="@r.Reason">@(string.IsNullOrEmpty(r.Reason) ? "—" : r.Reason)</td>
                                 <td>@(string.IsNullOrEmpty(r.Progress) ? "—" : r.Progress)</td>
                                 <td>
                                     <span class="badge-info" style="background:@(DeptColor(r.ResponsibleDept).bg);color:@(DeptColor(r.ResponsibleDept).fg);">
@@ -160,6 +159,7 @@
                                         @StatusMeta(r.Status).label
                                     </span>
                                 </td>
+                                <td style="max-width:15em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="@r.Reason">@(string.IsNullOrEmpty(r.Reason) ? "—" : r.Reason)</td>
                                 <td style="font-family:Consolas,monospace;">@(r.ReproducedAt ?? "—")</td>
                                 <td style="font-weight:600;">@r.ReproduceCount</td>
                                 <td>
@@ -248,8 +248,8 @@
                     <textarea @bind="_editPhenomenon" rows="3" placeholder="异常表现，如：AGV-01 停止不动、后台报错等"></textarea>
                 </div>
                 <div class="form-group">
-                    <label>原因</label>
-                    <textarea @bind="_editReason" rows="3" placeholder="原因分析（可空）"></textarea>
+                    <label>研发/实施回复</label>
+                    <textarea @bind="_editReason" rows="3" placeholder="填写研发/实施回复（可空）"></textarea>
                 </div>
                 <div class="form-group">
                     <label>进度</label>
@@ -672,7 +672,7 @@ private void ResetSearch()
             using var wb = new XLWorkbook();
             var ws = wb.Worksheets.Add("异常记录");
             var projTitle = SafeFileName(string.IsNullOrEmpty(_currentProject) ? "项目" : _currentProject);
-            var headers = new[] { "序号", "发生时间", "车号", "现象", "原因", "进度", "责任部门", "是否解决", "复现时间", "复现次数" };
+            var headers = new[] { "序号", "发生时间", "车号", "现象", "进度", "责任部门", "是否解决", "研发/实施回复", "复现时间", "复现次数" };
             ws.Cell(1, 1).Value = $"{projTitle}_异常记录";
             ws.Range(1, 1, 1, headers.Length).Merge();
             ws.Cell(1, 1).Style.Font.Bold = true;
@@ -702,10 +702,10 @@ private void ResetSearch()
                 ws.Cell(row, 2).Value = r.HappenedAt;
                 ws.Cell(row, 3).Value = vehicles;
                 ws.Cell(row, 4).Value = r.Phenomenon;
-                ws.Cell(row, 5).Value = r.Reason ?? "";
-                ws.Cell(row, 6).Value = r.Progress ?? "";
-                ws.Cell(row, 7).Value = string.IsNullOrEmpty(r.ResponsibleDept) ? "—" : r.ResponsibleDept;
-                ws.Cell(row, 8).Value = StatusMeta(r.Status).label;
+                ws.Cell(row, 5).Value = r.Progress ?? "";
+                ws.Cell(row, 6).Value = string.IsNullOrEmpty(r.ResponsibleDept) ? "—" : r.ResponsibleDept;
+                ws.Cell(row, 7).Value = StatusMeta(r.Status).label;
+                ws.Cell(row, 8).Value = r.Reason ?? "";
                 ws.Cell(row, 9).Value = r.ReproducedAt ?? "—";
                 ws.Cell(row, 10).Value = r.ReproduceCount;
 
@@ -714,18 +714,18 @@ private void ResetSearch()
                 var (_, dcFg) = DeptColor(r.ResponsibleDept);
                 if (!string.IsNullOrEmpty(r.ResponsibleDept))
                 {
-                    ws.Cell(row, 7).Style.Font.FontColor = XLColor.FromHtml(dcFg);
-                    ws.Cell(row, 7).Style.Font.Bold = true;
+                ws.Cell(row, 6).Style.Font.FontColor = XLColor.FromHtml(dcFg);
+                ws.Cell(row, 6).Style.Font.Bold = true;
                 }
                 var (_, _, stFg) = StatusMeta(r.Status);
-                ws.Cell(row, 8).Style.Font.FontColor = XLColor.FromHtml(stFg);
-                ws.Cell(row, 8).Style.Font.Bold = true;
+                ws.Cell(row, 7).Style.Font.FontColor = XLColor.FromHtml(stFg);
+                ws.Cell(row, 7).Style.Font.Bold = true;
                 ws.Cell(row, 1).Style.Alignment.Horizontal = XLAlignmentHorizontalValues.Center;
                 ws.Cell(row, 2).Style.Alignment.Horizontal = XLAlignmentHorizontalValues.Center;
                 ws.Cell(row, 2).Style.Font.FontName = "Consolas";
                 ws.Cell(row, 3).Style.Alignment.Horizontal = XLAlignmentHorizontalValues.Center;
+                ws.Cell(row, 6).Style.Alignment.Horizontal = XLAlignmentHorizontalValues.Center;
                 ws.Cell(row, 7).Style.Alignment.Horizontal = XLAlignmentHorizontalValues.Center;
-                ws.Cell(row, 8).Style.Alignment.Horizontal = XLAlignmentHorizontalValues.Center;
                 ws.Cell(row, 9).Style.Alignment.Horizontal = XLAlignmentHorizontalValues.Center;
                 ws.Cell(row, 9).Style.Font.FontName = "Consolas";
                 ws.Cell(row, 10).Style.Alignment.Horizontal = XLAlignmentHorizontalValues.Center;
@@ -747,18 +747,18 @@ private void ResetSearch()
             ws.Column(1).Width = 6;
             ws.Column(2).Width = 22;
             ws.Column(4).Width = 60;
-            ws.Column(5).Width = 45;
-            ws.Column(6).Width = 30;
+            ws.Column(5).Width = 30;
+            ws.Column(6).Width = 12;
             ws.Column(7).Width = 12;
-            ws.Column(8).Width = 12;
+            ws.Column(8).Width = 45;
             ws.Column(9).Width = 22;
             ws.Column(10).Width = 10;
             ws.Column(4).Style.Alignment.WrapText = true;
             ws.Column(5).Style.Alignment.WrapText = true;
-            ws.Column(6).Style.Alignment.WrapText = true;
+            ws.Column(8).Style.Alignment.WrapText = true;
             ws.Column(4).Style.Alignment.Vertical = XLAlignmentVerticalValues.Center;
             ws.Column(5).Style.Alignment.Vertical = XLAlignmentVerticalValues.Center;
-            ws.Column(6).Style.Alignment.Vertical = XLAlignmentVerticalValues.Center;
+            ws.Column(8).Style.Alignment.Vertical = XLAlignmentVerticalValues.Center;
 
             using var ms = new MemoryStream();
             wb.SaveAs(ms);

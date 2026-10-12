@@ -33,11 +33,11 @@ public class GrcsProxyController : ControllerBase
     }
 
     /// <summary>记录 WCS 前端实际提交的报文（排查用，含响应摘要）。</summary>
-    private void LogProxy(string endpoint, object payload, bool ok, int code, string json)
+    private void LogProxy(string endpoint, object payload, bool ok, int code, string json, string? outboundBody = null)
     {
         _logger.LogInformation(
-            "GRCS 代理 {Endpoint} 入站: {Payload} | 结果 ok={Ok} code={Code} 响应={Json}",
-            endpoint, JsonSerializer.Serialize(payload), ok, code, json);
+            "GRCS 代理 {Endpoint} 入站: {Payload} | 出站请求体: {OutboundBody} | 结果 ok={Ok} code={Code} 响应={Json}",
+            endpoint, JsonSerializer.Serialize(payload), outboundBody ?? "(无)", ok, code, json);
     }
 
     private string BaseUrl => _protocols.ResolveBaseUrl(_settings.Get().GrcsBaseUrl);
@@ -58,9 +58,10 @@ public class GrcsProxyController : ControllerBase
     public async Task<ActionResult<object>> ChangeFloor([FromBody] VehicleOrderRequest payload)
     {
         payload.SceneName = SceneName;
-        var (ok, code, json) = await _grcs.SendVehicleOrderAsync(BaseUrl, payload);
-        LogProxy("change-floor", payload, ok, code, json);
-        return Ok(new { ok, code, json });
+        var outboundBody = "";
+        var (ok, code, json) = await _grcs.SendVehicleOrderAsync(BaseUrl, payload, body => outboundBody = body);
+        LogProxy("change-floor", payload, ok, code, json, outboundBody);
+        return Ok(new { ok, code, json, requestBody = outboundBody });
     }
 
     /// <summary>库存查询代理（GRCS /api/Cargo，场景按设置）。</summary>
@@ -120,8 +121,9 @@ public class GrcsProxyController : ControllerBase
         if (payload == null || payload.Tasks == null || payload.Tasks.Count == 0)
             return Ok(new { ok = false, code = 0, json = "任务组为空" });
         payload.Warehouse = SceneName;
-        var (ok, code, json) = await _moduleRun.SendTaskWithModulesAsync(payload);
-        LogProxy("task/send", payload, ok, code, json);
-        return Ok(new { ok, code, json });
+        var outboundBody = "";
+        var (ok, code, json) = await _moduleRun.SendTaskWithModulesAsync(payload, requestBodyCaptured: body => outboundBody = body);
+        LogProxy("task/send", payload, ok, code, json, outboundBody);
+        return Ok(new { ok, code, json, requestBody = outboundBody });
     }
 }

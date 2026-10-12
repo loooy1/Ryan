@@ -58,10 +58,6 @@ public class TaskTemplateDto
 
     public string Label { get; set; } = "";
 
-    public string Description { get; set; } = "";
-
-    public string Category { get; set; } = "";
-
     public bool NeedsContainer { get; set; } = true;
 
     public string ContainerPrefix { get; set; } = "";
@@ -104,6 +100,9 @@ public class FeatureModuleDto
 
     public string Name { get; set; } = "";
 
+    /// <summary>该业务功能模板是否被指定为搬运或移动任务的下发接口。</summary>
+    public string TaskInterfaceType { get; set; } = "";
+
     public string ApiUrl { get; set; } = "";
 
     /// <summary>统一模板的 HTTP 配置；普通功能模板默认使用 POST，请求体由参数生成。</summary>
@@ -125,6 +124,13 @@ public class FeatureModuleDto
     public string InventoryEffect { get; set; } = "";
 
     public List<WorkParamDto> Params { get; set; } = [];
+}
+
+public static class TaskInterfaceTypes
+{
+    public const string None = "";
+    public const string Carry = "CARRY";
+    public const string Move = "MOVE";
 }
 
 /// <summary>功能模块可配置的库存动作。</summary>

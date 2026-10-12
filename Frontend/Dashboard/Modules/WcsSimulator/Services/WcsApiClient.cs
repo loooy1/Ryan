@@ -394,11 +394,16 @@ public class WcsApiClient
     }
 
     /// <summary>发送车辆任务（代理 → GRCS /api/RawOrder/ChangeFloor）。</summary>
-    public async Task<(bool Ok, int StatusCode, string Json)> SendVehicleOrderAsync(
+    public async Task<GrcsProxyResult> SendVehicleOrderAsync(
         string baseUrl, VehicleOrderRequest payload)
     {
-        if (!GrcsReady()) return (false, 0, JsonSerializer.Serialize(new { error = "backend offline" }));
-        var r = await PostProxyAsync("/api/wcs/grcs/change-floor", payload);
+        if (!GrcsReady()) return new GrcsProxyResult
+        {
+            Ok = false,
+            Code = 0,
+            Json = JsonSerializer.Serialize(new { error = "backend offline" })
+        };
+        var r = await PostProxyDetailedAsync("/api/wcs/grcs/change-floor", payload);
         if (!r.Ok) NotifyGrcsIfUnreachable(r.Json);
         return r;
     }
@@ -549,6 +554,33 @@ public class WcsApiClient
             return ParseProxy(body);
         }
         catch (Exception ex) { return (false, 0, JsonSerializer.Serialize(new { error = ex.Message })); }
+    }
+
+    private async Task<GrcsProxyResult> PostProxyDetailedAsync<T>(string path, T payload)
+    {
+        try
+        {
+            var resp = await _http.PostAsJsonAsync(U(path), payload);
+            var body = await resp.Content.ReadAsStringAsync();
+            using var doc = JsonDocument.Parse(body);
+            var root = doc.RootElement;
+            return new GrcsProxyResult
+            {
+                Ok = root.TryGetProperty("ok", out var ok) && ok.ValueKind == JsonValueKind.True,
+                Code = root.TryGetProperty("code", out var code) && code.ValueKind == JsonValueKind.Number ? code.GetInt32() : (int)resp.StatusCode,
+                Json = root.TryGetProperty("json", out var json) ? json.GetString() ?? body : body,
+                RequestBody = root.TryGetProperty("requestBody", out var requestBody) ? requestBody.GetString() ?? "" : ""
+            };
+        }
+        catch (Exception ex)
+        {
+            return new GrcsProxyResult
+            {
+                Ok = false,
+                Code = 0,
+                Json = JsonSerializer.Serialize(new { error = ex.Message })
+            };
+        }
     }
 
     private async Task<(bool Ok, int StatusCode, string Json)> DeleteRawAsync(string path)

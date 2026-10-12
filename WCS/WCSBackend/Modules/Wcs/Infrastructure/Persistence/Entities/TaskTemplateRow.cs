@@ -7,8 +7,6 @@ public class TaskTemplateRow
 {
     public string Value { get; set; } = "";
     public string Label { get; set; } = "";
-    public string Description { get; set; } = "";
-    public string Category { get; set; } = "";
     public bool NeedsContainer { get; set; }
     public string ContainerPrefix { get; set; } = "";
     public bool RandomContainer { get; set; }

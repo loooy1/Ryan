@@ -19,6 +19,7 @@ public sealed class RcsFeatureModuleRowConfiguration : IEntityTypeConfiguration<
         builder.Property(x => x.BaseUrl).HasColumnName("base_url").HasMaxLength(2048).HasDefaultValue("").IsRequired();
         builder.Property(x => x.IsActive).HasColumnName("is_active");
         builder.Property(x => x.Name).HasColumnName("name");
+        builder.Property(x => x.TaskInterfaceType).HasColumnName("task_interface_type").HasMaxLength(16).HasDefaultValue("").IsRequired();
         builder.Property(x => x.ApiUrl).HasColumnName("api_url");
         builder.Property(x => x.HttpMethod).HasColumnName("http_method").HasMaxLength(16).HasDefaultValue("POST").IsRequired();
         builder.Property(x => x.RequestBodyTemplate).HasColumnName("request_body_template").HasDefaultValue("").IsRequired();

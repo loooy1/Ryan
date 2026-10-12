@@ -63,6 +63,7 @@ public class GrcsProxyResult
     public bool Ok { get; set; }
     public int Code { get; set; }
     public string Json { get; set; } = "";
+    public string RequestBody { get; set; } = "";
 }
 
 /// <summary>鍦板浘缂撳瓨鍝嶅簲锛圙ET /api/wcs/map锛夈€?/summary>

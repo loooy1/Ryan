@@ -3,6 +3,7 @@ using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
 using System.Globalization;
+using System.Text.RegularExpressions;
 using Contracts.Dtos;
 using WCSBackend.Modules.Wcs.Infrastructure;
 
@@ -16,14 +17,16 @@ public class GrcsHttpClient
 {
     private readonly IHttpClientFactory _factory;
     private readonly RcsProtocolTemplateStore _protocols;
+    private readonly MapStoreService _map;
     private readonly object _healthLock = new();
     private bool? _grcsOnline;
     private DateTime _healthCheckedAt = DateTime.MinValue;
 
-    public GrcsHttpClient(IHttpClientFactory factory, RcsProtocolTemplateStore protocols)
+    public GrcsHttpClient(IHttpClientFactory factory, RcsProtocolTemplateStore protocols, MapStoreService map)
     {
         _factory = factory;
         _protocols = protocols;
+        _map = map;
     }
 
     /// <summary>GRCS 在线状态缓存（PingAsync 每次探测写入，5 秒内有效；超期返回 null）。
@@ -47,24 +50,32 @@ public class GrcsHttpClient
     }
 
     /// <summary>任务组下发；实际 URL、请求体和业务成功判断由当前 RCS 配置集的 task.carry 模板决定。</summary>
-    public Task<(bool Ok, int StatusCode, string Json)> SendTaskGroupAsync(string baseUrl, WcsTaskGroup payload)
+    public Task<(bool Ok, int StatusCode, string Json)> SendTaskGroupAsync(
+        string baseUrl, WcsTaskGroup payload, Action<string>? requestBodyCaptured = null)
     {
+        if (!_protocols.HasTaskInterface(TaskInterfaceTypes.Carry))
+            return Task.FromResult((false, 0, JsonSerializer.Serialize(new { error = "当前 RCS 模板未设置搬运任务接口，任务未下发。" })));
         payload.MsgTime = NormalizeProtocolTime(payload.MsgTime);
-        return SendConfiguredOperationAsync(baseUrl, "task.carry", payload, 10);
+        return SendConfiguredOperationAsync(baseUrl, "task.carry", payload, 10, requestBodyCaptured);
     }
 
     /// <summary>车辆任务（/api/RawOrder/ChangeFloor，MOVE_ONLY 纯移动）。
     /// 超时 7 秒：必须早于前端 dispatch 限时（8 秒），保证超时时后端先落失败日志、前后端判定一致。</summary>
-    public async Task<(bool Ok, int StatusCode, string Json)> SendVehicleOrderAsync(string baseUrl, VehicleOrderRequest payload)
+    public async Task<(bool Ok, int StatusCode, string Json)> SendVehicleOrderAsync(
+        string baseUrl, VehicleOrderRequest payload, Action<string>? requestBodyCaptured = null)
     {
+        if (!_protocols.HasTaskInterface(TaskInterfaceTypes.Move))
+            return (false, 0, JsonSerializer.Serialize(new { error = "当前 RCS 模板未设置移动任务接口，任务未下发。" }));
         payload.CreateTime = NormalizeProtocolTime(payload.CreateTime);
-        return await SendConfiguredOperationAsync(baseUrl, "task.move", payload, 7);
+        return await SendConfiguredOperationAsync(baseUrl, "task.move", payload, 7, requestBodyCaptured);
     }
 
     /// <summary>按活动 RCS 配置集中的协议模板发送任务操作。</summary>
     public async Task<(bool Ok, int StatusCode, string Json)> SendConfiguredOperationAsync<T>(
-        string fallbackBaseUrl, string operationKey, T payload, int fallbackTimeoutSeconds = 10)
+        string fallbackBaseUrl, string operationKey, T payload, int fallbackTimeoutSeconds = 10,
+        Action<string>? requestBodyCaptured = null)
     {
+        var requestBody = "";
         try
         {
             var operation = _protocols.GetRequiredOperation(operationKey);
@@ -78,10 +89,13 @@ public class GrcsHttpClient
             using var request = new HttpRequestMessage(new HttpMethod(operation.HttpMethod), url);
             if (operation.HttpMethod is not ("GET" or "DELETE"))
             {
-                var body = string.IsNullOrWhiteSpace(operation.RequestBodyTemplate)
+                requestBody = string.IsNullOrWhiteSpace(operation.RequestBodyTemplate)
                     ? JsonSerializer.Serialize(payload, JsonSerializerOptions.Web)
-                    : RenderRequestTemplate(operation.RequestBodyTemplate, payload);
-                request.Content = new StringContent(body, Encoding.UTF8, "application/json");
+                    : operation.RequestBodyTemplate;
+                if (!string.IsNullOrWhiteSpace(operation.RequestBodyTemplate))
+                    requestBody = RenderRequestTemplate(operation.RequestBodyTemplate, payload, rendered => requestBody = rendered);
+                requestBodyCaptured?.Invoke(requestBody);
+                request.Content = new StringContent(requestBody, Encoding.UTF8, "application/json");
             }
             using var response = await client.SendAsync(request);
             var responseBody = await response.Content.ReadAsStringAsync();
@@ -90,11 +104,12 @@ public class GrcsHttpClient
         }
         catch (Exception ex)
         {
+            requestBodyCaptured?.Invoke(requestBody);
             return (false, 0, JsonSerializer.Serialize(new { error = ex.Message }));
         }
     }
 
-    private static string RenderRequestTemplate<T>(string template, T payload)
+    private string RenderRequestTemplate<T>(string template, T payload, Action<string>? renderedBodyCaptured = null)
     {
         var values = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
@@ -110,6 +125,13 @@ public class GrcsHttpClient
             var task = group.Tasks.FirstOrDefault();
             if (task != null)
             {
+                var start = task.StationCode.FirstOrDefault() ?? "";
+                var end = task.StationCode.LastOrDefault() ?? "";
+                values["Start"] = JsonSerializer.Serialize(start);
+                values["End"] = JsonSerializer.Serialize(end);
+                values["Start_Floor"] = JsonSerializer.Serialize(StationWithFloor(start));
+                values["End_Floor"] = JsonSerializer.Serialize(StationWithFloor(end));
+                values["End_0"] = JsonSerializer.Serialize(StationWithFixedFloor(end, 0));
                 values["TaskId"] = JsonSerializer.Serialize(task.TaskId);
                 values["TaskType"] = JsonSerializer.Serialize(task.TaskType);
                 values["ContainerCode"] = JsonSerializer.Serialize(task.ContainerCode);
@@ -126,15 +148,82 @@ public class GrcsHttpClient
             values["OrderName"] = JsonSerializer.Serialize(order.OrderName);
             values["VehicleName"] = JsonSerializer.Serialize(order.VehicleName);
             values["Priority"] = order.Priority.ToString(CultureInfo.InvariantCulture);
-            values["StationCodesJson"] = JsonSerializer.Serialize(order.StationCodes, JsonSerializerOptions.Web);
+            var stationCodes = order.StationCodes
+                .Where(code => !string.IsNullOrWhiteSpace(code))
+                .ToList();
+            values["StationCodesJson"] = JsonSerializer.Serialize(stationCodes, JsonSerializerOptions.Web);
+
+            // Move templates may use the same task-shaped protocol fields as task_receive.
+            // Adapt the move DTO to that vocabulary so the configured RCS template stays reusable.
+            var start = stationCodes.Count > 1 ? stationCodes[0] : "";
+            var end = stationCodes.LastOrDefault() ?? "";
+            values["GroupId"] = JsonSerializer.Serialize(order.OrderId);
+            values["MsgTime"] = JsonSerializer.Serialize(order.CreateTime);
+            values["PriorityCode"] = order.Priority.ToString(CultureInfo.InvariantCulture);
+            values["Warehouse"] = JsonSerializer.Serialize(order.SceneName);
+            values["TaskId"] = JsonSerializer.Serialize(order.OrderId);
+            values["Start"] = JsonSerializer.Serialize(start);
+            values["End"] = JsonSerializer.Serialize(end);
+            values["Start_Floor"] = JsonSerializer.Serialize(StationWithFloor(start));
+            values["End_Floor"] = JsonSerializer.Serialize(StationWithFloor(end));
+            values["End_0"] = JsonSerializer.Serialize(StationWithFixedFloor(end, 0));
         }
 
         foreach (var (key, value) in values)
             template = template.Replace("{{" + key + "}}", value, StringComparison.OrdinalIgnoreCase);
+        renderedBodyCaptured?.Invoke(template);
         if (template.Contains("{{", StringComparison.Ordinal))
-            throw new InvalidOperationException("请求模板包含未知或未提供的占位符。");
+        {
+            var unresolved = Regex.Matches(template, @"\{\{\s*([^{}]+?)\s*\}\}")
+                .Select(match => match.Groups[1].Value.Trim())
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            var names = unresolved.Length > 0 ? string.Join(", ", unresolved) : "格式不完整的 {{...}}";
+            throw new InvalidOperationException($"请求模板包含未知或未提供的占位符：{names}。");
+        }
         using var _ = JsonDocument.Parse(template);
         return template;
+    }
+
+    /// <summary>根据地图缓存中的站点 Z/楼层生成“站点编码_楼层号”。输入允许是 Mark 或已带数字后缀的编码。</summary>
+    private string StationWithFloor(string? stationCode) => StationWithMapFloor(stationCode, null);
+
+    /// <summary>根据地图站点生成固定楼层编码，例如 End_0 对应“站点编码_0”。</summary>
+    private string StationWithFixedFloor(string? stationCode, int floor) => StationWithMapFloor(stationCode, floor);
+
+    private string StationWithMapFloor(string? stationCode, int? fixedFloor)
+    {
+        if (string.IsNullOrWhiteSpace(stationCode)) return "";
+
+        var stations = _map.GetStations();
+        var station = stations.FirstOrDefault(item => string.Equals(item.Mark, stationCode, StringComparison.OrdinalIgnoreCase));
+        if (station == null)
+        {
+            var separator = stationCode.LastIndexOf('_');
+            if (separator > 0 && int.TryParse(stationCode[(separator + 1)..], NumberStyles.Integer, CultureInfo.InvariantCulture, out _))
+            {
+                var mark = stationCode[..separator];
+                station = stations.FirstOrDefault(item => string.Equals(item.Mark, mark, StringComparison.OrdinalIgnoreCase));
+            }
+        }
+
+        if (station == null)
+        {
+            // The fixed-floor placeholder is deterministic even if the map cache is not loaded.
+            // A map-derived floor cannot be inferred without a station record, so preserve its input.
+            if (fixedFloor.HasValue)
+            {
+                var suffixSeparator = stationCode.LastIndexOf('_');
+                var mark = suffixSeparator > 0
+                    && int.TryParse(stationCode[(suffixSeparator + 1)..], NumberStyles.Integer, CultureInfo.InvariantCulture, out _)
+                    ? stationCode[..suffixSeparator]
+                    : stationCode;
+                return $"{mark}_{fixedFloor.Value.ToString(CultureInfo.InvariantCulture)}";
+            }
+            return stationCode;
+        }
+
+        return $"{station.Mark}_{(fixedFloor ?? station.Floor).ToString(CultureInfo.InvariantCulture)}";
     }
 
     private static bool MatchesSuccess(string json, string propertyPath, string expected)

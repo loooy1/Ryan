@@ -65,11 +65,14 @@ public class ModuleRunService
             => new Dictionary<string, string>(_context, StringComparer.OrdinalIgnoreCase);
     }
 
-    public async Task<(bool ok, int code, string json)> SendTaskWithModulesAsync(WcsTaskGroup group, string? roundId = null)
+    public async Task<(bool ok, int code, string json)> SendTaskWithModulesAsync(
+        WcsTaskGroup group, string? roundId = null, Action<string>? requestBodyCaptured = null)
     {
         var settings = _settings.Get();
         if (settings == null || string.IsNullOrWhiteSpace(settings.GrcsBaseUrl))
             return (false, 0, "GRCS address is not configured.");
+        if (!_protocols.HasTaskInterface(TaskInterfaceTypes.Carry))
+            return (false, 0, "当前 RCS 模板未设置搬运任务接口，任务未下发。");
         if (!_mocks.HasTaskStageRule())
             return (false, 0, "A task stage mock rule is required before dispatch.");
         var task = group.Tasks.FirstOrDefault();
@@ -95,7 +98,7 @@ public class ModuleRunService
         }]);
 
         if (template?.WorkflowSteps is { Count: > 0 })
-            return await SendTaskWithWorkflowAsync(group, task, template, ctx, roundId);
+            return await SendTaskWithWorkflowAsync(group, task, template, ctx, roundId, requestBodyCaptured);
 
         if (template != null && !await RunModulesAsync("BEFORE_MODULE", template.Start?.BeforeModules ?? [], ctx, roundId, true))
         {
@@ -106,7 +109,7 @@ public class ModuleRunService
         if (roundId != null)
             _logs.Add(roundId, "Dispatch payload (active RCS carry template): " + JsonSerializer.Serialize(group), "#93c5fd");
         _lifecycle.BeginDispatch(task.TaskId);
-        var (ok, code, json) = await _grcs.SendTaskGroupAsync(settings.GrcsBaseUrl, group);
+        var (ok, code, json) = await _grcs.SendTaskGroupAsync(settings.GrcsBaseUrl, group, requestBodyCaptured);
         var accepted = ok;
         if (!accepted)
         {
@@ -143,7 +146,8 @@ public class ModuleRunService
     }
 
     private async Task<(bool ok, int code, string json)> SendTaskWithWorkflowAsync(
-        WcsTaskGroup group, WcsTaskItem task, TaskTemplateDto template, ModuleCtx ctx, string? roundId)
+        WcsTaskGroup group, WcsTaskItem task, TaskTemplateDto template, ModuleCtx ctx, string? roundId,
+        Action<string>? requestBodyCaptured)
     {
         var steps = template.WorkflowSteps.Where(step => step.Enabled).ToList();
         var dispatchIndexes = steps.Select((step, index) => (step, index))
@@ -182,7 +186,7 @@ public class ModuleRunService
         _lifecycle.BeginDispatch(task.TaskId);
         var completion = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         _workflowCompletions[task.TaskId] = completion;
-        var (ok, code, json) = await _grcs.SendTaskGroupAsync(settings.GrcsBaseUrl, group);
+        var (ok, code, json) = await _grcs.SendTaskGroupAsync(settings.GrcsBaseUrl, group, requestBodyCaptured);
         if (!ok)
         {
             _workflowCompletions.TryRemove(task.TaskId, out _);

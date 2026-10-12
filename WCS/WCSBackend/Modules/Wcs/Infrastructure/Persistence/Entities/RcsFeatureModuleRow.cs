@@ -11,6 +11,7 @@ public sealed class RcsFeatureModuleRow
     public string BaseUrl { get; set; } = "";
     public bool IsActive { get; set; }
     public string Name { get; set; } = "";
+    public string TaskInterfaceType { get; set; } = "";
     public string ApiUrl { get; set; } = "";
     public string HttpMethod { get; set; } = "POST";
     public string RequestBodyTemplate { get; set; } = "";

@@ -69,6 +69,9 @@ public sealed class RcsProtocolTemplateStore
             profile.Operations ??= [];
             profile.FeatureModules ??= [];
             profile.MockRules ??= [];
+            NormalizeTaskInterfaceAssignments(profile.FeatureModules);
+            profile.Operations = BuildOperations(profile.FeatureModules);
+            EnsureRequiredOperations(profile);
             foreach (var op in profile.Operations)
             {
                 op.Key = op.Key?.Trim() ?? "";
@@ -139,16 +142,18 @@ public sealed class RcsProtocolTemplateStore
         return operation ?? throw new InvalidOperationException($"当前 RCS 配置集缺少协议模板：{key}");
     }
 
+    public bool HasTaskInterface(string taskInterfaceType)
+        => GetActive().FeatureModules.Any(module =>
+            Eq(module.TaskInterfaceType, taskInterfaceType) && !string.IsNullOrWhiteSpace(module.ApiUrl));
+
     public void ReplaceActiveFeatureModules(IEnumerable<FeatureModuleDto> modules)
     {
         lock (_sync)
         {
             var profile = GetActiveMutable();
             profile.FeatureModules = modules?.ToList() ?? [];
-            profile.Operations = profile.FeatureModules
-                .Where(x => IsProtocolOperationKey(x.Id))
-                .Select(ToOperation)
-                .ToList();
+            NormalizeTaskInterfaceAssignments(profile.FeatureModules);
+            profile.Operations = BuildOperations(profile.FeatureModules);
             EnsureRequiredOperations(profile);
             Persist();
         }
@@ -233,7 +238,7 @@ public sealed class RcsProtocolTemplateStore
                 Id = type,
                 Name = !string.IsNullOrWhiteSpace(profileFeature?.ProfileName) ? profileFeature!.ProfileName : type,
                 BaseUrl = profileFeature?.BaseUrl ?? (Eq(type, "RCS1") ? _settings.Get().GrcsBaseUrl : ""),
-                Operations = profileRows.Where(x => IsProtocolOperationKey(x.Id)).Select(ToOperation).ToList(),
+                Operations = BuildOperations(featureTemplates),
                 FeatureModules = featureTemplates,
                 MockRules = mockTemplates,
             };
@@ -285,7 +290,9 @@ public sealed class RcsProtocolTemplateStore
                 .ToDictionary(x => x.Id, x => x, StringComparer.OrdinalIgnoreCase);
             foreach (var op in profile.Operations ?? [])
             {
-                if (!templates.TryGetValue(op.Key, out var dto))
+                var dto = templates.Values.FirstOrDefault(x => Eq(ResolveTaskOperationKey(x.TaskInterfaceType), op.Key));
+                if (dto == null) templates.TryGetValue(op.Key, out dto);
+                if (dto == null)
                 {
                     dto = new FeatureModuleDto { Id = op.Key };
                     templates.Add(op.Key, dto);
@@ -352,16 +359,52 @@ public sealed class RcsProtocolTemplateStore
         new() { Key = "task.move", Name = "移动任务下发", HttpMethod = "POST", ApiPath = "/api/RawOrder/ChangeFloor", SuccessProperty = "", SuccessValue = "true", TimeoutSeconds = 7 },
     ];
 
-    private static RcsProtocolOperationTemplateDto ToOperation(RcsFeatureModuleRow row) => new()
+    private static List<RcsProtocolOperationTemplateDto> BuildOperations(IEnumerable<FeatureModuleDto> modules)
     {
-        Key = row.Id, Name = row.Name, HttpMethod = row.HttpMethod, ApiPath = row.ApiUrl,
-        RequestBodyTemplate = row.RequestBodyTemplate, SuccessProperty = row.SuccessProperty,
-        SuccessValue = row.SuccessValue, TimeoutSeconds = row.TimeoutSeconds,
+        var items = modules.ToList();
+        var result = new List<RcsProtocolOperationTemplateDto>();
+        foreach (var key in new[] { "task.carry", "task.move" })
+        {
+            var role = Eq(key, "task.carry") ? TaskInterfaceTypes.Carry : TaskInterfaceTypes.Move;
+            var module = items.FirstOrDefault(x => Eq(x.TaskInterfaceType, role))
+                ?? items.FirstOrDefault(x => string.IsNullOrWhiteSpace(x.TaskInterfaceType) && Eq(x.Id, key));
+            if (module != null) result.Add(ToOperation(module, key));
+        }
+        result.AddRange(items
+            .Where(x => x.Id.StartsWith("custom.", StringComparison.OrdinalIgnoreCase))
+            .Select(x => ToOperation(x, x.Id)));
+        return result;
+    }
+
+    private static void NormalizeTaskInterfaceAssignments(List<FeatureModuleDto> modules)
+    {
+        foreach (var module in modules)
+        {
+            module.TaskInterfaceType = module.TaskInterfaceType?.Trim().ToUpperInvariant() switch
+            {
+                TaskInterfaceTypes.Carry => TaskInterfaceTypes.Carry,
+                TaskInterfaceTypes.Move => TaskInterfaceTypes.Move,
+                _ => TaskInterfaceTypes.None,
+            };
+        }
+
+        foreach (var role in new[] { TaskInterfaceTypes.Carry, TaskInterfaceTypes.Move })
+        {
+            var matches = modules.Where(module => Eq(module.TaskInterfaceType, role)).ToList();
+            foreach (var duplicate in matches.Skip(1)) duplicate.TaskInterfaceType = TaskInterfaceTypes.None;
+        }
+    }
+
+    private static string? ResolveTaskOperationKey(string? taskInterfaceType) => taskInterfaceType?.Trim().ToUpperInvariant() switch
+    {
+        TaskInterfaceTypes.Carry => "task.carry",
+        TaskInterfaceTypes.Move => "task.move",
+        _ => null,
     };
 
-    private static RcsProtocolOperationTemplateDto ToOperation(FeatureModuleDto module) => new()
+    private static RcsProtocolOperationTemplateDto ToOperation(FeatureModuleDto module, string key) => new()
     {
-        Key = module.Id, Name = module.Name, HttpMethod = module.HttpMethod, ApiPath = module.ApiUrl,
+        Key = key, Name = module.Name, HttpMethod = module.HttpMethod, ApiPath = module.ApiUrl,
         RequestBodyTemplate = module.RequestBodyTemplate, SuccessProperty = module.SuccessProperty,
         SuccessValue = module.SuccessValue, TimeoutSeconds = module.TimeoutSeconds,
     };

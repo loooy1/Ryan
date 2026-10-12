@@ -392,11 +392,6 @@ namespace WCSBackend.Migrations
                         .HasColumnType("varchar(255)")
                         .HasColumnName("value");
 
-                    b.Property<string>("Category")
-                        .IsRequired()
-                        .HasColumnType("longtext")
-                        .HasColumnName("category");
-
                     b.Property<string>("ContainerMode")
                         .IsRequired()
                         .HasColumnType("longtext")
@@ -406,11 +401,6 @@ namespace WCSBackend.Migrations
                         .IsRequired()
                         .HasColumnType("longtext")
                         .HasColumnName("container_prefix");
-
-                    b.Property<string>("Description")
-                        .IsRequired()
-                        .HasColumnType("longtext")
-                        .HasColumnName("description");
 
                     b.Property<string>("End")
                         .IsRequired()
@@ -602,6 +592,14 @@ namespace WCSBackend.Migrations
                         .HasColumnType("longtext")
                         .HasDefaultValue("")
                         .HasColumnName("success_property");
+
+                    b.Property<string>("TaskInterfaceType")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(16)
+                        .HasColumnType("varchar(16)")
+                        .HasDefaultValue("")
+                        .HasColumnName("task_interface_type");
 
                     b.Property<string>("SuccessValue")
                         .IsRequired()

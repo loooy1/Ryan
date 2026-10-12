@@ -19,8 +19,6 @@ public class TaskTemplateRowConfiguration : IEntityTypeConfiguration<TaskTemplat
         builder.HasKey(x => x.Value);
         builder.Property(x => x.Value).HasColumnName("value").IsRequired();
         builder.Property(x => x.Label).HasColumnName("label");
-        builder.Property(x => x.Description).HasColumnName("description");
-        builder.Property(x => x.Category).HasColumnName("category");
         builder.Property(x => x.NeedsContainer).HasColumnName("needs_container");
         builder.Property(x => x.ContainerPrefix).HasColumnName("container_prefix");
         builder.Property(x => x.RandomContainer).HasColumnName("random_container");
