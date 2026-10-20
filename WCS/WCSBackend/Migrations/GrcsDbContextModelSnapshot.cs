@@ -531,14 +531,6 @@ namespace WCSBackend.Migrations
                         .HasColumnType("longtext")
                         .HasColumnName("api_url");
 
-                    b.Property<string>("BaseUrl")
-                        .IsRequired()
-                        .ValueGeneratedOnAdd()
-                        .HasMaxLength(2048)
-                        .HasColumnType("varchar(2048)")
-                        .HasDefaultValue("")
-                        .HasColumnName("base_url");
-
                     b.Property<string>("HttpMethod")
                         .IsRequired()
                         .ValueGeneratedOnAdd()

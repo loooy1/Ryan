@@ -146,13 +146,11 @@ public class TaskDispatcher
             }
         }
 
-        var startWcs = WcsOf(startMark, stations) ?? startMark ?? "";
-        var destinationWcs = destination!.ToWcsCode();
         var task = new WcsTaskItem
         {
             TaskId = taskId!, TaskType = tpl.Value, ContainerCode = dispatchContainer,
             PalletCode = palletCode, CargoCode = cargoCode,
-            StationCode = [startWcs, destinationWcs], AreaCode = [],
+            StationCode = [startMark!, destination!.Mark], AreaCode = [],
         };
         var group = new WcsTaskGroup
         {
@@ -189,7 +187,7 @@ public class TaskDispatcher
         }
 
         taskIds.Add(taskId!);
-        taskDetails[taskId!] = $"{tpl.Label} [{dispatchContainer}] {startWcs}->{destinationWcs}";
+        taskDetails[taskId!] = $"{tpl.Label} [{dispatchContainer}] {startMark}->{destination.Mark}";
         _invStore.MarkBusy(taskUnits);
         ctx.InventoryClaimCommitted = true;
         _completion.Activate(taskId!);
@@ -356,7 +354,6 @@ public class TaskDispatcher
     }
 
     private static string Trim(string? value) => value?.Trim() ?? "";
-    private static string? WcsOf(string? mark, List<MapStationLite> stations) => string.IsNullOrEmpty(mark) ? null : stations.FirstOrDefault(s => string.Equals(s.Mark, mark, StringComparison.OrdinalIgnoreCase))?.ToWcsCode() ?? mark;
     private static string ToMapMark(string stationCode)
     {
         var value = stationCode?.Trim() ?? "";

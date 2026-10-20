@@ -671,38 +671,19 @@
     private async void ToggleContainer() => await Toggle("container");
     private async void ToggleVehicle() => await Toggle("vehicle");
 
-    // ════════════ 站点编码解析 ════════════
-    /// <summary>
-    /// 根据地图站点类型解析下发编码：界面显示地图原始编码 mark，
-    /// 但 GRCS 任务协议要求按站点类型带后缀 —— 储位 → mark_1、
-    /// 人工分拣台/接驳位 → mark_0、其他类型原样；ToWcsCode 完成该映射。
-    /// </summary>
-    private (string? TypeName, string? SendCode) ResolveStationCode(string mark)
-    {
-        if (string.IsNullOrWhiteSpace(mark)) return (null, null);
-        var st = _mapStations.FirstOrDefault(s => s.Mark == mark);
-        if (st == null) return (null, null);
-
-        var sendCode = st.ToWcsCode();
-        var typeName = sendCode switch
-        {
-            _ when sendCode.EndsWith("_1") => "储位",
-            _ when sendCode.EndsWith("_0") => "人工分拣台/接驳位",
-            _ => string.Join("+", MapStationTypeBits.DecodeNames(st.StationType))
-        };
-        return (string.IsNullOrEmpty(typeName) ? "未知类型" : typeName, sendCode);
-    }
-
-    /// <summary>站点编辑栏下方的提示文字：实时显示该站点实际下发的编码，站点不在地图中时警告将原样下发。</summary>
+    // ════════════ 站点编码提示 ════════════
+    /// <summary>站点编码原样传给 RCS 协议模板，由模板决定是否追加楼层或其他协议后缀。</summary>
     private string StationCodeHint(string mark)
     {
         if (string.IsNullOrWhiteSpace(mark)) return "";
-        var (typeName, sendCode) = ResolveStationCode(mark);
-        if (typeName == null)
-            return "⚠ 地图中未找到该站点，将原样下发";
-        return sendCode == mark
-            ? $"· {typeName}，原样下发"
-            : $"· {typeName} → 实际下发 {sendCode}";
+        var station = _mapStations.FirstOrDefault(s => s.Mark == mark);
+        if (station == null)
+            return "⚠ 地图中未找到该站点，原始编码将传入模板";
+
+        var typeName = string.Join("+", MapStationTypeBits.DecodeNames(station.StationType));
+        return string.IsNullOrWhiteSpace(typeName)
+            ? $"· 原始站点编码 {mark} 将传入模板"
+            : $"· {typeName}；原始站点编码 {mark} 将传入模板";
     }
 
     /// <summary>按模板该点的站点类型位约束过滤下拉候选：配置了类型就只匹配该类型。</summary>
@@ -717,13 +698,6 @@
         => sj == 0
             ? (SelectedTemplate?.Start.StationTypeBits ?? 0)
             : (SelectedTemplate?.End.StationTypeBits ?? 0);
-
-    /// <summary>将界面填写的站点编码转换为实际下发的编码。</summary>
-    private string ToSendCode(string mark)
-    {
-        var (_, sendCode) = ResolveStationCode(mark);
-        return sendCode ?? mark;
-    }
 
     // ════════════ 站点选择器 ════════════
     private List<MapStationLite> StationPickerResults()
@@ -1338,13 +1312,13 @@
         if (string.IsNullOrEmpty(_selectedType)) { ShowResp("❌ 请选择任务类型", "error"); return; }
         if (_taskCards.Count == 0) { ShowResp("❌ 请添加至少一个任务", "error"); return; }
 
-        // ── 从卡片数据构建 WcsTaskItem 列表（站点编码按地图类型转换后下发）──
+        // ── 从卡片数据构建 WcsTaskItem 列表，站点编码原样交由 RCS 协议模板处理 ──
         var tasks = _taskCards.Select(c => new WcsTaskItem
         {
             TaskId = c.TaskId,
             TaskType = _selectedType,
             ContainerCode = c.ContainerCode,
-            StationCode = c.StationCodes.Where(s => !string.IsNullOrWhiteSpace(s)).Select(ToSendCode).ToList(),
+            StationCode = c.StationCodes.Where(s => !string.IsNullOrWhiteSpace(s)).Select(s => s.Trim()).ToList(),
             AreaCode = []
         }).ToList();
 

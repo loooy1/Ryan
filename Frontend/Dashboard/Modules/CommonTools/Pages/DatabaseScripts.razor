@@ -1,0 +1,41 @@
+@page "/tools/database-scripts"
+@using System.Text.Json
+@using System.Net.Http.Json
+@using Dashboard.Modules.WcsSimulator.Services
+@inject HttpClient Http
+@inject LocalStoreService LocalStore
+@inject IJSRuntime Js
+
+<PageTitle>CommonTools 数据库配置</PageTitle>
+<div class="db-page">
+    <h1>CommonTools 数据库配置</h1>
+    <p>配置嵌套货物模块访问的 rcs 数据库。此页面只保存连接参数，不执行任意 SQL。</p>
+    <section class="card">
+        <div class="fields">
+            <label>主机<input @bind="Server" /></label><label>端口<input type="number" @bind="Port" /></label>
+            <label>数据库<input @bind="Database" /></label><label>用户名<input @bind="Username" /></label>
+            <label>密码<input type="password" @bind="Password" placeholder="@(HasPassword ? "留空保留原密码" : "请输入密码")" /></label>
+        </div>
+        <div class="actions"><span class="notice @(Success ? "ok" : "error")">@Notice</span><button @onclick="SaveAsync" disabled="@Busy">保存并测试</button></div>
+    </section>
+</div>
+<style>
+    .db-page{max-width:900px;margin:0 auto;padding:32px;color:#e8f1fc}.db-page h1{margin:0 0 8px}.db-page p{color:#8da3bd;font-size:13px}.card{margin-top:24px;padding:24px;background:#111e31;border:1px solid #293e59;border-radius:13px}.fields{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}.fields label{display:flex;flex-direction:column;gap:6px;color:#9eb3ca;font-size:12px}.fields input{background:#091322;border:1px solid #30445d;border-radius:7px;padding:10px;color:#eaf4ff}.actions{display:flex;align-items:center;margin-top:22px;gap:16px}.notice{margin-right:auto;font-size:12px}.ok{color:#7de5b4}.error{color:#ff9ca9}button{border:1px solid #26b9d6;background:#0d9bb7;color:#fff;border-radius:7px;padding:10px 18px;font-weight:700}button:disabled{opacity:.5}@@media(max-width:700px){.db-page{padding:22px 16px}.fields{grid-template-columns:1fr}}
+</style>
+@code {
+    private string Server = "127.0.0.1", Database = "rcs", Username = "", Password = "";
+    private int Port = 3306;
+    private bool HasPassword, Busy, Success;
+    private string Notice = "";
+    protected override async Task OnInitializedAsync() => await LoadAsync();
+    private async Task LoadAsync()
+    {
+        try { await LocalStore.PreloadAsync(Js); using var response = await Http.GetAsync(ApiUrl("/api/common-tools/database-scripts/status")); using var json = JsonDocument.Parse(await response.Content.ReadAsStringAsync()); var root = json.RootElement; Server = Read(root, "server", Server); Port = root.TryGetProperty("port", out var p) ? p.GetInt32() : Port; Database = Read(root, "database", Database); Username = Read(root, "username", Username); HasPassword = root.TryGetProperty("hasPassword", out var h) && h.GetBoolean(); Notice = Read(root, "message", ""); Success = response.IsSuccessStatusCode; } catch (Exception ex) { Notice = ex.Message; Success = false; }
+    }
+    private async Task SaveAsync()
+    {
+        Busy = true; try { using var save = await Http.PutAsJsonAsync(ApiUrl("/api/common-tools/database-scripts/settings"), new { server = Server, port = Port, database = Database, username = Username, password = Password }); var text = await save.Content.ReadAsStringAsync(); using var json = JsonDocument.Parse(text); Notice = Read(json.RootElement, "message", save.StatusCode.ToString()); Success = save.IsSuccessStatusCode; Password = ""; HasPassword = HasPassword || Success; if (Success) { using var test = await Http.PostAsJsonAsync(ApiUrl("/api/common-tools/database-scripts/test-connection"), new { }); Notice = Read(JsonDocument.Parse(await test.Content.ReadAsStringAsync()).RootElement, "message", test.StatusCode.ToString()); Success = test.IsSuccessStatusCode; } } catch (Exception ex) { Notice = ex.Message; Success = false; } finally { Busy = false; }
+    }
+    private static string Read(JsonElement root, string name, string fallback) => root.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String ? value.GetString() ?? fallback : fallback;
+    private string ApiUrl(string path) { var url = LocalStore["grcs_wcs_url"]; return (string.IsNullOrWhiteSpace(url) || url == "null" ? "http://localhost:8230" : url.TrimEnd('/')) + path; }
+}

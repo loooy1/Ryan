@@ -140,6 +140,6 @@ public sealed class RcsApiResponse
     {
         MsgTime = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss", System.Globalization.CultureInfo.InvariantCulture),
         Success = false,
-        Exception = exception
+        Exception = string.IsNullOrWhiteSpace(exception) ? "任务被拒绝，但未提供具体异常信息。" : exception
     };
 }

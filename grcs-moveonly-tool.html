@@ -1,0 +1,294 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>GRCS MOVE_ONLY 循环派发</title>
+  <style>
+    :root{color-scheme:dark;--bg:#080f1d;--panel:#111d30;--line:#283b56;--text:#e7f0ff;--muted:#91a5c2;--cyan:#35c8ef;--green:#23d59a;--red:#ff6477;--yellow:#ffc857}
+    *{box-sizing:border-box}body{margin:0;min-height:100vh;background:radial-gradient(ellipse at 15% 0%,#142644 0,transparent 44%),var(--bg);color:var(--text);font:14px/1.5 "Segoe UI","Microsoft YaHei",sans-serif}
+    main{max-width:1260px;margin:0 auto;padding:26px 20px 42px}header{display:flex;align-items:center;justify-content:space-between;gap:18px;margin-bottom:20px}h1{margin:0;font-size:24px}.sub{color:var(--muted);margin-top:5px}.badge{border:1px solid #216b81;color:#6ce4ff;background:#0a2938;border-radius:99px;padding:6px 11px;white-space:nowrap;font-size:12px}
+    .layout{display:grid;grid-template-columns:minmax(340px,.95fr) minmax(480px,1.25fr);gap:18px;align-items:start}.card{background:linear-gradient(145deg,rgba(19,33,53,.98),rgba(12,23,39,.98));border:1px solid var(--line);border-radius:14px;padding:18px;box-shadow:0 14px 36px #0003}h2{margin:0 0 15px;font-size:16px}h3{margin:0 0 12px;font-size:14px;color:#b9d8f7}
+    .grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.field{display:flex;flex-direction:column;gap:5px;min-width:0}.field.full{grid-column:1/-1}label{color:#a9bad1;font-size:12px}input,textarea{width:100%;color:var(--text);background:#091323;border:1px solid #30435f;border-radius:8px;padding:10px 11px;outline:none;font:inherit}input:focus,textarea:focus{border-color:var(--cyan);box-shadow:0 0 0 2px #35c8ef22}input::placeholder,textarea::placeholder{color:#667b98}textarea{resize:vertical;min-height:94px;font:12px/1.6 Consolas,monospace}.help,.tip{color:#8299b7;font-size:11px;margin-top:2px}
+    .actions{display:flex;flex-wrap:wrap;gap:9px;margin-top:15px}button{border:1px solid #34708b;border-radius:8px;padding:10px 14px;color:#eaffff;background:#0b8fb1;font:600 13px/1.4 "Segoe UI","Microsoft YaHei",sans-serif;cursor:pointer}button.secondary{color:#c8d7eb;background:#18283f;border-color:#354b68}button.stop{color:#ffdbe0;background:#4a1d2a;border-color:#8a3a4b}button:disabled{opacity:.5;cursor:not-allowed}
+    .notice{border:1px solid #665627;border-radius:9px;padding:10px 12px;background:#332b16;color:#ffdc8b;font-size:12px;margin-top:14px}.status{padding:10px 12px;border-radius:8px;color:#b8c8dc;background:#0a1525;border:1px solid #243751;margin:12px 0;white-space:pre-wrap}.status.error{border-color:#7c3445;color:#ff9aa7;background:#291725}.status.ok{border-color:#1d6654;color:#8cf0c6;background:#0d261f}.status.running{border-color:#23647d;color:#80ddf8;background:#0d2331}
+    .table-wrap{overflow:auto;border:1px solid #263951;border-radius:9px}table{width:100%;border-collapse:collapse;min-width:600px}th,td{text-align:left;padding:9px 10px;border-bottom:1px solid #203149;font-size:12px}th{color:#8fa7c5;background:#0a1525;font-weight:600}tr:last-child td{border-bottom:0}.battery{color:#75ecc2;font-weight:700}.occupied{color:#ffb8c0}.free{color:#7ee8bd}.empty{color:var(--muted);padding:18px 4px;text-align:center}.section{margin-top:18px}pre{background:#07111e;color:#c7e6ff;border:1px solid #263951;border-radius:9px;padding:13px;overflow:auto;min-height:100px;max-height:300px;font:12px/1.55 Consolas,monospace;white-space:pre-wrap;word-break:break-word}.log{font:12px/1.6 Consolas,monospace;color:#aac0dc;max-height:240px;overflow:auto}.log div{padding:4px 0;border-bottom:1px solid #1b2b40;white-space:pre-wrap;word-break:break-word}.log .bad{color:#ff8796}.log .good{color:#7ee8bd}.log .warn{color:#ffdb8b}.counter{display:flex;gap:10px;flex-wrap:wrap;margin:10px 0}.counter span{padding:5px 9px;background:#0a1525;border:1px solid #263951;border-radius:7px;color:#a9bfd9;font-size:12px}.counter b{color:#73def8}
+    @media(max-width:900px){.layout{grid-template-columns:1fr}main{padding:18px 12px 30px}}@media(max-width:520px){header{align-items:flex-start;flex-direction:column}.grid{grid-template-columns:1fr}.field.full{grid-column:auto}}
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <div><h1>GRCS MOVE_ONLY 循环派发</h1><div class="sub">轮询车辆状态，将任务派给自动、空闲且电量高于阈值的车辆</div></div>
+    <div class="badge" id="runBadge">已停止</div>
+  </header>
+  <div class="layout">
+    <section class="card">
+      <h2>接口与派发设置</h2>
+      <div class="grid">
+        <div class="field full"><label for="baseUrl">GRCS 地址</label><input id="baseUrl" placeholder="例如 http://10.57.108.229:8224"><div class="help">车辆接口和任务接口按代码库路由自动拼接。</div></div>
+        <div class="field"><label for="vehiclePath">车辆查询接口</label><input id="vehiclePath" value="/api/Vehicle/GetAllVehicles" readonly></div>
+        <div class="field"><label for="taskPath">MOVE_ONLY 接口</label><input id="taskPath" value="/api/RawOrder/ChangeFloor" readonly></div>
+        <div class="field"><label for="scene">场景名</label><input id="scene" value="AMR"></div>
+        <div class="field"><label for="batteryThreshold">电量阈值（严格高于）</label><input id="batteryThreshold" type="number" min="0" max="100" value="80"></div>
+        <div class="field full"><label for="stations">目标站点（每行一个，按此顺序分配）</label><textarea id="stations" placeholder="0100000512_1&#10;0100000530_1&#10;0100000601_0"></textarea><div class="help">站点编码应与车辆接口返回的 location 一致；当前被任一车辆占用的站点会跳过。</div></div>
+        <div class="field"><label for="interval">轮询间隔（秒）</label><input id="interval" type="number" min="3" max="3600" value="10"></div>
+        <div class="field"><label for="priority">任务优先级</label><input id="priority" type="number" value="50"></div>
+        <div class="field full"><label for="token">Bearer Token（可选）</label><input id="token" type="password" placeholder="需要鉴权时填写"></div>
+      </div>
+      <div class="actions">
+        <button id="onceBtn">执行一轮</button>
+        <button id="startBtn">开始循环</button>
+        <button id="stopBtn" class="stop" disabled>停止循环</button>
+        <button id="clearBtn" class="secondary">清除本地预留</button>
+      </div>
+      <div class="notice">循环规则：只选在线、AUTOMATIC、IDLE、没有当前运输任务且电量高于阈值的车。车辆当前 location 占用的站点会跳过；派发后目标站和车辆会在浏览器本地预留，防止重复派单。页面需能跨域访问 GRCS（CORS）。</div>
+      <div id="status" class="status">等待执行。先填 GRCS 地址、场景和站点列表。</div>
+      <div class="counter"><span>本轮次 <b id="cycleCount">0</b></span><span>当前预留 <b id="reservationCount">0</b></span><span>下次轮询 <b id="nextRun">—</b></span></div>
+    </section>
+
+    <section class="card">
+      <h2>车辆、位置与站点占用</h2>
+      <div id="vehicles" class="empty">执行一轮后显示车辆状态和可派发站点。</div>
+      <div class="section"><h3>本轮 MOVE_ONLY 请求预览</h3><pre id="preview">尚未生成请求体。</pre></div>
+      <div class="section"><h3>请求与响应记录</h3><div id="log" class="log"><div>尚无请求记录。</div></div></div>
+    </section>
+  </div>
+</main>
+<script>
+(() => {
+  const $ = id => document.getElementById(id);
+  let loopRunning = false;
+  let cycleBusy = false;
+  let cycleCount = 0;
+  let countdownTimer = null;
+  let reservations = loadReservations();
+  let currentVehicles = [];
+  let previewPayloads = [];
+
+  function reservationKey() {
+    return `grcs-moveonly-reservations:${$('baseUrl').value.trim()}:${$('scene').value.trim()}`;
+  }
+  function loadReservations() {
+    try { return JSON.parse(localStorage.getItem(reservationKey()) || '{}'); } catch { return {}; }
+  }
+  function saveReservations() {
+    try { localStorage.setItem(reservationKey(), JSON.stringify(reservations)); } catch {}
+    $('reservationCount').textContent = Object.keys(reservations).length;
+  }
+  function apiUrl(path, query = {}) {
+    const base = $('baseUrl').value.trim().replace(/\/+$/, '');
+    if (!base) throw new Error('请填写 GRCS 地址。');
+    const url = new URL(`${base}${path}`);
+    for (const [key, value] of Object.entries(query)) url.searchParams.set(key, value);
+    return url.toString();
+  }
+  function requestHeaders(json = false) {
+    const headers = { Accept: 'application/json' };
+    const token = $('token').value.trim();
+    if (token) headers.Authorization = `Bearer ${token}`;
+    if (json) headers['Content-Type'] = 'application/json; charset=utf-8';
+    return headers;
+  }
+  function setStatus(text, kind = '') {
+    $('status').textContent = text;
+    $('status').className = `status ${kind}`.trim();
+  }
+  function log(text, kind = '') {
+    const box = $('log');
+    if (box.firstElementChild?.textContent === '尚无请求记录。') box.innerHTML = '';
+    const row = document.createElement('div');
+    row.className = kind;
+    row.textContent = `[${new Date().toLocaleTimeString()}] ${text}`;
+    box.prepend(row);
+  }
+  function parseStations() {
+    return [...new Set($('stations').value.split(/[\s,，;；]+/).map(x => x.trim()).filter(Boolean))];
+  }
+  function localTime() {
+    const d = new Date(), p = n => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+  }
+  function newOrderId() {
+    const d = new Date(), p = n => String(n).padStart(2, '0');
+    const rand = window.crypto?.randomUUID ? window.crypto.randomUUID().replaceAll('-', '').slice(0, 8) : Math.random().toString(16).slice(2, 10);
+    return `MV_${d.getFullYear()}${p(d.getMonth()+1)}${p(d.getDate())}${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}_${rand}`;
+  }
+  function makePayload(vehicle, station) {
+    return {
+      createTime: localTime(),
+      sceneName: $('scene').value.trim(),
+      orderType: 'MOVE_ONLY',
+      orderId: newOrderId(),
+      orderName: '纯移动任务',
+      vehicleName: vehicle.name,
+      priority: Number($('priority').value || 50),
+      stationCodes: [station],
+      errorCode: ''
+    };
+  }
+  async function responseJson(response) {
+    const text = await response.text();
+    let data = text;
+    try { data = text ? JSON.parse(text) : null; } catch {}
+    if (!response.ok) throw new Error(`HTTP ${response.status}: ${typeof data === 'string' ? data : JSON.stringify(data) || response.statusText}`);
+    if (data === false || data?.success === false) throw new Error(`HTTP ${response.status}: ${JSON.stringify(data)}`);
+    return { data, text };
+  }
+  async function fetchVehicles() {
+    const url = apiUrl($('vehiclePath').value, { sceneName: $('scene').value.trim() });
+    const response = await fetch(url, { method: 'GET', headers: requestHeaders() });
+    const { data } = await responseJson(response);
+    if (!Array.isArray(data)) throw new Error('车辆接口返回不是数组，请检查 GRCS 版本的响应格式。');
+    return { url, vehicles: data.map(v => ({
+      name: String(v.name ?? ''),
+      mode: String(v.utilizationState ?? ''),
+      battery: Number(v.power),
+      location: String(v.location ?? ''),
+      currentOrder: String(v.currentTransportOrder ?? ''),
+      state: String(v.executionState ?? ''),
+      online: Boolean(v.isOnline)
+    })) };
+  }
+  function releaseArrivedReservations(vehicles) {
+    let changed = false;
+    for (const [vehicleName, reservation] of Object.entries(reservations)) {
+      const vehicle = vehicles.find(v => v.name === vehicleName);
+      if (vehicle && vehicle.location === reservation.station && !vehicle.currentOrder && vehicle.state.toUpperCase() === 'IDLE') {
+        delete reservations[vehicleName];
+        changed = true;
+        log(`车辆 ${vehicleName} 已到达 ${reservation.station} 且任务结束，释放该车辆预留。`, 'good');
+      }
+    }
+    if (changed) saveReservations();
+  }
+  function renderVehicleTable(vehicles, stations, available, locationsKnown) {
+    const box = $('vehicles');
+    if (!vehicles.length) { box.className = 'empty'; box.textContent = '车辆列表为空。'; return; }
+    const occupied = new Set(vehicles.map(v => v.location).filter(Boolean));
+    const rows = vehicles.map(v => {
+      const busy = v.currentOrder || v.state.toUpperCase() !== 'IDLE';
+      const modeOk = v.mode.toUpperCase() === 'AUTOMATIC';
+      const powerOk = Number.isFinite(v.battery) && v.battery > Number($('batteryThreshold').value || 80);
+      const qualified = v.online && modeOk && powerOk && !busy && !reservations[v.name];
+      const badge = reservations[v.name] ? `已预留 → ${reservations[v.name].station}` : qualified ? '符合条件' : '暂不派发';
+      return `<tr><td>${escapeHtml(v.name)}</td><td>${escapeHtml(v.location || '未知')}</td><td>${escapeHtml(v.mode || '未知')}</td><td>${Number.isFinite(v.battery) ? `${v.battery}%` : '未知'}</td><td>${escapeHtml(v.state || '未知')}</td><td>${escapeHtml(v.currentOrder || '无')}</td><td class="${qualified ? 'free' : reservations[v.name] ? 'occupied' : ''}">${escapeHtml(badge)}</td></tr>`;
+    }).join('');
+    const stationRows = stations.map(s => `<tr><td>${escapeHtml(s)}</td><td class="${!locationsKnown || occupied.has(s) || !available.includes(s) ? 'occupied' : 'free'}">${!locationsKnown ? '车辆位置不完整，暂停派发' : occupied.has(s) ? '车辆当前占用' : available.includes(s) ? '空闲可派发' : '本轮已预留'}</td></tr>`).join('');
+    box.className = 'table-wrap';
+    box.innerHTML = `<h3 style="padding:10px 10px 0">车辆状态</h3><table><thead><tr><th>车辆</th><th>当前位置</th><th>模式</th><th>电量</th><th>执行状态</th><th>当前运输任务</th><th>派发状态</th></tr></thead><tbody>${rows}</tbody></table><h3 style="padding:14px 10px 0">输入站点占用情况</h3><table><thead><tr><th>站点</th><th>状态</th></tr></thead><tbody>${stationRows || '<tr><td colspan="2">未输入站点</td></tr>'}</tbody></table>`;
+  }
+  function escapeHtml(value) {
+    return String(value).replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
+  }
+  function validateSettings() {
+    if (!$('baseUrl').value.trim()) throw new Error('请填写 GRCS 地址。');
+    if (!$('scene').value.trim()) throw new Error('请填写场景名。');
+    if (!parseStations().length) throw new Error('请至少输入一个目标站点。');
+  }
+  async function runOneCycle() {
+    if (cycleBusy) return;
+    cycleBusy = true;
+    $('onceBtn').disabled = true;
+    try {
+      validateSettings();
+      const stations = parseStations();
+      const { url, vehicles } = await fetchVehicles();
+      currentVehicles = vehicles;
+      releaseArrivedReservations(vehicles);
+      const occupied = new Set(vehicles.map(v => v.location).filter(Boolean));
+      const alreadyReservedStations = new Set(Object.values(reservations).map(r => r.station));
+      const locationsKnown = vehicles.every(v => Boolean(v.location));
+      const available = locationsKnown ? stations.filter(s => !occupied.has(s) && !alreadyReservedStations.has(s)) : [];
+      const threshold = Number($('batteryThreshold').value || 80);
+      const qualified = vehicles.filter(v => v.name && v.online && v.mode.toUpperCase() === 'AUTOMATIC'
+        && Number.isFinite(v.battery) && v.battery > threshold
+        && v.state.toUpperCase() === 'IDLE' && !v.currentOrder && !reservations[v.name])
+        .sort((a,b) => b.battery - a.battery);
+      const allocations = qualified.slice(0, available.length).map((vehicle, index) => ({ vehicle, station: available[index] }));
+      cycleCount += 1;
+      $('cycleCount').textContent = cycleCount;
+      previewPayloads = allocations.map(x => makePayload(x.vehicle, x.station));
+      $('preview').textContent = previewPayloads.length ? previewPayloads.map(p => JSON.stringify(p, null, 2)).join('\n\n') : '本轮没有可派发组合（无空闲站点或没有符合条件的空闲车辆）。';
+      renderVehicleTable(vehicles, stations, available, locationsKnown);
+      log(`第 ${cycleCount} 轮：GET ${url}，读取 ${vehicles.length} 台；自动/在线/IDLE/电量>${threshold}% 车辆 ${qualified.length} 台；空闲站点 ${available.length} 个。${locationsKnown ? '' : '部分车辆位置未知，本轮暂停派发以避免占用冲突。'}`);
+
+      const taskUrl = apiUrl($('taskPath').value);
+      for (let i = 0; i < allocations.length; i++) {
+        if (!loopRunning && $('startBtn').disabled) break;
+        const { vehicle, station } = allocations[i];
+        const payload = previewPayloads[i];
+        log(`POST ${taskUrl} · ${vehicle.name} → ${station}\n请求体：${JSON.stringify(payload, null, 2)}`);
+        try {
+          const response = await fetch(taskUrl, { method: 'POST', headers: requestHeaders(true), body: JSON.stringify(payload) });
+          const { data } = await responseJson(response);
+          reservations[vehicle.name] = { station, orderId: payload.orderId, createdAt: payload.createTime };
+          saveReservations();
+          log(`车辆 ${vehicle.name} 已接收任务（HTTP ${response.status}）。响应：${JSON.stringify(data)}`, 'good');
+        } catch (error) {
+          log(`车辆 ${vehicle.name} 下发失败：${error.message}`, 'bad');
+        }
+      }
+      if (!allocations.length) {
+        const reason = !qualified.length ? '没有符合条件的空闲车辆' : '所有输入站点都被车辆占用或已预留';
+        log(`第 ${cycleCount} 轮未下发：${reason}。`, 'warn');
+      }
+      setStatus(`第 ${cycleCount} 轮完成：查询 ${vehicles.length} 台车，符合条件 ${qualified.length} 台，分配任务 ${allocations.length} 个。`, 'ok');
+    } catch (error) {
+      setStatus(`本轮失败：${error.message}\n若浏览器提示 CORS，需要让 GRCS 允许当前页面跨域访问。`, 'error');
+      log(`轮询失败：${error.message}`, 'bad');
+    } finally {
+      cycleBusy = false;
+      $('onceBtn').disabled = loopRunning;
+    }
+  }
+  function sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
+  async function startLoop() {
+    if (loopRunning) return;
+    try { validateSettings(); } catch (e) { setStatus(e.message, 'error'); return; }
+    loopRunning = true;
+    $('runBadge').textContent = '循环运行中';
+    $('runBadge').style.borderColor = '#1d6654';
+    $('runBadge').style.color = '#8cf0c6';
+    $('startBtn').disabled = true;
+    $('onceBtn').disabled = true;
+    $('stopBtn').disabled = false;
+    setStatus('循环已启动，正在立即执行第一轮。', 'running');
+    while (loopRunning) {
+      await runOneCycle();
+      if (!loopRunning) break;
+      let remaining = Math.max(3, Number($('interval').value || 10));
+      while (loopRunning && remaining > 0) {
+        $('nextRun').textContent = `${remaining}s`;
+        await sleep(1000);
+        remaining -= 1;
+      }
+    }
+    $('nextRun').textContent = '—';
+    $('runBadge').textContent = '已停止';
+    $('runBadge').style.borderColor = '#216b81';
+    $('runBadge').style.color = '#6ce4ff';
+    $('startBtn').disabled = false;
+    $('onceBtn').disabled = false;
+    $('stopBtn').disabled = true;
+    setStatus('循环已停止。已派发任务的车辆和站点预留仍保留在本页面。');
+  }
+  $('onceBtn').addEventListener('click', () => runOneCycle());
+  $('startBtn').addEventListener('click', startLoop);
+  $('stopBtn').addEventListener('click', () => { loopRunning = false; setStatus('正在停止循环；当前正在发送的请求会先完成。', 'running'); });
+  $('clearBtn').addEventListener('click', () => {
+    if (loopRunning) { setStatus('请先停止循环，再清除本地预留。', 'error'); return; }
+    if (!confirm('清除浏览器本地的车辆/站点预留记录？不会取消已经发到 GRCS 的任务。')) return;
+    reservations = {};
+    saveReservations();
+    if (currentVehicles.length) renderVehicleTable(currentVehicles, parseStations(), parseStations().filter(s => !currentVehicles.some(v => v.location === s)), currentVehicles.every(v => Boolean(v.location)));
+    log('已清除本地派发预留；这不会取消 GRCS 中已创建的任务。', 'warn');
+    setStatus('本地预留已清除。');
+  });
+  $('baseUrl').addEventListener('change', () => { reservations = loadReservations(); saveReservations(); });
+  $('scene').addEventListener('change', () => { reservations = loadReservations(); saveReservations(); });
+  $('reservationCount').textContent = Object.keys(reservations).length;
+})();
+</script>
+</body>
+</html>

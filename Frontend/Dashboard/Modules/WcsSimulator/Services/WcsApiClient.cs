@@ -76,7 +76,7 @@ public class WcsApiClient
     {
         if (SuppressAlerts || _notifiedGrcsOffline) return;
         _notifiedGrcsOffline = true;
-        _alert.Show($"无法连接 GRCS 后端（{GrcsBaseUrl}）\n{hint}");
+        _alert.Show($"无法连接 RCS 后端（{GrcsBaseUrl}）\n{hint}");
     }
 
     /// <summary>请求异常兜底：离线期间只弹一次，恢复在线后自动重置提示资格。</summary>
@@ -101,7 +101,7 @@ public class WcsApiClient
         get
         {
             var url = _store["grcs_grcs_url"];
-            return string.IsNullOrEmpty(url) || url == "null" ? "http://localhost:8224" : url;
+            return string.IsNullOrEmpty(url) || url == "null" ? "http://localhost:8232" : url;
         }
     }
 

@@ -1,6 +1,7 @@
 using Backend.Shared;
 using Backend.Shared.Logging;
 using WCSBackend.Modules.Wcs;
+using WCSBackend.Modules.CommonTools;
 
 var builder = WebApplication.CreateBuilder(args);
 builder.AddSharedLogging();
@@ -36,6 +37,7 @@ builder.Services.AddSharedModule(
 
 // 模块注册（Wcs 总模块含 Automation/Proxy/Console/Realtime 子模块）
 builder.Services.AddWcsModule();
+builder.Services.AddCommonToolsModule();
 
 var app = builder.Build();
 app.Logger.LogInformation("WCS 后端启动，环境={Environment}", app.Environment.EnvironmentName);

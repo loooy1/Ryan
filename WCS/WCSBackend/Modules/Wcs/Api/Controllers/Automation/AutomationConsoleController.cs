@@ -26,7 +26,6 @@ public class AutomationConsoleController : ControllerBase
     private readonly AutomationLogService _logs;
     private readonly RangeConfigService _rangeConfig;
     private readonly WcsSettingsService _settings;
-    private readonly RcsProtocolTemplateStore _rcsProtocols;
     private readonly MoveLoopRunner _moveLoop;
     private readonly NestRunner _nest;
     private readonly NestConfigService _nestConfig;
@@ -38,7 +37,6 @@ public class AutomationConsoleController : ControllerBase
     public AutomationConsoleController(AutoTemplateRunner auto, AutoTemplateStore templates, AutomationLogService logs,
         RangeConfigService rangeConfig, WcsSettingsService settings,
         MoveLoopRunner moveLoop, NestRunner nest, NestConfigService nestConfig, GrcsHttpClient grcs, WcsInventoryStore inventory,
-        RcsProtocolTemplateStore rcsProtocols,
         ITaskStageService taskStages, IHubContext<TaskStageRealtimeHub> hub)
     {
         _auto = auto;
@@ -46,7 +44,6 @@ public class AutomationConsoleController : ControllerBase
         _logs = logs;
         _rangeConfig = rangeConfig;
         _settings = settings;
-        _rcsProtocols = rcsProtocols;
         _moveLoop = moveLoop;
         _nest = nest;
         _nestConfig = nestConfig;
@@ -273,7 +270,6 @@ public class AutomationConsoleController : ControllerBase
     public ActionResult<object> SaveSettings([FromBody] WcsSettingsDto settings)
     {
         _settings.Set(settings);
-        _rcsProtocols.UpdateActiveBaseUrl(settings.GrcsBaseUrl);
         _ = _hub.Clients.All.SendAsync("ConfigurationChanged", "settings");
         return Ok(new { success = true });
     }
@@ -316,13 +312,13 @@ public class AutomationConsoleController : ControllerBase
         return Ok(new { success = ok, reason });
     }
 
-    /// <summary>GRCS 全部车辆（归巢车辆多选用；含就绪状态 IsReady）。</summary>
+    /// <summary>RCS 全部车辆（归巢车辆多选用；含就绪状态 IsReady）。</summary>
     [HttpGet("vehicles")]
     public async Task<ActionResult<object>> Vehicles()
     {
         var settings = _settings.Get();
         if (settings == null || string.IsNullOrWhiteSpace(settings.GrcsBaseUrl))
-            return BadRequest(new { ok = false, reason = "未配置 GRCS 地址（地图信息页系统设置）" });
+            return BadRequest(new { ok = false, reason = "未配置 RCS 地址（系统设置）" });
         var (ok, code, json) = await _grcs.QueryVehiclesAsync(settings.GrcsBaseUrl, settings.SceneName);
         if (!ok)
             return BadRequest(new { ok = false, code, reason = code == 0 ? "查询车辆超时/网络异常" : $"查询车辆 HTTP {code}" });

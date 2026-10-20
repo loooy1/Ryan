@@ -10,12 +10,11 @@ public sealed class RcsProtocolProfilesDto
     public List<RcsProtocolProfileDto> Profiles { get; set; } = [];
 }
 
-/// <summary>一个 RCS 类型的完整配置：地址、协议、功能模板和 Mock 入站。</summary>
+/// <summary>一个 RCS 类型的完整配置：协议、功能模板和 Mock 入站。</summary>
 public sealed class RcsProtocolProfileDto
 {
     public string Id { get; set; } = "";
     public string Name { get; set; } = "";
-    public string BaseUrl { get; set; } = "";
     public List<RcsProtocolOperationTemplateDto> Operations { get; set; } = [];
     public List<FeatureModuleDto> FeatureModules { get; set; } = [];
     public List<MockRuleDto> MockRules { get; set; } = [];

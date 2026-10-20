@@ -16,7 +16,6 @@ public sealed class RcsFeatureModuleRowConfiguration : IEntityTypeConfiguration<
         builder.Property(x => x.RcsType).HasColumnName("rcs_type").HasMaxLength(64).IsRequired();
         builder.Property(x => x.Id).HasColumnName("module_id").HasMaxLength(255).IsRequired();
         builder.Property(x => x.ProfileName).HasColumnName("profile_name").HasMaxLength(255).HasDefaultValue("").IsRequired();
-        builder.Property(x => x.BaseUrl).HasColumnName("base_url").HasMaxLength(2048).HasDefaultValue("").IsRequired();
         builder.Property(x => x.IsActive).HasColumnName("is_active");
         builder.Property(x => x.Name).HasColumnName("name");
         builder.Property(x => x.TaskInterfaceType).HasColumnName("task_interface_type").HasMaxLength(16).HasDefaultValue("").IsRequired();

@@ -14,14 +14,12 @@ public sealed class RcsProtocolTemplateStore
     private const string LegacyStorageKey = "rcs_protocol_profiles";
     private static readonly JsonSerializerOptions JsonOptions = new() { PropertyNameCaseInsensitive = true };
     private readonly IUnitOfWorkFactory _uow;
-    private readonly WcsSettingsService _settings;
     private readonly object _sync = new();
     private RcsProtocolProfilesDto _config;
 
-    public RcsProtocolTemplateStore(IUnitOfWorkFactory uow, WcsSettingsService settings)
+    public RcsProtocolTemplateStore(IUnitOfWorkFactory uow)
     {
         _uow = uow;
-        _settings = settings;
         _config = LoadOrSeed();
     }
 
@@ -40,12 +38,6 @@ public sealed class RcsProtocolTemplateStore
         }
     }
 
-    public string ResolveBaseUrl(string? fallback)
-    {
-        var profileUrl = GetActive().BaseUrl?.Trim();
-        return !string.IsNullOrWhiteSpace(profileUrl) ? profileUrl.TrimEnd('/') : (fallback ?? "").TrimEnd('/');
-    }
-
     public RcsProtocolProfilesDto Save(RcsProtocolProfilesDto config)
     {
         if (config == null) throw new ArgumentNullException(nameof(config));
@@ -60,12 +52,6 @@ public sealed class RcsProtocolTemplateStore
         {
             profile.Id = profile.Id.Trim();
             profile.Name = profile.Name.Trim();
-            profile.BaseUrl = profile.BaseUrl?.Trim() ?? "";
-            if (!string.IsNullOrWhiteSpace(profile.BaseUrl)
-                && (!Uri.TryCreate(profile.BaseUrl, UriKind.Absolute, out var profileUri)
-                    || profileUri.Scheme is not ("http" or "https")))
-                throw new InvalidOperationException($"RCS 配置集「{profile.Name}」的后端地址必须是完整 HTTP/HTTPS 地址。");
-
             profile.Operations ??= [];
             profile.FeatureModules ??= [];
             profile.MockRules ??= [];
@@ -101,7 +87,6 @@ public sealed class RcsProtocolTemplateStore
         {
             _config = new RcsProtocolProfilesDto { SchemaVersion = 3, ActiveProfileId = activeProfileId, Profiles = profiles };
             Persist();
-            SyncActiveBaseUrl();
             return Clone(_config);
         }
     }
@@ -114,7 +99,6 @@ public sealed class RcsProtocolTemplateStore
                 throw new InvalidOperationException($"RCS 配置集「{profileId}」不存在。");
             _config.ActiveProfileId = profileId.Trim();
             Persist();
-            SyncActiveBaseUrl();
             return Clone(_config);
         }
     }
@@ -131,7 +115,6 @@ public sealed class RcsProtocolTemplateStore
             _config.Profiles.Remove(profile);
             if (wasActive) _config.ActiveProfileId = _config.Profiles[0].Id;
             Persist(); // 两张表整体重写，删除类型时同时清除其 Mock 和业务模板行。
-            if (wasActive) SyncActiveBaseUrl();
             return Clone(_config);
         }
     }
@@ -182,16 +165,6 @@ public sealed class RcsProtocolTemplateStore
         }
     }
 
-    public void UpdateActiveBaseUrl(string baseUrl)
-    {
-        lock (_sync)
-        {
-            var profile = GetActiveMutable();
-            profile.BaseUrl = baseUrl?.Trim() ?? "";
-            Persist();
-        }
-    }
-
     private RcsProtocolProfilesDto LoadOrSeed()
     {
         using var uow = _uow.Create();
@@ -237,7 +210,6 @@ public sealed class RcsProtocolTemplateStore
             {
                 Id = type,
                 Name = !string.IsNullOrWhiteSpace(profileFeature?.ProfileName) ? profileFeature!.ProfileName : type,
-                BaseUrl = profileFeature?.BaseUrl ?? (Eq(type, "RCS1") ? _settings.Get().GrcsBaseUrl : ""),
                 Operations = BuildOperations(featureTemplates),
                 FeatureModules = featureTemplates,
                 MockRules = mockTemplates,
@@ -312,7 +284,6 @@ public sealed class RcsProtocolTemplateStore
                 var row = dto.Adapt<RcsFeatureModuleRow>();
                 row.RcsType = profile.Id;
                 row.ProfileName = profile.Name;
-                row.BaseUrl = profile.BaseUrl;
                 row.IsActive = Eq(profile.Id, config.ActiveProfileId);
                 row.UpdatedAt = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
                 uow.Repository<RcsFeatureModuleRow>().AddAsync(row).GetAwaiter().GetResult();
@@ -327,7 +298,6 @@ public sealed class RcsProtocolTemplateStore
         {
             profile.Id = profile.Id?.Trim() ?? "";
             profile.Name = string.IsNullOrWhiteSpace(profile.Name) ? profile.Id : profile.Name.Trim();
-            profile.BaseUrl ??= "";
             profile.Operations ??= [];
             profile.FeatureModules ??= [];
             profile.MockRules ??= [];
@@ -442,14 +412,6 @@ public sealed class RcsProtocolTemplateStore
             if (!ReferenceEquals(rule, first)) rule.BoardSync = false;
             if (rule.BoardSync) rule.RequiresApproval = false;
         }
-    }
-
-    private void SyncActiveBaseUrl()
-    {
-        var active = _config.Profiles.FirstOrDefault(p => Eq(p.Id, _config.ActiveProfileId));
-        if (active == null || string.IsNullOrWhiteSpace(active.BaseUrl)) return;
-        var settings = _settings.Get();
-        _settings.Set(new WcsSettingsDto { GrcsBaseUrl = active.BaseUrl, SceneName = settings.SceneName });
     }
 
     private static string NormalizeMethod(string? method) => method?.Trim().ToUpperInvariant() switch

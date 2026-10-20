@@ -685,7 +685,8 @@
 
     // ── 归巢模式（后端 NestRunner 执行：框选巢区 → 持续调度直到区内点全有车，状态走 SignalR NestStats）──
     private string _nestMarksText = "";
-    private bool _nestRunning => StageHub.NestStats?.Running == true || Hub.Status.NestRunning;
+    private bool _nestStopRequested;
+    private bool _nestRunning => !_nestStopRequested && StageHub.NestStats?.Running == true;
     // 车队顺序即选择顺序（保序去重）：车多时仅前 N 台参与（N = 巢区点数），由两步地图确认时截断
     private List<string> _selectedVehicles = [];
     private static List<string> FleetDedupe(IEnumerable<string> xs) =>
@@ -852,6 +853,8 @@
 
     private void OnNestStatsChanged()
     {
+        if (StageHub.NestStats?.Running != true)
+            _nestStopRequested = false;
         // 归巢正常执行完成（后端已清空巢区配置）→ 同步清空本地车队与巢区显示；手动停止/失败不清空
         if (StageHub.NestStats?.Completed == true)
         {
@@ -879,8 +882,16 @@
 
     private async Task StopNest()
     {
-        await WcsApi.StopNestAsync();
-        ShowResp("⏹ 已请求停止归巢", "info");
+        _nestStopRequested = true;
+        await InvokeAsync(StateHasChanged);
+        var stopped = await WcsApi.StopNestAsync();
+        if (!stopped)
+        {
+            _nestStopRequested = false;
+            ShowResp("停止归巢请求失败，请检查 WCS 后端连接。", "error");
+            return;
+        }
+        ShowResp("⏹ 已停止后续归巢任务下发；已下发任务继续执行。", "info");
     }
 
     // ── 归巢两步地图选择（先选车队，再选巢区，总结确认后一并保存）──

@@ -212,7 +212,15 @@
     {
         Nav.SelectFeature("tools", new List<SubNavItem>
         {
-            new("HTTP模拟器", "tools/http-simulator", "🌐"),
+            new("HTTP模拟器", "", "🌐", Children: [
+                new("通用请求", "tools/http-simulator", "↗"),
+                new("货物移除", "tools/container-remove", "📤"),
+                new("货物到位", "tools/container-ready", "📥"),
+                new("分拣完成", "tools/container-operation-finish", "✅"),
+                new("任务下发", "tools/task-receive", "🚚")]),
+            new("数据库脚本执行", "", "🗄️", Children: [
+                new("数据库配置", "tools/database-scripts", "⚙️"),
+                new("嵌套货物", "tools/nested-cargo", "📦")]),
         });
         NavManager.NavigateTo("tools/http-simulator");
     }

@@ -44,13 +44,13 @@
     <section class="settings-hero">
         <div class="settings-kicker">WCS / Runtime configuration</div>
         <div class="settings-title">系统设置</div>
-        <div class="settings-subtitle">统一管理场景、WCS 后端和 GRCS 服务地址。保存后配置会写入后端数据库，并同步到当前浏览器标签页的运行时连接。</div>
+        <div class="settings-subtitle">统一管理场景、WCS 后端和 RCS 服务地址。保存后配置会写入后端数据库，并同步到当前浏览器标签页的运行时连接。</div>
     </section>
 
     <section class="settings-grid">
         <div class="settings-card"><div class="settings-card-label">当前场景</div><div class="settings-card-value scene">@_warehouse</div></div>
         <div class="settings-card"><div class="settings-card-label">WCS 后端</div><div class="settings-card-value wcs">@_wcsBaseUrl</div></div>
-        <div class="settings-card"><div class="settings-card-label">GRCS 服务</div><div class="settings-card-value grcs">@_grcsBaseUrl</div></div>
+        <div class="settings-card"><div class="settings-card-label">RCS 服务</div><div class="settings-card-value grcs">@_grcsBaseUrl</div></div>
     </section>
 
     <section class="settings-panel">
@@ -61,7 +61,7 @@
         <div class="settings-form">
             <div class="form-group"><label>场景名称</label><input @bind="_warehouse" @bind:event="oninput" placeholder="Show" /></div>
             <div class="form-group"><label>WCS 后端地址</label><input @bind="_wcsBaseUrl" @bind:event="oninput" placeholder="http://localhost:8230" /></div>
-            <div class="form-group"><label>GRCS 地址</label><input @bind="_grcsBaseUrl" @bind:event="oninput" placeholder="http://localhost:8224" /></div>
+            <div class="form-group"><label>RCS 地址</label><input @bind="_grcsBaseUrl" @bind:event="oninput" placeholder="http://localhost:8232" /></div>
         </div>
         <div class="settings-actions">
             @if (_saving) { <span class="settings-saving">正在保存配置…</span> }
@@ -71,14 +71,14 @@
     </section>
 
     <section class="settings-notes">
-        <div class="settings-note"><b>配置作用</b>WCS 后端地址用于页面 API 和 SignalR 连接；GRCS 地址用于地图、车辆、库存及任务下发；场景名称会写入发送给 GRCS 的任务报文。</div>
+        <div class="settings-note"><b>配置作用</b>WCS 后端地址用于页面 API 和 SignalR 连接；RCS 地址统一用于地图、车辆、库存、业务交互及任务下发；场景名称会写入发送给 RCS 的任务报文。</div>
         <div class="settings-note"><b>保存方式</b>配置同时保存到浏览器运行时缓存和 WCS 后端数据库。后端保存成功后，其他页面会使用新配置。</div>
     </section>
 </div>
 
 @code {
     private string _warehouse = "Show";
-    private string _grcsBaseUrl = "http://localhost:8224";
+    private string _grcsBaseUrl = "http://localhost:8232";
     private string _wcsBaseUrl = "http://localhost:8230";
     private bool _saving;
     private bool _saved;

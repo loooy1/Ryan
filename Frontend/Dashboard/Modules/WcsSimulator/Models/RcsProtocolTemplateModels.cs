@@ -13,7 +13,6 @@ public sealed class RcsProtocolProfileDto
 {
     public string Id { get; set; } = "";
     public string Name { get; set; } = "";
-    public string BaseUrl { get; set; } = "";
     public List<RcsProtocolOperationTemplateDto> Operations { get; set; } = [];
     public List<FeatureModuleDto> FeatureModules { get; set; } = [];
     public List<MockRuleDto> MockRules { get; set; } = [];

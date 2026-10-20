@@ -295,7 +295,7 @@ public class ModuleRunService
                 && string.Equals(ctx.GetContext("returnTaskRegistered"), "true", StringComparison.OrdinalIgnoreCase);
             var body = new Dictionary<string, object?>();
             foreach (var parameter in module.Params) body[parameter.Name] = Resolve(parameter, ctx);
-            var baseUrl = _protocols.ResolveBaseUrl(_settings.Get()?.GrcsBaseUrl);
+            var baseUrl = _settings.Get()?.GrcsBaseUrl?.TrimEnd('/') ?? "";
             var url = baseUrl.TrimEnd('/') + module.ApiUrl;
             var method = ResolveHttpMethod(module.HttpMethod);
             string? requestBody = null;

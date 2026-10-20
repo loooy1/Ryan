@@ -102,7 +102,7 @@ public class RangeConfigDto
 /// <summary>运行配置（GRCS 地址/场景名，前端「地图信息」页保存 PUT 到后端，代理与自动化服务读取）。</summary>
 public class WcsSettingsDto
 {
-    public string GrcsBaseUrl { get; set; } = "http://localhost:8224";
+    public string GrcsBaseUrl { get; set; } = "http://localhost:8232";
     public string SceneName { get; set; } = "Show";
 }
 

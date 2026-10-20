@@ -8,8 +8,8 @@ using Microsoft.AspNetCore.Mvc;
 namespace WCSBackend.Modules.Wcs.Proxy.Controllers;
 
 /// <summary>
-/// GRCS 对接代理（/api/wcs/grcs/*，供 WCS 前端调用，后端代发 GRCS 8224）。
-/// 前端不再直连 GRCS：GRCS 地址与场景名一律从 WcsSettingsService 读（前端在地图信息页保存，
+/// RCS 对接代理（/api/wcs/grcs/*，供 WCS 前端调用，统一使用系统设置中的 RCS 地址）。
+/// 前端不再直连 RCS：RCS 地址与场景名一律从 WcsSettingsService 读（前端在系统设置保存，
 /// 未保存用默认 localhost:8224 / Show），payload 中的 Warehouse/SceneName 用设置值覆盖，
 /// 保证「配置单一数据源」。非 map 接口统一返回 { ok, code, json }，map 返回 zip 字节流。
 /// </summary>
@@ -19,15 +19,13 @@ public class GrcsProxyController : ControllerBase
 {
     private readonly GrcsHttpClient _grcs;
     private readonly WcsSettingsService _settings;
-    private readonly RcsProtocolTemplateStore _protocols;
     private readonly ModuleRunService _moduleRun;
     private readonly ILogger<GrcsProxyController> _logger;
 
-    public GrcsProxyController(GrcsHttpClient grcs, WcsSettingsService settings, RcsProtocolTemplateStore protocols, ModuleRunService moduleRun, ILogger<GrcsProxyController> logger)
+    public GrcsProxyController(GrcsHttpClient grcs, WcsSettingsService settings, ModuleRunService moduleRun, ILogger<GrcsProxyController> logger)
     {
         _grcs = grcs;
         _settings = settings;
-        _protocols = protocols;
         _moduleRun = moduleRun;
         _logger = logger;
     }
@@ -40,7 +38,7 @@ public class GrcsProxyController : ControllerBase
             endpoint, JsonSerializer.Serialize(payload), outboundBody ?? "(无)", ok, code, json);
     }
 
-    private string BaseUrl => _protocols.ResolveBaseUrl(_settings.Get().GrcsBaseUrl);
+    private string BaseUrl => _settings.Get().GrcsBaseUrl.TrimEnd('/');
     private string SceneName => _settings.Get().SceneName;
 
     /// <summary>任务组下发代理（GRCS /api/v1/task_receive）。</summary>

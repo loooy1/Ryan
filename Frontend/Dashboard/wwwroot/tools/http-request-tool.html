@@ -182,6 +182,73 @@
     headerInput.value = JSON.stringify(defaultHeaders, null, 2);
     bodyInput.value = JSON.stringify({ example: "请替换为接口要求的 JSON 请求体" }, null, 2);
 
+    const presets = {
+      "container-remove": {
+        title: "货物移除 HTTP 请求",
+        description: "发送货物移除通知。可修改目标服务地址、版本和 JSON 请求体。",
+        url: "http://127.0.0.1:8224/api/v1/container_remove",
+        body: {
+          StationCode: "0100000108_0",
+          ContainerCode: "cargo_2",
+          MsgTime: "2026-02-04 14:32:03",
+          Warehouse: "FourWayShuttle"
+        }
+      },
+      "container-ready": {
+        title: "货物到位 HTTP 请求",
+        description: "发送货物到位通知。可修改目标服务地址、版本和 JSON 请求体。",
+        url: "http://127.0.0.1:8224/api/v1/container_ready",
+        body: {
+          TaskId: "INBOUND-0100000108-cargo_2-20260204143023",
+          StationCode: "0100000108_0",
+          ContainerCode: "cargo_2",
+          MsgTime: "2026-02-04 14:30:37",
+          Warehouse: "FourWayShuttle"
+        }
+      },
+      "container-operation-finish": {
+        title: "分拣完成 HTTP 请求",
+        description: "发送分拣完成通知。TaskId 和 StationCode 可按接口要求填写；RemoveContainer 为布尔值，AreaCode 为字符串。",
+        url: "http://127.0.0.1:8224/api/v1/container_operation_finish",
+        body: {
+          MsgTime: "2026-10-13 10:00:00",
+          Warehouse: "FourWayShuttle",
+          TaskId: "",
+          ContainerCode: "cargo_2",
+          RemoveContainer: false,
+          StationCode: "",
+          AreaCode: ""
+        }
+      },
+      "task-receive": {
+        title: "任务下发 HTTP 请求",
+        description: "向 RCS 下发任务。可修改目标服务地址、版本和 JSON 请求体。",
+        url: "http://127.0.0.1:8224/api/v1/task_receive",
+        body: {
+          GroupId: "order001",
+          MsgTime: "2025-04-25 17:00:00",
+          PriorityCode: 1,
+          Warehouse: "Show",
+          Tasks: [{
+            TaskId: "123456",
+            TaskType: "INBOUND",
+            ContainerCode: "TP0000001",
+            StationCode: ["1800_1", "2600_1"],
+            AreaCode: []
+          }]
+        }
+      }
+    };
+
+    const preset = presets[new URLSearchParams(location.search).get("preset")];
+    if (preset) {
+      document.title = preset.title + " - HTTP 请求工具";
+      document.querySelector("header h1").textContent = preset.title;
+      document.querySelector("header p").textContent = preset.description;
+      document.getElementById("url").value = preset.url;
+      bodyInput.value = JSON.stringify(preset.body, null, 2);
+    }
+
     document.getElementById("formatButton").addEventListener("click", () => {
       try {
         bodyInput.value = JSON.stringify(JSON.parse(bodyInput.value), null, 2);

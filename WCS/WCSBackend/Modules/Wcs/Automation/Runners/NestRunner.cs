@@ -35,6 +35,7 @@ public class NestRunner
 
     private readonly object _stateLock = new();
     private bool _running;
+    private bool _executionInProgress;
     private bool _completed;
     private string? _lastRunAt;
     private List<string> _readyVehicles = [];
@@ -92,10 +93,12 @@ public class NestRunner
 /// <paramref name="poolVehicles"/> = 本次车队车名（前端多选）；null/空 = 首轮自动捕获当前就绪车为车队。</summary>
     public (bool Ok, string? Reason) Run(List<string>? poolVehicles = null)
     {
+        CancellationTokenSource cts;
         lock (_stateLock)
         {
-            if (_running) return (false, "归巢执行中，请稍候");
+            if (_executionInProgress) return (false, _running ? "归巢执行中，请稍候" : "归巢正在停止，请稍候");
             _running = true;
+            _executionInProgress = true;
             _completed = false;
             _ok = 0;
             _fail = 0;
@@ -105,9 +108,10 @@ public class NestRunner
             _targetAssigned = 0;
             _pool = poolVehicles?.Select(v => v.Trim()).Where(v => v.Length > 0).Distinct(StringComparer.OrdinalIgnoreCase).ToList() ?? [];
             _lastRunAt = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
-            _cts = new CancellationTokenSource();
+            cts = new CancellationTokenSource();
+            _cts = cts;
         }
-        _ = RunCoreAsync();
+        _ = RunCoreAsync(cts.Token);
         Broadcast();
         return (true, null);
     }
@@ -126,7 +130,7 @@ public class NestRunner
         Broadcast();
     }
 
-    private async Task RunCoreAsync()
+    private async Task RunCoreAsync(CancellationToken cancellationToken)
     {
         try
         {
@@ -168,7 +172,7 @@ public class NestRunner
 
             while (true)
             {
-                if (_cts != null && _cts.IsCancellationRequested)
+                if (cancellationToken.IsCancellationRequested)
                 {
                     await FinishAsync("⏹ 归巢模式已停止");
                     return;
@@ -176,6 +180,11 @@ public class NestRunner
 
                 // 1. 查全部车辆 → 就绪车
                 var (vOk, vCode, vJson) = await _grcs.QueryVehiclesAsync(settings.GrcsBaseUrl, settings.SceneName);
+                if (cancellationToken.IsCancellationRequested)
+                {
+                    await FinishAsync("⏹ 归巢模式已停止");
+                    return;
+                }
                 if (!vOk)
                 {
                     var reason = vCode == 0 ? "⚠ 查询车辆超时/网络异常" : $"查询车辆 HTTP {vCode}";
@@ -276,24 +285,48 @@ public class NestRunner
                 var dispatched = 0;
                 foreach (var vehicle in outsideReady)
                 {
+                    if (cancellationToken.IsCancellationRequested)
+                    {
+                        await FinishAsync("⏹ 归巢模式已停止");
+                        return;
+                    }
                     if (freeTargets.Count == 0) break;
                     var target = freeTargets
                         .OrderBy(t => Math.Sqrt(Math.Pow(t.X - vehicle.X, 2) + Math.Pow(t.Y - vehicle.Y, 2)))
                         .First();
                     freeTargets.Remove(target);
-                    if (await DispatchAsync(vehicle, target, settings))
+                    // 与 Stop 共用状态锁：若 Stop 先设置取消标记，不再启动新的 HTTP 下发；
+                    // 若下发先启动，它作为当前在途请求完成后再停止后续车辆。
+                    Task<bool>? dispatchTask;
+                    lock (_stateLock)
+                        dispatchTask = cancellationToken.IsCancellationRequested
+                            ? null
+                            : DispatchAsync(vehicle, target, settings);
+                    if (dispatchTask is null)
+                    {
+                        await FinishAsync("⏹ 归巢模式已停止");
+                        return;
+                    }
+
+                    if (await dispatchTask)
                     {
                         _assignments[target.Mark] = vehicle.Name;
                         dispatched++;
                     }
                     lock (_stateLock) { _targetAssigned = _assignments.Count; }
                     Broadcast();
+                    // 停止请求不撤销当前已经发出的任务；当前请求返回并记录结果后，不再派发下一台车。
+                    if (cancellationToken.IsCancellationRequested)
+                    {
+                        await FinishAsync("⏹ 归巢模式已停止");
+                        return;
+                    }
                 }
                 _logs.Add($"🔄 本轮下发 {dispatched} 台（车队 {_pool.Count} 台），巢区占用 {occupiedTargets.Count}/{targets.Count}，在途 {_assignments.Count}，等待 {PollInterval.TotalSeconds:0} 秒后继续巡检", "#60a5fa");
 
                 // 6. 等待移动（在途车永久等待直到到达；停止时中断）
-                try { await Task.Delay(PollInterval, _cts?.Token ?? CancellationToken.None); }
-                catch (TaskCanceledException)
+                try { await Task.Delay(PollInterval, cancellationToken); }
+                catch (OperationCanceledException)
                 {
                     await FinishAsync("⏹ 归巢模式已停止");
                     return;
@@ -302,6 +335,11 @@ public class NestRunner
         }
         catch (Exception ex)
         {
+            if (cancellationToken.IsCancellationRequested)
+            {
+                await FinishAsync("⏹ 归巢模式已停止");
+                return;
+            }
             _logs.Add("❌ 归巢模式异常：" + ex.Message, "#f87171");
             await FailAsync(ex.Message);
         }
@@ -351,7 +389,7 @@ public class NestRunner
             if (ok)
             {
                 _ok++;
-                _lastError = null;
+                if (_running) _lastError = null;
                 _logs.AddOrUpdate("[归巢·成功]", $"车辆 {vehicle.Name} → {target.Mark}（{target.Floor} 层）✓ 任务号：（{payload.OrderId}）（耗时 {elapsedMs}ms）\n请求体: {bodyJson}", "#4ade80");
             }
             else
@@ -381,6 +419,7 @@ public class NestRunner
                 _logs.Add("🧹 归巢执行完成，已清空车队与巢区（下次归巢请重新框选）", "#4ade80");
             }
             _running = false;
+            _executionInProgress = false;
             _cts?.Dispose();
             _cts = null;
         }
@@ -389,7 +428,7 @@ public class NestRunner
 
     private async Task FailAsync(string reason)
     {
-        lock (_stateLock) { _lastError = reason; _running = false; _cts?.Dispose(); _cts = null; }
+        lock (_stateLock) { _lastError = reason; _running = false; _executionInProgress = false; _cts?.Dispose(); _cts = null; }
         Broadcast();
     }
 

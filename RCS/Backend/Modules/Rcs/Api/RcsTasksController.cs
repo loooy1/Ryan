@@ -6,11 +6,13 @@ using System.Text.Json;
 namespace RCSBackend.Modules.Rcs.Api;
 
 [ApiController]
-public sealed class RcsTasksController(IRcsTaskService tasks, IRcsTaskQueryService queries) : ControllerBase
+public sealed class RcsTasksController(IRcsTaskService tasks, IRcsTaskQueryService queries,
+    ILogger<RcsTasksController> logger) : ControllerBase
 {
     [HttpPost("/api/v1/task_receive")]
     public async Task<ActionResult<RcsApiResponse>> Receive(CancellationToken token)
     {
+        logger.LogInformation("收到上游任务请求 POST /api/v1/task_receive");
         string originalRequestJson;
         try
         {
@@ -19,7 +21,7 @@ public sealed class RcsTasksController(IRcsTaskService tasks, IRcsTaskQueryServi
         }
         catch (JsonException ex)
         {
-            return BadRequest(Error($"请求 JSON 格式无效：{ex.Message}"));
+            return Ok(Error($"请求 JSON 格式无效：{ex.Message}"));
         }
 
         RcsUpstreamTaskReceiveRequest? request;
@@ -30,9 +32,9 @@ public sealed class RcsTasksController(IRcsTaskService tasks, IRcsTaskQueryServi
         }
         catch (JsonException ex)
         {
-            return BadRequest(Error($"请求 JSON 格式无效：{ex.Message}"));
+            return Ok(Error($"请求 JSON 格式无效：{ex.Message}"));
         }
-        if (request is null) return BadRequest(Error("请求正文不能为空。"));
+        if (request is null) return Ok(Error("请求正文不能为空。"));
 
         var normalized = new RcsTaskReceiveRequest
         {
@@ -49,9 +51,35 @@ public sealed class RcsTasksController(IRcsTaskService tasks, IRcsTaskQueryServi
                 AreaCode = task.AreaCode
             }).ToList() ?? []
         };
-        try { return Ok(await tasks.ReceiveAsync(normalized, originalRequestJson, token)); }
-        catch (ArgumentException ex) { return BadRequest(Error(ex.Message)); }
-        catch (RcsTaskConflictException ex) { return Conflict(Error(ex.Message)); }
+        try
+        {
+            var response = await tasks.ReceiveAsync(normalized, originalRequestJson, token);
+            if (!response.Success && string.IsNullOrWhiteSpace(response.Exception))
+            {
+                const string message = "任务接收失败：RCS 未返回具体异常信息，请检查任务校验及服务端日志。";
+                logger.LogError("任务接收服务返回 success=false 但未提供 Exception，GroupId={GroupId}", request.GroupId);
+                response = RcsApiResponse.Rejected(message);
+            }
+
+            logger.LogInformation("上游任务请求处理完成，GroupId={GroupId} Success={Success} Exception={Exception}",
+                request.GroupId, response.Success, response.Exception);
+            return Ok(response);
+        }
+        catch (ArgumentException ex)
+        {
+            logger.LogWarning(ex, "上游任务校验失败，GroupId={GroupId}", request.GroupId);
+            return Ok(Error(ex.Message));
+        }
+        catch (RcsTaskConflictException ex)
+        {
+            logger.LogWarning(ex, "上游任务冲突，GroupId={GroupId}", request.GroupId);
+            return Ok(Error(ex.Message));
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            logger.LogError(ex, "上游任务接收失败，GroupId={GroupId}", request.GroupId);
+            return Ok(Error($"任务接收失败：{ex.Message}"));
+        }
     }
 
     [HttpPost("/api/rcs/tasks/manual")]

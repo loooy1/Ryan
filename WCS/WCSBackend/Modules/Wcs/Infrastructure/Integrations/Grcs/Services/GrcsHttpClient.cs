@@ -79,7 +79,7 @@ public class GrcsHttpClient
         try
         {
             var operation = _protocols.GetRequiredOperation(operationKey);
-            var baseUrl = _protocols.ResolveBaseUrl(fallbackBaseUrl);
+            var baseUrl = fallbackBaseUrl.Trim().TrimEnd('/');
             if (!Uri.TryCreate(baseUrl, UriKind.Absolute, out var baseUri))
                 return (false, 0, JsonSerializer.Serialize(new { error = "当前 RCS 地址未配置" }));
             var path = operation.ApiPath.StartsWith('/') ? operation.ApiPath : "/" + operation.ApiPath;
@@ -266,7 +266,7 @@ public class GrcsHttpClient
     /// <summary>查询全部车辆及当前状态（GET /api/Vehicle/GetAllVehicles，归巢模式用）。</summary>
     public async Task<(bool Ok, int StatusCode, string Json)> QueryVehiclesAsync(string baseUrl, string scene)
     {
-        var url = $"{_protocols.ResolveBaseUrl(baseUrl)}/api/Vehicle/GetAllVehicles?sceneName={Uri.EscapeDataString(scene)}";
+        var url = $"{baseUrl.TrimEnd('/')}/api/Vehicle/GetAllVehicles?sceneName={Uri.EscapeDataString(scene)}";
         try
         {
             var resp = await NewClient().GetAsync(url);
@@ -280,7 +280,7 @@ public class GrcsHttpClient
     public async Task<(bool Ok, int StatusCode, string Json)> QueryCargoInventoryAsync(string baseUrl, string scene,
         string? code = null, string? locked = null, int pageNo = 1, int pageSize = 2000)
     {
-        var url = $"{_protocols.ResolveBaseUrl(baseUrl)}/api/Cargo?pageNo={pageNo}&pageSize={pageSize}";
+        var url = $"{baseUrl.TrimEnd('/')}/api/Cargo?pageNo={pageNo}&pageSize={pageSize}";
         if (!string.IsNullOrWhiteSpace(code)) url += $"&SearchContextParams[Code]={Uri.EscapeDataString(code)}";
         if (!string.IsNullOrWhiteSpace(scene)) url += $"&SearchContextParams[HomeStationScene]={Uri.EscapeDataString(scene)}";
         if (!string.IsNullOrWhiteSpace(locked)) url += $"&SearchContextParams[IsLocked]={locked}";
@@ -298,7 +298,7 @@ public class GrcsHttpClient
     {
         try
         {
-            var resp = await NewClient().GetAsync($"{_protocols.ResolveBaseUrl(baseUrl)}/api/CargoSize");
+            var resp = await NewClient().GetAsync($"{baseUrl.TrimEnd('/')}/api/CargoSize");
             var body = await resp.Content.ReadAsStringAsync();
             return (resp.IsSuccessStatusCode, (int)resp.StatusCode, body);
         }
@@ -309,7 +309,7 @@ public class GrcsHttpClient
     public async Task<(bool Ok, int StatusCode, string Json)> AutoContainerEnterAsync(string baseUrl, string sceneName,
         string prefix = "container", int num = -1, int floor = -1, int type = 1)
     {
-        var url = $"{_protocols.ResolveBaseUrl(baseUrl)}/AutoContainerEnter?sceneName={Uri.EscapeDataString(sceneName)}"
+        var url = $"{baseUrl.TrimEnd('/')}/AutoContainerEnter?sceneName={Uri.EscapeDataString(sceneName)}"
             + $"&prefix={Uri.EscapeDataString(prefix)}&num={num}&floor={floor}&type={type}";
         try
         {
@@ -322,12 +322,12 @@ public class GrcsHttpClient
 
     /// <summary>指定站点创建 RCS 库存（POST /api/Cargo/Enter）。</summary>
     public Task<(bool Ok, int StatusCode, string Json)> EnterCargoAsync<T>(string baseUrl, T payload)
-        => PostAsync($"{_protocols.ResolveBaseUrl(baseUrl)}/api/Cargo/Enter", payload);
+        => PostAsync($"{baseUrl.TrimEnd('/')}/api/Cargo/Enter", payload);
 
     /// <summary>地图 zip 下载（GET /api/Map/GetMap，场景名取设置）。</summary>
     public async Task<(bool Ok, int StatusCode, byte[] Bytes, string Error)> GetMapBytesAsync(string baseUrl, string sceneName)
     {
-        var url = $"{_protocols.ResolveBaseUrl(baseUrl)}/api/Map/GetMap?sceneName={Uri.EscapeDataString(sceneName)}&getTypes=feMap";
+        var url = $"{baseUrl.TrimEnd('/')}/api/Map/GetMap?sceneName={Uri.EscapeDataString(sceneName)}&getTypes=feMap";
         try
         {
             var resp = await NewClient().GetAsync(url);
@@ -340,13 +340,13 @@ public class GrcsHttpClient
     // ── 出站信号（WCS → GRCS，信号自动放行用）──
 
     public Task<(bool Ok, int StatusCode, string Json)> SendContainerReadyAsync(string baseUrl, object payload)
-        => PostAsync($"{_protocols.ResolveBaseUrl(baseUrl)}/api/v1/container_ready", payload);
+        => PostAsync($"{baseUrl.TrimEnd('/')}/api/v1/container_ready", payload);
 
     public Task<(bool Ok, int StatusCode, string Json)> SendContainerRemoveAsync(string baseUrl, object payload)
-        => PostAsync($"{_protocols.ResolveBaseUrl(baseUrl)}/api/v1/container_remove", payload);
+        => PostAsync($"{baseUrl.TrimEnd('/')}/api/v1/container_remove", payload);
 
     public Task<(bool Ok, int StatusCode, string Json)> SendOperationFinishAsync(string baseUrl, object payload)
-        => PostAsync($"{_protocols.ResolveBaseUrl(baseUrl)}/api/v1/container_operation_finish", payload);
+        => PostAsync($"{baseUrl.TrimEnd('/')}/api/v1/container_operation_finish", payload);
 
     private async Task<(bool Ok, int StatusCode, string Json)> PostAsync<T>(string url, T payload)
     {
@@ -366,7 +366,7 @@ public class GrcsHttpClient
     {
         try
         {
-            baseUrl = _protocols.ResolveBaseUrl(baseUrl);
+            baseUrl = baseUrl.Trim().TrimEnd('/');
             if (!Uri.TryCreate(baseUrl?.Trim(), UriKind.Absolute, out var uri) ||
                 string.IsNullOrWhiteSpace(uri.Host))
             {

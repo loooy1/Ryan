@@ -33,7 +33,7 @@
     <div class="rcs-template-head">
         <div>
             <div class="rcs-template-title">🔌 RCS 协议模板</div>
-            <div class="rcs-template-sub">后端地址、业务功能模板（含搬运 / 移动下发）和 Mock 入站按 RCS 类型整体保存与切换。</div>
+            <div class="rcs-template-sub">业务功能模板（含搬运 / 移动下发）和 Mock 入站按 RCS 类型整体保存与切换；RCS 地址统一使用系统设置。</div>
         </div>
         <div style="display:flex;gap:7px;">
             <button class="btn btn-sm rcs-template-delete" @onclick="DeleteProfile" disabled="@(_loading || _saving || _config == null || _config.Profiles.Count <= 1)" title="删除所选 RCS 模板及其全部配置">删除此 RCS 模板</button>
@@ -70,8 +70,6 @@
                     <div><label class="rcs-template-label">配置编码</label><input class="rcs-template-control" value="@profile.Id" readonly /></div>
                     <div><label class="rcs-template-label">显示名称</label><input class="rcs-template-control" @bind="profile.Name" /></div>
                 </div>
-                <label class="rcs-template-label">RCS 后端地址（留空沿用系统设置）</label>
-                <input class="rcs-template-control" @bind="profile.BaseUrl" placeholder="例如 http://127.0.0.1:8224" />
                 <div class="rcs-template-summary">
                     <span>@profile.FeatureModules.Count 个业务功能模板</span>
                     <span>@profile.MockRules.Count 个 Mock 入站规则</span>
@@ -129,7 +127,6 @@
             : JsonSerializer.Deserialize<RcsProtocolProfileDto>(JsonSerializer.Serialize(source))!;
         profile.Id = id;
         profile.Name = id;
-        profile.BaseUrl = source?.BaseUrl ?? "";
         _config.Profiles.Add(profile);
         _editingProfileId = id;
         _status = "新配置集已创建，请配置接口后保存。";
@@ -190,7 +187,7 @@
         if (_config == null || EditingProfile == null || _config.Profiles.Count <= 1) return;
         var profileId = EditingProfile.Id;
         var profileName = EditingProfile.Name;
-        var confirmed = await Js.InvokeAsync<bool>("confirm", $"确定删除 RCS 模板「{profileName}」吗？\n\n该模板中的后端地址、接口模板、功能模板和 Mock 入站规则都会一并删除。此操作不可撤销。");
+        var confirmed = await Js.InvokeAsync<bool>("confirm", $"确定删除 RCS 模板「{profileName}」吗？\n\n该模板中的接口模板、功能模板和 Mock 入站规则都会一并删除。此操作不可撤销。");
         if (!confirmed) return;
 
         _saving = true;
