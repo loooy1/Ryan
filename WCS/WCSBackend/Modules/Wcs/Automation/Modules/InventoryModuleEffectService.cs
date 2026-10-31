@@ -11,10 +11,10 @@ namespace WCSBackend.Modules.Wcs.Automation.Services;
 public sealed class ModuleEffectService
 {
     private readonly WcsInventoryStore _inventory;
-    private readonly MapStoreService _map;
+    private readonly WcsMapCatalog _map;
     private readonly ITaskStageService _stages;
 
-    public ModuleEffectService(WcsInventoryStore inventory, MapStoreService map, ITaskStageService stages)
+    public ModuleEffectService(WcsInventoryStore inventory, WcsMapCatalog map, ITaskStageService stages)
     {
         _inventory = inventory;
         _map = map;

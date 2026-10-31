@@ -87,6 +87,13 @@
         host.__smpInlineUpdate(configJson);
     };
 
+    window.grcsStationMapPickerUpdateInventory = function (hostId, changesJson) {
+        const host = document.getElementById(hostId);
+        if (!host || typeof host.__smpInlineUpdateInventory !== 'function') return false;
+        host.__smpInlineUpdateInventory(changesJson);
+        return true;
+    };
+
     // 分拣台关联只传递必要的编号，避免跨 Blazor 往返整份地图配置。
     window.grcsStationMapPickerSetSortingMode = function (hostId, parentMark, selectedMarks) {
         const host = document.getElementById(hostId);
@@ -143,6 +150,9 @@
         sortingMenu.type = 'button';
         sortingMenu.style.display = 'none';
         wrap.appendChild(sortingMenu);
+        const inventoryMenu = makeEl('div', 'smp-inventory-menu');
+        inventoryMenu.style.display = 'none';
+        wrap.appendChild(inventoryMenu);
         modal.appendChild(wrap);
 
         const legend = makeEl('div', 'smp-legend');
@@ -161,12 +171,15 @@
 
         // ── 状态 ──
         let byFloor = new Map();
+        let stationByMark = new Map();
         let candidateMarks = new Set();
         let selection = new Set();
         let preserved = new Set();
         function rebuildStationState() {
             byFloor = new Map();
+            stationByMark = new Map();
             for (const st of config.Stations) {
+                stationByMark.set(st.Mark, st);
                 if (!byFloor.has(st.Floor)) byFloor.set(st.Floor, { enabled: [], disabled: [] });
                 const bucket = byFloor.get(st.Floor);
                 (st.StaEnable ? bucket.enabled : bucket.disabled).push(st);
@@ -184,7 +197,10 @@
         let hover = null;
         let normalMapState = null;
 
-        function hideSortingMenu() { sortingMenu.style.display = 'none'; }
+        function hideSortingMenu() {
+            sortingMenu.style.display = 'none';
+            inventoryMenu.style.display = 'none';
+        }
 
         function showSortingMenu(point, px, py) {
             sortingMenu.dataset.stationMark = point.Mark;
@@ -206,6 +222,40 @@
             hideSortingMenu();
             if (mark && dotNetRef) dotNetRef.invokeMethodAsync('OnManualMapSortingAssociationRequested', mark);
         });
+
+        function showInventoryMenu(point, px, py) {
+            inventoryMenu.replaceChildren();
+            inventoryMenu.appendChild(makeEl('div', 'smp-inventory-menu-title', point.Mark));
+            const labels = {
+                addPallet: '＋ 添加托盘',
+                addCargo: '＋ 添加货物',
+                removePallet: '删除托盘',
+                removeCargo: '删除货物',
+                blocked: '储位锁定或库存处理中，暂不可修改'
+            };
+            for (const action of point.ContextActions || []) {
+                const button = makeEl('button', 'smp-inventory-menu-item', labels[action] || action);
+                button.type = 'button';
+                button.disabled = action === 'blocked';
+                button.addEventListener('click', function (e) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    hideSortingMenu();
+                    if (action !== 'blocked' && dotNetRef)
+                        dotNetRef.invokeMethodAsync('OnInventoryContextActionRequested', point.Mark, action);
+                });
+                inventoryMenu.appendChild(button);
+            }
+            inventoryMenu.style.display = 'block';
+            const margin = 10;
+            const menuWidth = inventoryMenu.offsetWidth;
+            const menuHeight = inventoryMenu.offsetHeight;
+            let left = px + margin, top = py + margin;
+            if (left + menuWidth > wrap.clientWidth - margin) left = px - menuWidth - margin;
+            if (top + menuHeight > wrap.clientHeight - margin) top = py - menuHeight - margin;
+            inventoryMenu.style.left = Math.max(margin, left) + 'px';
+            inventoryMenu.style.top = Math.max(margin, top) + 'px';
+        }
 
         function setCurrentFloor(f) {
             hideSortingMenu();
@@ -237,6 +287,22 @@
             chips.forEach(function (c) { c.el.classList.toggle('on', c.floor === currentFloor); });
             buildLegend();
             updateCount();
+            draw();
+        }
+
+        function updateInlineInventory(changesJson) {
+            let changes;
+            try { changes = JSON.parse(changesJson); } catch (e) { changes = null; }
+            if (!Array.isArray(changes)) return;
+            for (const change of changes) {
+                const station = stationByMark.get(change.Mark);
+                if (!station) continue;
+                station.VisualKind = change.VisualKind || 'empty';
+                station.Tooltip = change.Tooltip || '';
+                station.ContextActions = change.ContextActions || [];
+            }
+            hideSortingMenu();
+            buildLegend();
             draw();
         }
 
@@ -467,14 +533,20 @@
             if ((p.StationType & 128) !== 0) return '#e879f9';
             if ((p.StationType & 64) !== 0 && (!p.VisualKind || p.VisualKind === 'empty' || p.VisualKind === 'locked')) return '#fb923c';
             switch (p.VisualKind) {
-                case 'pallet': return '#4ade80';
-                case 'cargo': return '#22d3ee';
-                case 'loaded': return '#a78bfa';
+                case 'pallet': return '#0ea5e9';
+                case 'cargo': return '#facc15';
+                case 'loaded': return '#0ea5e9';
                 case 'transit': return '#fbbf24';
                 case 'locked': return '#ef4444';
                 case 'empty': return '#64748b';
                 default: return fallback;
             }
+        }
+
+        function visualLegendColor(p, fallback) {
+            return p.VisualKind === 'loaded'
+                ? 'linear-gradient(135deg, #0ea5e9 0 48%, #f97316 50% 100%)'
+                : visualColor(p, fallback);
         }
 
         function drawInventorySymbol(p, sx, sy, color, radius) {
@@ -492,7 +564,7 @@
                 return;
             }
 
-            // 三种库存共用同一底座，外接尺寸 = 当前站点圆点直径。
+            // 库存图标外接尺寸与站点一致；托盘使用青蓝，货物使用黄色。
             const side = radius * 2;
             const half = side / 2;
             const roundedBox = function (x, y, w, h, r, fill, stroke) {
@@ -513,29 +585,41 @@
                 ctx.lineWidth = 1;
                 ctx.stroke();
             };
-            if (kind === 'loaded') {
-                // 带货托：统一紫色底座，内部上下两层纹样。
-                roundedBox(sx - half, sy - half, side, side, 2, '#8b5cf6', '#5b21b6');
-                ctx.strokeStyle = 'rgba(255,255,255,.92)'; ctx.lineWidth = 1;
+            const drawPallet = function () {
+                roundedBox(sx - half, sy - half, side, side, 2, '#0284c7', '#0369a1');
+                const inset = Math.max(1, half * .22);
+                roundedBox(sx - half + inset, sy - half + inset, side - inset * 2, side - inset * 2,
+                    1.5, '#075985', '#0c4a6e');
+                ctx.strokeStyle = '#0c4a6e';
+                ctx.lineWidth = Math.max(.8, radius * .1);
                 ctx.beginPath();
-                ctx.moveTo(sx - half * .58, sy - half * .18); ctx.lineTo(sx + half * .58, sy - half * .18);
-                ctx.moveTo(sx - half * .58, sy + half * .42); ctx.lineTo(sx + half * .58, sy + half * .42);
+                ctx.moveTo(sx - half * .55, sy - half * .18); ctx.lineTo(sx + half * .55, sy - half * .18);
+                ctx.moveTo(sx - half * .55, sy + half * .24); ctx.lineTo(sx + half * .55, sy + half * .24);
                 ctx.stroke();
-                return;
-            }
+            };
             if (kind === 'pallet') {
-                // 托盘：统一绿色底座，内部两条承载纹，取消横向外伸的托盘轮廓。
-                roundedBox(sx - half, sy - half, side, side, 2, '#22c55e', '#166534');
-                ctx.strokeStyle = 'rgba(255,255,255,.92)'; ctx.lineWidth = 1;
+                drawPallet();
+                return;
+            }
+            if (kind === 'loaded') {
+                // 带货托：青蓝托盘底座上叠加橙色货物，托盘边缘清晰可见。
+                drawPallet();
+                const cargoWidth = side * .66;
+                const cargoHeight = side * .48;
+                const cargoX = sx - cargoWidth / 2;
+                const cargoY = sy - cargoHeight / 2;
+                roundedBox(cargoX, cargoY, cargoWidth, cargoHeight, 1.5, '#f97316', '#fdba74');
+                ctx.strokeStyle = '#ffedd5';
+                ctx.lineWidth = Math.max(.8, radius * .09);
                 ctx.beginPath();
-                ctx.moveTo(sx - half * .56, sy - half * .2); ctx.lineTo(sx + half * .56, sy - half * .2);
-                ctx.moveTo(sx - half * .56, sy + half * .38); ctx.lineTo(sx + half * .56, sy + half * .38);
+                ctx.moveTo(cargoX + cargoWidth * .18, sy);
+                ctx.lineTo(cargoX + cargoWidth * .82, sy);
                 ctx.stroke();
                 return;
             }
-            // 纯货物：同尺寸青色底座，内部用一笔箱盖折线区分。
-            roundedBox(sx - half, sy - half, side, side, 2, '#06b6d4', '#155e75');
-            ctx.strokeStyle = 'rgba(255,255,255,.92)'; ctx.lineWidth = 1;
+            // 纯货物：黄色箱体，不带托盘底座。
+            roundedBox(sx - half, sy - half, side, side, 2, '#facc15', '#ca8a04');
+            ctx.strokeStyle = '#a16207'; ctx.lineWidth = 1;
             ctx.beginPath();
             ctx.moveTo(sx - half * .52, sy - half * .2); ctx.lineTo(sx, sy + half * .24); ctx.lineTo(sx + half * .52, sy - half * .2);
             ctx.stroke();
@@ -638,7 +722,7 @@
                     transit: '在途', locked: '任务锁定', empty: '空闲储位'
                 };
                 const name = visualNames[p.VisualKind] || primaryType(p.StationType).name;
-                if (!types.has(name)) types.set(name, visualColor(p, primaryType(p.StationType).color));
+                if (!types.has(name)) types.set(name, visualLegendColor(p, primaryType(p.StationType).color));
             }
             for (const entry of types) {
                 const item = makeEl('div', 'smp-legend-item');
@@ -677,10 +761,23 @@
             e.stopPropagation();
             const mapRect = canvas.getBoundingClientRect();
             const pointerX = e.clientX - mapRect.left, pointerY = e.clientY - mapRect.top;
-            if (e.button === 2 && config.RightClickPeopleStationSelection && dotNetRef) {
+            if (e.button === 2 && dotNetRef) {
                 const hit = hitTest(pointerX, pointerY);
-                if (hit && (hit.StationType & 128) !== 0 && selection.has(hit.Mark)) {
+                if (hit && config.RightClickPeopleStationSelection
+                    && (hit.StationType & 128) !== 0 && selection.has(hit.Mark)) {
                     showSortingMenu(hit, pointerX, pointerY);
+                    return;
+                }
+                if (hit && config.RightClickInventorySelection
+                    && (hit.StationType & 4) !== 0 && Array.isArray(hit.ContextActions)) {
+                    if (!selection.has(hit.Mark)) {
+                        selection.clear();
+                        preserved.clear();
+                        selection.add(hit.Mark);
+                        updateCount();
+                        draw();
+                    }
+                    showInventoryMenu(hit, pointerX, pointerY);
                     return;
                 }
             }
@@ -810,11 +907,13 @@
 
         if (inline) {
             host.__smpInlineUpdate = updateInline;
+            host.__smpInlineUpdateInventory = updateInlineInventory;
             host.__smpInlineSetSortingMode = setSortingMode;
             host.__smpInlineCompleteSortingAssociation = completeSortingAssociation;
             host.__smpInlineDispose = function () {
                 ro.disconnect();
                 if (host.__smpInlineUpdate) delete host.__smpInlineUpdate;
+                if (host.__smpInlineUpdateInventory) delete host.__smpInlineUpdateInventory;
                 if (host.__smpInlineSetSortingMode) delete host.__smpInlineSetSortingMode;
                 if (host.__smpInlineCompleteSortingAssociation) delete host.__smpInlineCompleteSortingAssociation;
                 if (host.__smpInlineDispose) delete host.__smpInlineDispose;

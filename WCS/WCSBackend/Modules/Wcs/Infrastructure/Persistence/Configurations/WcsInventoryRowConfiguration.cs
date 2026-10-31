@@ -12,9 +12,16 @@ public class WcsSlotRowConfiguration : IEntityTypeConfiguration<WcsSlotRow>
         builder.HasKey(x => x.Mark);
         builder.Property(x => x.Mark).HasColumnName("mark").IsRequired();
         builder.Property(x => x.SiteType).HasColumnName("site_type");
+        builder.Property(x => x.StationTypeBits).HasColumnName("station_type_bits");
         builder.Property(x => x.Floor).HasColumnName("floor");
         builder.Property(x => x.X).HasColumnName("x");
         builder.Property(x => x.Y).HasColumnName("y");
+        builder.Property(x => x.StaEnable).HasColumnName("sta_enable");
+        builder.Property(x => x.CargoAreasJson).HasColumnName("cargo_areas_json");
+        builder.Property(x => x.SupportLoadState).HasColumnName("support_load_state");
+        builder.Property(x => x.AllowTurn).HasColumnName("allow_turn");
+        builder.Property(x => x.AllowAvoid).HasColumnName("allow_avoid");
+        builder.Property(x => x.AllowStop).HasColumnName("allow_stop");
         builder.Property(x => x.PalletCode).HasColumnName("pallet_code");
         builder.Property(x => x.PalletStatus).HasColumnName("pallet_status");
         builder.Property(x => x.CargoCode).HasColumnName("cargo_code");

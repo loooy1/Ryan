@@ -1,4 +1,4 @@
-using System.Globalization;
+﻿using System.Globalization;
 using Contracts.Dtos;
 
 namespace Contracts.Dtos;
@@ -219,54 +219,7 @@ public class CargoPositionDto
     public double Z { get; set; }
 }
 
-/// <summary>WCS 手工入库类型。手工入库只允许纯托盘或纯货物，不允许带货托。</summary>
-public static class ManualInventoryTypes
-{
-    public const string Pallet = "pallet";
-    public const string Cargo = "cargo";
-}
-
-/// <summary>WCS 手工入库请求：仅用于指定储位写入纯货物；编码在 WCS 后端按前缀和当前时间生成。</summary>
-public class ManualInventoryEnterRequest
-{
-    public List<string> StationMarks { get; set; } = [];
-    public string InventoryType { get; set; } = ManualInventoryTypes.Cargo;
-    public string Prefix { get; set; } = "SimCargo_";
-    /// <summary>RCS 的 CargoSize 主键；由库存管理页读取 RCS 可用模型后传入。</summary>
-    public int CargoSizeId { get; set; }
-}
-
-/// <summary>RCS 已配置的货物尺寸模型，供 WCS 手工入库选择。</summary>
-public class RcsCargoSizeDto
-{
-    public int Id { get; set; }
-    public string Name { get; set; } = "";
-    public double Length { get; set; }
-    public double Width { get; set; }
-    public double Height { get; set; }
-}
-
-/// <summary>单个站点的手工入库与 RCS 同步结果。</summary>
-public class ManualInventoryEnterItemResult
-{
-    public string StationMark { get; set; } = "";
-    public string Code { get; set; } = "";
-    public string InventoryType { get; set; } = "";
-    public bool WcsWritten { get; set; }
-    public bool RcsSynced { get; set; }
-    public int RcsStatusCode { get; set; }
-    public string Message { get; set; } = "";
-}
-
-/// <summary>手工入库批次结果。纯货物由 WCS 先写入，再按站点顺序同步 RCS。</summary>
-public class ManualInventoryEnterResult
-{
-    public bool WcsWritten { get; set; }
-    public string Message { get; set; } = "";
-    public List<ManualInventoryEnterItemResult> Items { get; set; } = [];
-}
-
-/// <summary>在途托盘的位置快照。只在打开库存地图时查询一次，不建立实时轮询。</summary>
+/// <summary>在途托盘的位置快照/// <summary>在途托盘的位置快照。只在打开库存地图时查询一次，不建立实时轮询。</summary>
 public class TransitPalletPositionDto
 {
     public string TaskId { get; set; } = "";

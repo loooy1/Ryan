@@ -19,7 +19,7 @@ namespace WCSBackend.Modules.Wcs.Automation.Services;
 public class MoveLoopRunner
 {
     private readonly GrcsHttpClient _grcs;
-    private readonly MapStoreService _map;
+    private readonly WcsMapCatalog _map;
     private readonly RangeConfigService _range;
     private readonly WcsSettingsService _settings;
     private readonly AutomationLogService _logs;
@@ -40,7 +40,7 @@ public class MoveLoopRunner
     private string? _lastStation;
     private CancellationTokenSource? _cts;
 
-    public MoveLoopRunner(GrcsHttpClient grcs, MapStoreService map, RangeConfigService range,
+    public MoveLoopRunner(GrcsHttpClient grcs, WcsMapCatalog map, RangeConfigService range,
         WcsSettingsService settings, AutomationLogService logs, AutomationGate gate,
         IHubContext<TaskStageRealtimeHub> hub)
     {

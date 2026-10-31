@@ -9,7 +9,7 @@
    页面职责：WCS 模拟器的「容器任务下发」页
    ── 数据流 ──
     ① 任务类型来自 TaskTypeRegistry 注册表（每个模板 = 起点 + 终点，两点各绑定
-       起点之前/起点之后/终点之后的功能模块）；选中后编辑任务的容器 + 起点 + 终点
+       起点/终点的站点类型与下发编码格式）；选中后编辑任务的容器 + 起点 + 终点
    ② 站点编码按地图类型转换为实际下发编码（储位 → mark_1、接驳位 → mark_0）
    ③ 组装 WcsTaskGroup 报文 POST 到 GRCS WCS 任务组接口
       供任务看板展示、信号交互页按模板「离开起点前工作」生成 container_remove 等卡片
@@ -69,8 +69,7 @@
             var tt = TaskTypeRegistry.All[ci];
             var isSelected = tt.Value == _selectedType;
             var isCustom = TaskTypeRegistry.IsCustom(tt.Value);
-            var moduleCount = tt.WorkflowSteps?.Count(step => step.Enabled && step.Kind == TaskWorkflowStepKinds.BusinessTemplate)
-                ?? ((tt.Start.BeforeModules?.Count ?? 0) + (tt.Start.AfterModules?.Count ?? 0) + (tt.End.AfterModules?.Count ?? 0));
+            var moduleCount = tt.WorkflowSteps?.Count(step => step.Enabled && step.Kind == TaskWorkflowStepKinds.BusinessTemplate) ?? 0;
             <div class="tt-card @(isSelected ? "selected" : "")"
                  @onclick="() => SelectType(tt)">
                 @if (isCustom)
@@ -346,8 +345,7 @@
 
 @* ════════════════════════════════════════════════
     添加任务类型模板弹窗：任务仅两类点 —— 起点 + 终点。
-    起点：选站点类型，下面分两段模块（起点之前=下发前执行 / 起点之后=下发 success 后执行）。
-    终点：选站点类型，下面仅一段模块（终点之后=任务 FINISHED 后执行）。
+    起点和终点：配置站点类型约束与下发编码格式。
    ════════════════════════════════════════════════ *@
 @if (_showTemplateModal)
 {
@@ -415,14 +413,14 @@
 
                 @* 容器号由用户填写（模板默认需要容器，见 TaskTemplateDto.NeedsContainer）*@
 
-                @* ── 三个执行时机：起点 / 起点之后 / 终点 ── *@
+                @* ── 起点与终点约束、编码格式 ── *@
                 <div class="tpl-points">
                     @* 起点 ── *@
                     <div class="tpl-point-card tpl-point-start">
                         <div class="tpl-point-head">
                             <span class="tpl-point-badge">①</span>
                             <div class="tpl-point-title">起点</div>
-                            <span class="tpl-point-tag">下发任务组之前执行</span>
+                            <span class="tpl-point-tag">起点约束</span>
                         </div>
                         <div class="form-group" style="margin-bottom:10px;">
                             <label>起点站点类型 <span class="req-star">*</span></label>
@@ -434,42 +432,10 @@
                                 }
                             </select>
                         </div>
-                        <div class="tpl-module-sub">起点之前（下发任务组之前执行）</div>
-                        <div class="tpl-module-grid">
-                            @if (ModuleRegistry.All.Count == 0)
-                            {
-                                <div class="hint-text" style="margin-top:0;">暂无模块。请在「信号交互」页创建模块后再回来关联。</div>
-                            }
-                            else
-                            {
-                                @foreach (var m in ModuleRegistry.All)
-                                {
-                                    var selected = _draft.Start.BeforeModules.Contains(m.Id);
-                                    <div class="tpl-module-chip @(selected ? "on" : "")" @onclick="() => ToggleStartBeforeModule(m.Id)">
-                                        <span class="tpl-module-check">@(selected ? "✓" : "")</span>
-                                        <span class="tpl-module-name">@m.Name</span>
-                                    </div>
-                                }
-                            }
-                        </div>
-
-                        <div class="tpl-module-sub">起点之后（下发返回 success 后执行）</div>
-                        <div class="tpl-module-grid">
-                            @if (ModuleRegistry.All.Count == 0)
-                            {
-                                <div class="hint-text" style="margin-top:0;">暂无模块。请在「信号交互」页创建模块后再回来关联。</div>
-                            }
-                            else
-                            {
-                                @foreach (var m in ModuleRegistry.All)
-                                {
-                                    var selected = _draft.Start.AfterModules.Contains(m.Id);
-                                    <div class="tpl-module-chip @(selected ? "on" : "")" @onclick="() => ToggleStartAfterModule(m.Id)">
-                                        <span class="tpl-module-check">@(selected ? "✓" : "")</span>
-                                        <span class="tpl-module-name">@m.Name</span>
-                                    </div>
-                                }
-                            }
+                        <div class="form-group tpl-station-code-rule">
+                            <label>起点下发编码格式</label>
+                            <input class="form-control" @bind="_draft.Start.StationCodeTemplate" placeholder="{{StationCode}}_{{Floor}}" />
+                            <div class="hint-text">可用 {{StationCode}}（站点号）、{{Floor}}（地图楼层）；其他内容按字面拼接。示例：<code>@PreviewStationCode(_draft.Start.StationCodeTemplate)</code></div>
                         </div>
                     </div>
 
@@ -490,34 +456,14 @@
                                 }
                             </select>
                         </div>
-                        <div class="tpl-module-sub">终点之后（任务 FINISHED 后执行）</div>
-                        <div class="tpl-module-grid">
-                            @if (ModuleRegistry.All.Count == 0)
-                            {
-                                <div class="hint-text" style="margin-top:0;">暂无模块。请在「信号交互」页创建模块后再回来关联。</div>
-                            }
-                            else
-                            {
-                                @foreach (var m in ModuleRegistry.All)
-                                {
-                                    var selected = _draft.End.AfterModules.Contains(m.Id);
-                                    <div class="tpl-module-chip @(selected ? "on" : "")" @onclick="() => ToggleEndModule(m.Id)">
-                                        <span class="tpl-module-check">@(selected ? "✓" : "")</span>
-                                        <span class="tpl-module-name">@m.Name</span>
-                                    </div>
-                                }
-                            }
+                        <div class="form-group tpl-station-code-rule">
+                            <label>终点下发编码格式</label>
+                            <input class="form-control" @bind="_draft.End.StationCodeTemplate" placeholder="{{StationCode}}_{{Floor}}" />
+                            <div class="hint-text">可用 {{StationCode}}（站点号）、{{Floor}}（地图楼层）；其他内容按字面拼接。示例：<code>@PreviewStationCode(_draft.End.StationCodeTemplate)</code></div>
                         </div>
                     </div>
                 </div>
 
-                <div class="tpl-section">
-                    <div class="tpl-section-title">📍 站点约束</div>
-                    <div class="form-grid2">
-                        <div class="form-group"><label>起点站点类型</label><select class="tpl-type-select" @onchange="e => SetPointType(_draft.Start, e.Value)"><option value="0" selected="@(SelectedPointBits(_draft.Start) == 0)">未指定（不限）</option>@foreach (var (bit, name) in MapStationTypeBits.All) { <option value="@bit" selected="@(SelectedPointBits(_draft.Start) == bit)">@name</option> }</select></div>
-                        <div class="form-group"><label>终点站点类型</label><select class="tpl-type-select" @onchange="e => SetPointType(_draft.End, e.Value)"><option value="0" selected="@(SelectedPointBits(_draft.End) == 0)">未指定（不限）</option>@foreach (var (bit, name) in MapStationTypeBits.All) { <option value="@bit" selected="@(SelectedPointBits(_draft.End) == bit)">@name</option> }</select></div>
-                    </div>
-                </div>
                 <div class="tpl-section workflow-builder">
                     <div class="tpl-section-title">🔀 任务执行流程</div>
                     <div class="hint-text" style="margin:0 0 12px;">按顺序运行。业务模板收到成功响应后继续；等待阶段节点会等到 RCS 上报对应阶段。RCS 下发节点等待接口回复后再继续。</div>
@@ -616,7 +562,7 @@
 
 @code {
     // ── 表单字段 ──
-    private string _warehouse = "Show";                        // 场景名称（以后端系统设置为准，这里仅作报文默认值）
+    private string _warehouse = "";                            // 仓库名从共享系统设置恢复，不设默认值
     private string _groupId = "";                          // 任务组 ID（自动生成）
     private string _msgTime = "";                          // 下发时间（实时时钟，只读）
     private System.Threading.Timer? _clockTimer;            // 下发时间实时刷新定时器
@@ -805,8 +751,7 @@
     private static TaskPointDto ClonePoint(TaskPointDto? src) => new()
     {
         Label = src?.Label ?? "",
-        BeforeModules = src?.BeforeModules?.ToList() ?? [],
-        AfterModules = src?.AfterModules?.ToList() ?? [],
+        StationCodeTemplate = string.IsNullOrWhiteSpace(src?.StationCodeTemplate) ? "{{StationCode}}" : src.StationCodeTemplate,
         StationTypeBits = src?.StationTypeBits ?? 0,
     };
 
@@ -823,21 +768,8 @@
                 Enabled = step.Enabled,
             }).ToList();
 
-        // 将旧版“起点前/起点后/终点后”关联迁移成线性流程，第一次保存时写入新结构。
-        var steps = new List<TaskWorkflowStepDto>();
-        steps.AddRange((template.Start?.BeforeModules ?? []).Select(CreateTemplateStep));
-        steps.Add(new TaskWorkflowStepDto { Kind = TaskWorkflowStepKinds.Dispatch });
-        steps.AddRange((template.Start?.AfterModules ?? []).Select(CreateTemplateStep));
-        if (template.End?.AfterModules?.Count > 0)
-        {
-            steps.Add(new TaskWorkflowStepDto { Kind = TaskWorkflowStepKinds.WaitRcsStage, StageCode = "FINISHED" });
-            steps.AddRange(template.End.AfterModules.Select(CreateTemplateStep));
-        }
-        return steps;
+        return [new TaskWorkflowStepDto { Kind = TaskWorkflowStepKinds.Dispatch }];
     }
-
-    private static TaskWorkflowStepDto CreateTemplateStep(string id)
-        => new() { Kind = TaskWorkflowStepKinds.BusinessTemplate, TemplateId = id };
 
     private void CloseTemplateModal()
     {
@@ -894,30 +826,6 @@
         _draft.WorkflowSteps.RemoveAt(index);
     }
 
-    /// <summary>在模板草稿的起点「之前」中勾选/取消关联模块。</summary>
-    private void ToggleStartBeforeModule(string id)
-    {
-        var ps = _draft.Start.BeforeModules;
-        if (ps.Contains(id)) ps.Remove(id);
-        else ps.Add(id);
-    }
-
-    /// <summary>在模板草稿的起点「之后」中勾选/取消关联模块（下发 success 后执行）。</summary>
-    private void ToggleStartAfterModule(string id)
-    {
-        var ps = _draft.Start.AfterModules;
-        if (ps.Contains(id)) ps.Remove(id);
-        else ps.Add(id);
-    }
-
-    /// <summary>在模板草稿的终点「之后」中勾选/取消关联模块（任务 FINISHED 后执行）。</summary>
-    private void ToggleEndModule(string id)
-    {
-        var ps = _draft.End.AfterModules;
-        if (ps.Contains(id)) ps.Remove(id);
-        else ps.Add(id);
-    }
-
     /// <summary>切换某点站点类型位约束中的一个 bit。</summary>
     private void ToggleStationBit(TaskPointDto point, int bit, object? checkedValue)
     {
@@ -933,6 +841,14 @@
         if (value != null) int.TryParse(value.ToString(), out v);
         point.StationTypeBits = v;
     }
+
+    private static string NormalizeStationCodeTemplate(string? value)
+        => string.IsNullOrWhiteSpace(value) ? "{{StationCode}}" : value.Trim();
+
+    private static string PreviewStationCode(string? template)
+        => (string.IsNullOrWhiteSpace(template) ? "{{StationCode}}" : template)
+            .Replace("{{StationCode}}", "0100000347", StringComparison.OrdinalIgnoreCase)
+            .Replace("{{Floor}}", "1", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>站点类型下拉框的回显值：仅当恰好等于某个单类型位时回显该位，否则视为「未指定」。</summary>
     private static int SelectedPointBits(TaskPointDto point)
@@ -950,7 +866,7 @@
         (32, "充电"), (64, "分拣台"), (128, "人工台"), (256, "电梯"), (512, "其他"),
     };
 
-    /// <summary>校验弹窗输入，构造「起点 + 起点之后 + 终点」模板：新建则加入注册表，编辑则更新原模板，成功后持久化并关闭弹窗。</summary>
+    /// <summary>校验并保存任务类型模板。</summary>
     private async Task ConfirmAddTemplate()
     {
         _templateError = "";
@@ -980,8 +896,8 @@
         {
             Value = value,
             Label = label,
-            Start = new TaskPointDto { Label = "起点", StationTypeBits = _draft.Start.StationTypeBits },
-            End = new TaskPointDto { Label = "终点", StationTypeBits = _draft.End.StationTypeBits },
+            Start = new TaskPointDto { Label = "起点", StationTypeBits = _draft.Start.StationTypeBits, StationCodeTemplate = NormalizeStationCodeTemplate(_draft.Start.StationCodeTemplate) },
+            End = new TaskPointDto { Label = "终点", StationTypeBits = _draft.End.StationTypeBits, StationCodeTemplate = NormalizeStationCodeTemplate(_draft.End.StationCodeTemplate) },
             WorkflowSteps = _draft.WorkflowSteps.Select(step => new TaskWorkflowStepDto
             {
                 Id = step.Id,
@@ -1150,14 +1066,21 @@
 
         try
         {
-            if (V("grcs_warehouse") is string wh) _warehouse = wh;
+            var configuredWarehouse = V("grcs_warehouse") is string wh ? wh.Trim() : "";
+            if (configuredWarehouse.Equals("Show", StringComparison.OrdinalIgnoreCase))
+                configuredWarehouse = "";
+            _warehouse = configuredWarehouse;
 
             if (V("grcs_td_state") is string stateJson)
             {
                 var state = System.Text.Json.JsonSerializer.Deserialize<FormState>(stateJson);
                 if (state != null)
                 {
-                    if (!string.IsNullOrEmpty(state.Warehouse)) _warehouse = state.Warehouse;
+                    var savedWarehouse = state.Warehouse?.Trim() ?? "";
+                    if (string.IsNullOrWhiteSpace(configuredWarehouse)
+                        && !string.IsNullOrWhiteSpace(savedWarehouse)
+                        && !savedWarehouse.Equals("Show", StringComparison.OrdinalIgnoreCase))
+                        _warehouse = savedWarehouse;
                     _groupId = !string.IsNullOrEmpty(state.GroupId) ? state.GroupId : "GRP_" + DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString("x").ToUpper();
                     _priority = state.Priority;
                     _selectedType = state.SelectedType;
@@ -1167,18 +1090,19 @@
                 }
             }
 
-            if (V("grcs_map_stations") is string mapJ)
-            {
-                var cache = System.Text.Json.JsonSerializer.Deserialize<MapStationCache>(mapJ);
-                _mapStations = cache?.Stations ?? [];
-            }
-
             if (V("grcs_td_collapsed") is string cjson)
             {
                 _collapsed = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, bool>>(cjson) ?? _collapsed;
             }
         }
         catch { }
+
+        try
+        {
+            var map = await Api.GetInventoryMapAsync();
+            _mapStations = map?.Stations ?? [];
+        }
+        catch { _mapStations = []; }
 
         if (!restored)
         {
@@ -1354,7 +1278,7 @@
             }
         }
 
-        // ── 构建请求体（三类模块统一在后端 ModuleRunService 执行，前端不再执行）──
+        // ── 构建请求体并交由后端任务流程执行器处理 ──
         var payload = new WcsTaskGroup
         {
             GroupId = _groupId,
@@ -1364,7 +1288,7 @@
             Tasks = tasks
         };
 
-        // ── 发送：经后端统一执行器（ModuleRunService 跑起点/起点之后模块，FinishedModuleWatcher 跑终点模块）──
+        // ── 发送：经后端统一执行器（按任务执行流程运行）──
         _sending = true;
         StateHasChanged();
 
@@ -1386,7 +1310,7 @@
             : sendResult.RequestBody;
         Console.WriteLine($"[TaskDispatch] task/send 结果: ok={ok} code={code} WCS请求体={requestJson} RCS请求体={outboundBody} resp={json}");
         var resp = (ok ? "✅" : "❌") + $" HTTP {code}\n\nWCS → RCS 模板接口请求体:\n{requestJson}\n\n实际发送给 RCS 的协议请求体:\n{outboundBody}\n\nRCS 响应:\n{json}";
-        // 模块明细（起点/起点之后/终点）统一在后端执行，结果见「信号交互 → 模块执行记录」面板。
+        // 流程业务模板的执行结果见「信号交互 → 模块执行记录」面板。
         ShowResp(resp, ok ? "success" : "error");
         if (!ok) ShowNotice(json ?? "下发任务失败，请查看响应面板");
 

@@ -23,7 +23,7 @@ namespace WCSBackend.Modules.Wcs.Automation.Services;
 /// </summary>
 public class AutoTemplateRunner : IHostedService
 {
-    private readonly MapStoreService _map;
+    private readonly WcsMapCatalog _map;
     private readonly RangeConfigService _range;
     private readonly WcsSettingsService _settings;
     private readonly AutomationLogService _log;
@@ -56,7 +56,7 @@ public class AutoTemplateRunner : IHostedService
     // 容器占用/选池已迁移到 WcsInventoryStore 账本（MySQL 持久化），不再使用内存集合。
 
     public AutoTemplateRunner(
-        MapStoreService map, RangeConfigService range, WcsSettingsService settings,
+        WcsMapCatalog map, RangeConfigService range, WcsSettingsService settings,
         AutomationLogService log, ITaskStageService stage, AutomationGate gate,
         ModuleRunService modules, TaskTemplateStore taskTemplates, AutoTemplateStore templates,
         MockRuleStore mocks, WcsInventoryStore invStore,
@@ -186,6 +186,7 @@ public class AutoTemplateRunner : IHostedService
         // 释放所有站点锁与容器占用
         _dispatcher.ReleaseAllReservations();
         _invStore.ClearBusy();   // 账本占用全部释放（持久化）
+        _invStore.ClearAllTaskLocks(); // 全部重置同时清除所有储位任务锁，包括已下发任务
         // 清空所有自动化轮次日志
         _log.Clear();
         _log.Add("⚠ 已强制结束当前轮次：所有任务不再等待 FINISHED，相关占用已释放", "#f87171");

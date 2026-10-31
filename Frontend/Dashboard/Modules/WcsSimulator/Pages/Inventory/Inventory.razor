@@ -1,6 +1,7 @@
-@namespace Dashboard.Modules.WcsSimulator.Pages
+﻿@namespace Dashboard.Modules.WcsSimulator.Pages
 @page "/wcs-simulator/inventory"
 @inject WcsApiClient WcsService
+@inject TaskStageHub TaskHub
 @inherits Dashboard.Modules.WcsSimulator.Components.PageStateBase
 @using System.Text.Json
 @using Dashboard.Modules.WcsSimulator.Models
@@ -9,18 +10,14 @@
 
 <PageTitle>库存管理</PageTitle>
 
-@* ════════════════════════════════════════════════
-   WCS 手工入库：纯货物按框选储位写入；托盘只由 RCS 批量生成，不自动同步 WCS。
-   带货托仅展示，不可由此功能创建或覆盖。
-   ════════════════════════════════════════════════ *@
+@* 库存地图只展示 WCS 库存快照，并维护人工分拣台与实际分拣台的关联。 *@
 <section class="inventory-workspace">
     <div class="inventory-workspace-header">
-        🗺️ 库存地图与入库
-        <span class="badge-info">已选 @_manualSelectedMarks.Count 个储位</span>
+        📦 库存地图与库存维护
     </div>
     @if (_manualSlots.Count == 0)
     {
-        <div class="hint-text" style="margin-top:10px;">@(_manualLoading ? "正在读取库存和地图位置..." : "请先到“地图信息”页读取地图。手工入库只允许框选已同步到 WCS 的空储位。")</div>
+            <div class="hint-text" style="margin-top:10px;">@(_manualLoading ? "正在读取 WCS 库存地图..." : "当前没有库存地图，请先到“编辑地图”创建并保存。")</div>
     }
     else
     {
@@ -58,98 +55,36 @@
                     }
                     @if (!_sortingEdit)
                     {
-                    <div class="form-group">
-                        <label>库存类型</label>
-                        <select @bind="_manualInventoryType" @bind:after="OnManualTypeChanged">
-                            <option value="@ManualInventoryTypes.Pallet">托盘</option>
-                            <option value="@ManualInventoryTypes.Cargo">纯货物</option>
-                        </select>
-                    </div>
-                    <div class="form-group">
-                        <label>类型前缀</label>
-                        <input type="text" @bind="_manualPrefix" @bind:event="oninput" placeholder="SimContainer_ / SimCargo_">
-                    </div>
-                    @if (_manualInventoryType == ManualInventoryTypes.Cargo)
-                    {
-                        <div class="form-group">
-                            <label>RCS 货物模型</label>
-                            <select @bind="_manualCargoSizeId" disabled="@_manualCargoSizesLoading">
-                                @if (_manualCargoSizes.Count == 0)
-                                {
-                                    <option value="0">未读取到可用模型</option>
-                                }
-                                else
-                                {
-                                    @foreach (var size in _manualCargoSizes)
-                                    {
-                                        <option value="@size.Id">@size.Name（ID @size.Id，@size.Length × @size.Width × @size.Height）</option>
-                                    }
-                                }
-                            </select>
-                            <span class="hint-text">@(_manualCargoSizesLoading ? "正在读取 RCS 模型..." : "模型来自 RCS")</span>
-                        </div>
-                    }
-                    <div class="manual-preview">
-                        @if (_manualInventoryType == ManualInventoryTypes.Pallet)
+                        <div class="manual-actions-title">库存地图</div>
+                        <div class="hint-text">单击储位选中；右键可添加或移除托盘、货物。人工分拣台右键可维护分拣台关联。</div>
+                        @if (_inventorySelectedMark is { Length: > 0 } selectedMark && _manualSlots.TryGetValue(selectedMark, out var selectedSlot))
                         {
-                            <b>托盘生成方式</b>
-                            <span>RCS 按前缀 <code>@_manualPrefix</code> 生成当前楼层全部空闲 RACK 储位的托盘。</span>
-                            <span class="hint-text">请求数量固定为 -1；RCS 不支持指定托盘落位。</span>
-                        }
-                        else
-                        {
-                            <b>编码预览</b>
-                            @foreach (var previewCode in ManualCodePreview)
-                            {
-                                <code>@previewCode</code>
-                            }
-                            @if (_manualSelectedMarks.Count > ManualCodePreview.Count())
-                            {
-                                <span>… 共 @_manualSelectedMarks.Count 条</span>
-                            }
-                            <span class="hint-text">确认时按服务器当前时间重新生成十六进制编号。</span>
-                        }
-                    </div>
-                    <div class="manual-selected-stations">
-                        <b>已选储位（@_manualSelectedMarks.Count）</b>
-                        @if (_manualSelectedMarks.Count == 0)
-                        {
-                            <span class="hint-text">在左侧地图单击或框选空闲储位。</span>
-                        }
-                        else
-                        {
-                            <div class="manual-selected-chips">
-                                @foreach (var mark in _manualSelectedMarks.Order(StringComparer.OrdinalIgnoreCase))
-                                {
-                                    <code>@mark</code>
-                                }
+                            <div class="manual-selected-inventory">
+                                <b>已选储位</b> <code>@selectedMark</code>
+                                <div>@(string.IsNullOrWhiteSpace(selectedSlot.PalletCode) ? "无托盘" : $"托盘：{selectedSlot.PalletCode}")</div>
+                                <div>@(string.IsNullOrWhiteSpace(selectedSlot.CargoCode) ? "无货物" : $"货物：{selectedSlot.CargoCode}")</div>
                             </div>
                         }
-                    </div>
-                    <div class="manual-inventory-actions">
-                        <div class="manual-actions-title">库存操作 <span>暂未接入</span></div>
-                        <div class="manual-action-grid">
-                            <button class="btn btn-outline btn-sm" @onclick="NoopInventoryAction" disabled="@(!CanStageAddPallet)">＋ 增加托盘</button>
-                            <button class="btn btn-outline btn-sm" @onclick="NoopInventoryAction" disabled="@(!CanStageAddCargo)">＋ 增加货物</button>
-                            <button class="btn btn-outline btn-sm manual-danger-btn" @onclick="NoopInventoryAction" disabled="@(!CanStageDeletePallet)">− 删除托盘</button>
-                            <button class="btn btn-outline btn-sm manual-danger-btn" @onclick="NoopInventoryAction" disabled="@(!CanStageDeleteCargo)">− 删除货物</button>
-                        </div>
-                        <span class="hint-text">按钮仅展示可操作规则，当前点击不会修改 WCS 或 RCS。</span>
-                    </div>
-                    <button class="btn btn-primary manual-entry-btn" @onclick="ManualEnter" disabled="@(_manualSubmitting || (_manualInventoryType == ManualInventoryTypes.Cargo && (_manualSelectedMarks.Count == 0 || _manualCargoSizeId <= 0)))">
-                        @(_manualSubmitting
-                            ? "⏳ 处理中..."
-                            : _manualInventoryType == ManualInventoryTypes.Pallet
-                                ? "只由 RCS 生成当前楼层全部托盘"
-                                : $"确认增加 {_manualSelectedMarks.Count} 条货物")
-                    </button>
-                    <div class="hint-text manual-entry-hint">
-                        @(_manualInventoryType == ManualInventoryTypes.Pallet
-                            ? "托盘由 RCS /AutoContainerEnter 创建；成功后不写入或同步 WCS 库存。"
-                            : "货物先整体写入 WCS 指定储位，再按储位顺序逐条同步 RCS。")
-                        不创建带货托。
-                    </div>
-
+                        @if (!string.IsNullOrWhiteSpace(_inventoryEditKind))
+                        {
+                            <div class="manual-inventory-editor">
+                                <div class="manual-actions-title">添加@( _inventoryEditKind == "pallet" ? "托盘" : "货物")</div>
+                                <div class="hint-text">储位 <code>@_inventoryEditMark</code></div>
+                                <label class="manual-inventory-code-label" for="inventory-unit-code">实例编码</label>
+                                <input id="inventory-unit-code" class="form-control" maxlength="128" @bind="_inventoryEditCode" placeholder="输入托盘/货物编码" />
+                                @if (!string.IsNullOrWhiteSpace(_inventoryEditError))
+                                {
+                                    <div class="manual-inventory-error">@_inventoryEditError</div>
+                                }
+                                <div class="manual-inventory-form-actions">
+                                    <button class="btn btn-outline btn-sm" @onclick="CancelInventoryUnitEdit" disabled="@_inventoryEditSaving">取消</button>
+                                    <button class="btn btn-primary btn-sm" @onclick="SaveInventoryUnitAsync" disabled="@(_inventoryEditSaving || string.IsNullOrWhiteSpace(_inventoryEditCode))">
+                                        @(_inventoryEditSaving ? "保存中…" : "确认添加")
+                                    </button>
+                                </div>
+                            </div>
+                        }
+                    }
                     @if (_transitPositions.Count > 0)
                     {
                         <div class="manual-transit-list">
@@ -161,40 +96,35 @@
                             }
                         </div>
                     }
-                    <div class="manual-ledger-sync">
-                        <div class="manual-actions-title">库存账本同步</div>
-                        <button class="btn btn-outline manual-sync-btn" @onclick="SyncLedger" disabled="@_syncLoading">
-                            @(_syncLoading ? "⏳ 同步中..." : "🔄 RCS 同步至 WCS")
-                        </button>
-                        <span class="hint-text">以 RCS 当前库存重建 WCS 库存账本；存在在途自动化任务时会被拒绝。</span>
-                    </div>
+                    @if (!_sortingEdit)
+                    {
+                        <div class="manual-inventory-divider"></div>
+                        <section class="manual-inventory-batch">
+                            <div class="manual-actions-title">批量库存操作</div>
+                            <label class="manual-batch-prefix">
+                                货物编码前缀
+                                <input class="form-control" maxlength="120" @bind="_batchCargoPrefix" />
+                            </label>
+                            <label class="manual-batch-prefix">
+                                托盘编码前缀
+                                <input class="form-control" maxlength="120" @bind="_batchPalletPrefix" />
+                            </label>
+                            <div class="manual-inventory-batch-grid">
+                                <button class="btn btn-primary btn-sm" @onclick="GenerateAllCargoAsync" disabled="@_batchInventoryRunning">一键生成所有货物</button>
+                                <button class="btn btn-primary btn-sm" @onclick="GenerateAllPalletsAsync" disabled="@_batchInventoryRunning">一键生成所有托盘</button>
+                                <button class="btn btn-outline btn-sm danger" @onclick="RemoveAllCargoAsync" disabled="@_batchInventoryRunning">一键删除所有货物</button>
+                                <button class="btn btn-outline btn-sm danger" @onclick="RemoveAllPalletsAsync" disabled="@_batchInventoryRunning">一键删除所有托盘</button>
+                            </div>
+                            @if (_batchInventoryRunning)
+                            {
+                                <div class="hint-text">批量库存操作执行中…</div>
+                            }
+                        </section>
                     }
                 </aside>
             </div>
     }
 
-    @if (_manualResult != null)
-        {
-            <div style="overflow-x:auto;margin-top:12px;">
-                <div class="hint-text" style="margin-bottom:6px;">@_manualResult.Message</div>
-                <table class="data-table">
-                    <thead><tr><th>储位</th><th>库存编码</th><th>类型</th><th>WCS</th><th>RCS</th><th>结果</th></tr></thead>
-                    <tbody>
-                    @foreach (var item in _manualResult.Items)
-                    {
-                        <tr>
-                            <td><code>@item.StationMark</code></td>
-                            <td><code>@item.Code</code></td>
-                            <td>@(item.InventoryType == ManualInventoryTypes.Pallet ? "托盘" : "货物")</td>
-                            <td>@(item.WcsWritten ? "✅ 已写入" : "—")</td>
-                            <td>@(item.RcsSynced ? "✅ 已同步" : $"❌ HTTP {item.RcsStatusCode}")</td>
-                            <td>@item.Message</td>
-                        </tr>
-                    }
-                    </tbody>
-                </table>
-            </div>
-    }
 </section>
 
 @* ════════════════════════════════════════════════
@@ -209,73 +139,52 @@
 
 @code {
     private static readonly JsonSerializerOptions JsonOpts = new() { PropertyNameCaseInsensitive = true };
+    private sealed class InventoryVisualUpdate
+    {
+        public string Mark { get; set; } = "";
+        public string VisualKind { get; set; } = "empty";
+        public string Tooltip { get; set; } = "";
+        public List<string> ContextActions { get; set; } = [];
+    }
 
-    private bool _syncLoading;
 
-    // ── WCS 手工入库地图 ──
-    // Canvas 地图只由 WCS 的 wcs_slots 快照派生，不读取浏览器 grcs_map_stations 缓存。
+    // ── WCS 库存地图 ──
+    // Canvas 地图与库存状态都由 WCS wcs_slots 快照提供。
     private List<MapStationLite> _manualStations = [];
     private readonly Dictionary<string, WcsSlotRow> _manualSlots = new(StringComparer.OrdinalIgnoreCase);
-    private readonly HashSet<string> _manualSelectedMarks = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _sortingSelectedMarks = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _inventorySelectedMarks = new(StringComparer.OrdinalIgnoreCase);
     private string _selectedSortingParentMark = "";
     private string _sortingParentMark = "";
     private bool _sortingEdit;
     private bool _sortingSaving;
+    private string _inventorySelectedMark = "";
+    private string _inventoryEditMark = "";
+    private string _inventoryEditKind = "";
+    private string _inventoryEditCode = "";
+    private string _inventoryEditError = "";
+    private bool _inventoryEditSaving;
+    private string _batchCargoPrefix = "cargo_";
+    private string _batchPalletPrefix = "container_";
+    private bool _batchInventoryRunning;
     private List<int> _manualFloors = [];
     private int _manualFloor;
-    private string _manualInventoryType = ManualInventoryTypes.Pallet;
-    private string _manualPrefix = "SimContainer_";
-    private int _manualCargoSizeId;
-    private List<RcsCargoSizeDto> _manualCargoSizes = [];
-    private bool _manualCargoSizesLoading;
     private DotNetObjectReference<Inventory>? _manualMapDotNetRef;
     private bool _manualMapPendingMount;
     private bool _manualMapPendingUpdate;
     private bool _manualMapMounted;
     private bool _manualLoading = true;
-    private bool _manualSubmitting;
     private List<TransitPalletPositionDto> _transitPositions = [];
     private string _transitLoadedAt = "";
-    private ManualInventoryEnterResult? _manualResult;
 
 
-    /// <summary>从 RCS 同步库存账本到 WCS（清空重建；有在途自动化任务时后端拒绝）。</summary>
-    private async Task SyncLedger()
-    {
-        _syncLoading = true;
-        var (ok, json) = await WcsService.SyncInventoryAsync();
-        string msg;
-        if (ok)
-        {
-            try
-            {
-                var j = System.Text.Json.JsonDocument.Parse(json).RootElement;
-                msg = $"同步完成（{j.GetProperty("syncedAt").GetString()}）\n" +
-                    $"GRCS 库存：{j.GetProperty("grcsCount").GetInt32()} 条\n" +
-                    $"储位更新：{j.GetProperty("slots").GetInt32()} 个储位（占用 {j.GetProperty("occupied").GetInt32()}）\n" +
-                    $"  带货托 {j.GetProperty("loaded").GetInt32()}、空托 {j.GetProperty("emptyPallets").GetInt32()}、纯货物 {j.GetProperty("cargos").GetInt32()}";
-            }
-            catch { msg = json; }
-        }
-        else
-        {
-            msg = $"同步失败：{json}";
-        }
-        ShowFeedback(ok ? "✅" : "❌", msg);
-        _syncLoading = false;
-    }
-
-    // ── 折叠状态（基类 PageStateBase 提供，键 grcs_inv_collapsed）──
+    // ── 折叠状态    // ── 折叠状态（基类 PageStateBase 提供，键 grcs_inv_collapsed）──
     protected override string CollapsedStoreKey => "grcs_inv_collapsed";
-    private async Task ToggleManualInventory()
+    protected override Task OnInitializedAsync()
     {
-        var wasCollapsed = IsCollapsed("inv_manual");
-        await Toggle("inv_manual");
-        if (wasCollapsed && !IsCollapsed("inv_manual")) await RefreshManualSnapshot();
+        TaskHub.ConfigurationChanged += OnConfigurationChanged;
+        return Task.CompletedTask;
     }
-
-    protected override Task OnInitializedAsync() => Task.CompletedTask;
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
@@ -301,20 +210,23 @@
         }
     }
 
-    public void Dispose() => _manualMapDotNetRef?.Dispose();
-
-    private IEnumerable<string> ManualCodePreview
+    public void Dispose()
     {
-        get
-        {
-            var timeHex = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString("X");
-            return Enumerable.Range(0, Math.Min(_manualSelectedMarks.Count, 4))
-                .Select(index => $"{_manualPrefix}{timeHex}{index:X4}");
-        }
+        TaskHub.ConfigurationChanged -= OnConfigurationChanged;
+        _manualMapDotNetRef?.Dispose();
     }
 
+    private void OnConfigurationChanged(string key)
+    {
+        if (!string.Equals(key, "map", StringComparison.OrdinalIgnoreCase)) return;
+        _ = InvokeAsync(async () =>
+        {
+            await RefreshManualSnapshot();
+            await InvokeAsync(StateHasChanged);
+        });
+    }
 
-    /// <summary>库存地图同时显示储位与接驳位；手工入库选点仍只接受储位。</summary>
+    /// <summary>库存地图显示储位、接驳位、分拣台和人工分拣台。</summary>
     private static bool IsInventoryMapStation(MapStationLite station)
         => (station.StationType & (MapStationTypeBits.StorageLocation | MapStationTypeBits.TransferPoint
             | MapStationTypeBits.PickingStation | MapStationTypeBits.PeopleStation)) != 0;
@@ -374,8 +286,10 @@
             _manualFloors = _manualSlots.Values.Where(IsInventoryMapSlot)
                 .Select(slot => slot.Floor).Distinct().Order().ToList();
             if (!_manualFloors.Contains(_manualFloor)) _manualFloor = _manualFloors.FirstOrDefault();
-            _manualSelectedMarks.RemoveWhere(mark => !IsManualMapSelectable(mark));
             _sortingSelectedMarks.RemoveWhere(mark => !IsSortingChildStation(mark));
+            _inventorySelectedMarks.RemoveWhere(mark => !_manualSlots.ContainsKey(mark));
+            if (!_inventorySelectedMarks.Contains(_inventorySelectedMark))
+                _inventorySelectedMark = _inventorySelectedMarks.FirstOrDefault() ?? "";
             if (_manualMapMounted) _manualMapPendingUpdate = true;
             else _manualMapPendingMount = true;
         }
@@ -406,11 +320,12 @@
             Floor = station.Floor,
             StaEnable = _sortingEdit
                 ? IsSortingChildStation(station.Mark)
-                : IsManualMapSelectable(station.Mark) || IsPeopleSortingStation(station.Mark),
+                : IsPeopleSortingStation(station.Mark) || IsInventoryStorageStation(station.Mark),
             VisualKind = ManualVisualKind(station),
             Tooltip = ManualStationTooltip(station),
             BadgeText = SortingStationBadge(station),
             ParentMark = SortingMapParent(station),
+            ContextActions = InventoryContextActions(station.Mark),
         }).ToList();
 
         foreach (var transit in _transitPositions.Where(position => position.CurrentLocation != null))
@@ -436,13 +351,15 @@
             Stations = stations,
             Preselected = _sortingEdit
                 ? _sortingSelectedMarks.ToList()
-                : _manualSelectedMarks.Append(_selectedSortingParentMark)
-                    .Where(mark => !string.IsNullOrWhiteSpace(mark)).ToList(),
+                : _inventorySelectedMarks.Count > 0
+                    ? _inventorySelectedMarks.ToList()
+                    : string.IsNullOrWhiteSpace(_selectedSortingParentMark) ? [] : [_selectedSortingParentMark],
             ScaleSymbolsWithZoom = true,
             CompactSelection = true,
             ShowSelectedLabels = false,
             ShowSortingLinks = _sortingEdit,
             RightClickPeopleStationSelection = true,
+            RightClickInventorySelection = !_sortingEdit,
         };
     }
 
@@ -469,6 +386,58 @@
         catch (Exception ex) { ShowFeedback("❌", $"库存地图更新失败：{ex.Message}"); }
     }
 
+    private async Task ApplyInventoryChangesAsync(IEnumerable<InventoryUnitChange>? changes)
+    {
+        var changesList = changes?.ToList() ?? [];
+        if (changesList.Count == 0)
+        {
+            await RefreshManualSnapshot();
+            return;
+        }
+        var updates = new List<InventoryVisualUpdate>();
+        var stationsByMark = _manualStations.ToDictionary(station => station.Mark, StringComparer.OrdinalIgnoreCase);
+        foreach (var change in changesList)
+        {
+            if (!_manualSlots.TryGetValue(change.Mark, out var slot)) continue;
+            var code = change.Code ?? "";
+            if (string.Equals(change.Kind, "pallet", StringComparison.OrdinalIgnoreCase))
+            {
+                slot.PalletCode = code;
+                slot.PalletStatus = string.IsNullOrEmpty(code) ? "" : "ready";
+            }
+            else if (string.Equals(change.Kind, "cargo", StringComparison.OrdinalIgnoreCase))
+            {
+                slot.CargoCode = code;
+                slot.CargoStatus = string.IsNullOrEmpty(code) ? "" : "ready";
+            }
+            else continue;
+
+            if (!stationsByMark.TryGetValue(slot.Mark, out var station)) continue;
+            updates.Add(new InventoryVisualUpdate
+            {
+                Mark = slot.Mark,
+                VisualKind = ManualVisualKind(slot.Mark),
+                Tooltip = ManualStationTooltip(station),
+                ContextActions = InventoryContextActions(slot.Mark),
+            });
+        }
+
+        if (updates.Count == 0)
+        {
+            await RefreshManualSnapshot();
+            return;
+        }
+        var handled = false;
+        try
+        {
+            handled = await Js.InvokeAsync<bool>("grcsStationMapPickerUpdateInventory", "manual-inventory-map",
+                JsonSerializer.Serialize(updates));
+        }
+        catch { /* 兼容浏览器仍持有旧版 JS 时退回整图更新。 */ }
+        if (!handled) await UpdateManualMapAsync();
+        await InvokeAsync(StateHasChanged);
+    }
+
     [JSInvokable]
     public Task OnManualMapSelectionChanged(List<string>? marks)
     {
@@ -478,22 +447,180 @@
             if (_sortingSelectedMarks.SetEquals(next)) return Task.CompletedTask;
             _sortingSelectedMarks.Clear();
             foreach (var mark in next) _sortingSelectedMarks.Add(mark);
-            return InvokeAsync(StateHasChanged);
         }
-
-        var nextParent = next.Contains(_selectedSortingParentMark)
-            ? _selectedSortingParentMark
-            : next.Where(IsPeopleSortingStation).Order(StringComparer.OrdinalIgnoreCase).FirstOrDefault() ?? "";
-        var nextManual = new HashSet<string>(next.Where(IsManualMapSelectable), StringComparer.OrdinalIgnoreCase);
-        if (string.Equals(_selectedSortingParentMark, nextParent, StringComparison.OrdinalIgnoreCase)
-            && _manualSelectedMarks.SetEquals(nextManual)) return Task.CompletedTask;
-
-        _selectedSortingParentMark = nextParent;
-        _manualSelectedMarks.Clear();
-        foreach (var mark in nextManual) _manualSelectedMarks.Add(mark);
+        else
+        {
+            var storageOnly = next.Where(IsInventoryStorageStation).ToList();
+            if (_inventorySelectedMarks.SetEquals(storageOnly)) return Task.CompletedTask;
+            _inventorySelectedMarks.Clear();
+            foreach (var mark in storageOnly) _inventorySelectedMarks.Add(mark);
+            _inventorySelectedMark = storageOnly.FirstOrDefault() ?? "";
+        }
         return InvokeAsync(StateHasChanged);
     }
 
+    [JSInvokable]
+    public async Task OnInventoryContextActionRequested(string mark, string action)
+    {
+        if (_sortingEdit || !_manualSlots.TryGetValue(mark, out var slot) || !IsInventoryStorageStation(mark)) return;
+        if (action is "addPallet" or "addCargo")
+        {
+            _inventorySelectedMark = mark;
+            _inventorySelectedMarks.Clear();
+            _inventorySelectedMarks.Add(mark);
+            _inventoryEditMark = mark;
+            _inventoryEditKind = action == "addPallet" ? "pallet" : "cargo";
+            _inventoryEditCode = "";
+            _inventoryEditError = "";
+            await InvokeAsync(StateHasChanged);
+            return;
+        }
+        if (action is not ("removePallet" or "removeCargo")) return;
+        var kind = action == "removePallet" ? "pallet" : "cargo";
+        var code = kind == "pallet" ? slot.PalletCode : slot.CargoCode;
+        if (string.IsNullOrWhiteSpace(code) || !CanEditInventorySlot(slot)) return;
+        var confirmed = await Js.InvokeAsync<bool>("confirm", $"确认从储位 {mark} 移除{(kind == "pallet" ? "托盘" : "货物")} {code}？");
+        if (!confirmed) return;
+
+        var (ok, json) = await WcsService.RemoveInventoryUnitAsync(mark, kind);
+        var result = TryParseInventoryMutation(json);
+        ShowFeedback(ok ? "✅" : "❌", result?.Message ?? json);
+        if (ok && result?.Success == true)
+            await ApplyInventoryChangesAsync([new InventoryUnitChange { Mark = mark, Kind = kind, Code = "" }]);
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task SaveInventoryUnitAsync()
+    {
+        if (_inventoryEditSaving || string.IsNullOrWhiteSpace(_inventoryEditCode)) return;
+        _inventoryEditSaving = true;
+        _inventoryEditError = "";
+        try
+        {
+            var (ok, json) = await WcsService.AddInventoryUnitAsync(new InventoryUnitMutationRequest
+            {
+                Mark = _inventoryEditMark,
+                Kind = _inventoryEditKind,
+                Code = _inventoryEditCode.Trim(),
+            });
+            var result = TryParseInventoryMutation(json);
+            if (!ok || result?.Success != true)
+            {
+                _inventoryEditError = result?.Message ?? json;
+                return;
+            }
+            ShowFeedback("✅", result.Message);
+            CancelInventoryUnitEdit();
+            await ApplyInventoryChangesAsync([new InventoryUnitChange
+            {
+                Mark = result.Mark,
+                Kind = result.Kind,
+                Code = result.Code,
+            }]);
+        }
+        finally
+        {
+            _inventoryEditSaving = false;
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private void CancelInventoryUnitEdit()
+    {
+        _inventoryEditMark = "";
+        _inventoryEditKind = "";
+        _inventoryEditCode = "";
+        _inventoryEditError = "";
+    }
+
+    private static InventoryUnitMutationResult? TryParseInventoryMutation(string json)
+    {
+        try { return JsonSerializer.Deserialize<InventoryUnitMutationResult>(json, JsonOpts); }
+        catch { return null; }
+    }
+
+    private static InventoryBatchMutationResult? TryParseInventoryBatchMutation(string json)
+    {
+        try { return JsonSerializer.Deserialize<InventoryBatchMutationResult>(json, JsonOpts); }
+        catch { return null; }
+    }
+
+    private Task GenerateAllCargoAsync() => GenerateAllInventoryAsync("cargo");
+    private Task GenerateAllPalletsAsync() => GenerateAllInventoryAsync("pallet");
+    private Task RemoveAllCargoAsync() => RemoveAllInventoryAsync("cargo");
+    private Task RemoveAllPalletsAsync() => RemoveAllInventoryAsync("pallet");
+
+    private async Task GenerateAllInventoryAsync(string kind)
+    {
+        if (_batchInventoryRunning) return;
+        var prefix = kind == "cargo" ? _batchCargoPrefix : _batchPalletPrefix;
+        if (string.IsNullOrWhiteSpace(prefix))
+        {
+            ShowFeedback("❌", $"{(kind == "cargo" ? "货物" : "托盘")}编码前缀不能为空");
+            return;
+        }
+
+        _batchInventoryRunning = true;
+        try
+        {
+            var (ok, json) = await WcsService.GenerateAllInventoryUnitsAsync(new InventoryBatchMutationRequest
+            {
+                Kind = kind,
+                Prefix = prefix.Trim(),
+            });
+            var result = TryParseInventoryBatchMutation(json);
+            ShowFeedback(ok && result?.Success == true ? "✅" : "❌", result?.Message ?? json);
+            if (ok && result?.Success == true && result.ChangedCount > 0)
+                await ApplyInventoryChangesAsync(result.Changes);
+        }
+        finally
+        {
+            _batchInventoryRunning = false;
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private async Task RemoveAllInventoryAsync(string kind)
+    {
+        if (_batchInventoryRunning) return;
+        var noun = kind == "cargo" ? "货物" : "托盘";
+        var confirmed = await Js.InvokeAsync<bool>("confirm", $"确认删除 WCS 库存地图中的所有{noun}？任务锁定或处理中库存会跳过。");
+        if (!confirmed) return;
+
+        _batchInventoryRunning = true;
+        try
+        {
+            var (ok, json) = await WcsService.RemoveAllInventoryUnitsAsync(kind);
+            var result = TryParseInventoryBatchMutation(json);
+            ShowFeedback(ok && result?.Success == true ? "✅" : "❌", result?.Message ?? json);
+            if (ok && result?.Success == true && result.ChangedCount > 0)
+                await ApplyInventoryChangesAsync(result.Changes);
+        }
+        finally
+        {
+            _batchInventoryRunning = false;
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private bool IsInventoryStorageStation(string mark)
+        => _manualSlots.TryGetValue(mark, out var slot)
+            && string.Equals(slot.SiteType, "Storage", StringComparison.OrdinalIgnoreCase);
+
+    private static bool CanEditInventorySlot(WcsSlotRow slot)
+        => string.IsNullOrWhiteSpace(slot.TaskLockId)
+            && (string.IsNullOrWhiteSpace(slot.PalletStatus) || string.Equals(slot.PalletStatus, "ready", StringComparison.OrdinalIgnoreCase))
+            && (string.IsNullOrWhiteSpace(slot.CargoStatus) || string.Equals(slot.CargoStatus, "ready", StringComparison.OrdinalIgnoreCase));
+
+    private List<string> InventoryContextActions(string mark)
+    {
+        if (!_manualSlots.TryGetValue(mark, out var slot) || !IsInventoryStorageStation(mark)) return [];
+        if (!CanEditInventorySlot(slot)) return ["blocked"];
+        var actions = new List<string>();
+        actions.Add(string.IsNullOrWhiteSpace(slot.PalletCode) ? "addPallet" : "removePallet");
+        actions.Add(string.IsNullOrWhiteSpace(slot.CargoCode) ? "addCargo" : "removeCargo");
+        return actions;
+    }
     [JSInvokable]
     public Task OnManualMapFloorChanged(int floor)
     {
@@ -515,42 +642,6 @@
         await Js.InvokeVoidAsync("grcsStationMapPickerSetSortingMode", "manual-inventory-map",
             _sortingParentMark, _sortingSelectedMarks.Order(StringComparer.OrdinalIgnoreCase).ToList());
         await InvokeAsync(StateHasChanged);
-    }
-
-    private async Task OnManualTypeChanged()
-    {
-        _manualPrefix = _manualInventoryType == ManualInventoryTypes.Pallet ? "SimContainer_" : "SimCargo_";
-        if (_manualInventoryType == ManualInventoryTypes.Cargo) await LoadManualCargoSizes();
-    }
-
-    private async Task LoadManualCargoSizes()
-    {
-        _manualCargoSizesLoading = true;
-        try
-        {
-            _manualCargoSizes = await WcsService.GetCargoSizesAsync();
-            if (_manualCargoSizes.Any(size => size.Id == _manualCargoSizeId) == false)
-                _manualCargoSizeId = _manualCargoSizes.FirstOrDefault()?.Id ?? 0;
-        }
-        finally { _manualCargoSizesLoading = false; }
-    }
-
-    private bool IsManualSelectable(string mark)
-    {
-        if (!_manualSlots.TryGetValue(mark, out var slot)) return false;
-        return string.Equals(slot.SiteType, "Storage", StringComparison.OrdinalIgnoreCase)
-            && string.IsNullOrEmpty(slot.PalletCode) && string.IsNullOrEmpty(slot.CargoCode)
-            && string.IsNullOrEmpty(slot.TaskLockId);
-    }
-
-    /// <summary>库存地图允许选择空位或已有库存；任务锁定、在途库存不可编辑。</summary>
-    private bool IsManualMapSelectable(string mark)
-    {
-        if (!_manualSlots.TryGetValue(mark, out var slot)) return false;
-        return string.Equals(slot.SiteType, "Storage", StringComparison.OrdinalIgnoreCase)
-            && string.IsNullOrEmpty(slot.TaskLockId)
-            && !string.Equals(slot.PalletStatus, "transit", StringComparison.OrdinalIgnoreCase)
-            && !string.Equals(slot.CargoStatus, "transit", StringComparison.OrdinalIgnoreCase);
     }
 
     private async Task CompleteSortingEdit()
@@ -594,31 +685,6 @@
         }
         finally { _sortingSaving = false; }
     }
-    private IEnumerable<WcsSlotRow> SelectedManualSlots => _manualSelectedMarks
-        .Select(mark => _manualSlots.TryGetValue(mark, out var slot) ? slot : null)
-        .Where(slot => slot != null)
-        .Select(slot => slot!);
-
-    private static bool IsEmptySlot(WcsSlotRow slot)
-        => string.IsNullOrEmpty(slot.PalletCode) && string.IsNullOrEmpty(slot.CargoCode);
-
-    private static bool IsPalletOnlySlot(WcsSlotRow slot)
-        => !string.IsNullOrEmpty(slot.PalletCode) && string.IsNullOrEmpty(slot.CargoCode);
-
-    private bool AllSelectedSlots(Func<WcsSlotRow, bool> rule)
-    {
-        var slots = SelectedManualSlots.ToList();
-        return slots.Count > 0 && slots.All(rule);
-    }
-
-    private bool CanStageAddPallet => AllSelectedSlots(IsEmptySlot);
-    private bool CanStageAddCargo => AllSelectedSlots(slot => IsEmptySlot(slot) || IsPalletOnlySlot(slot));
-    private bool CanStageDeletePallet => AllSelectedSlots(slot => !string.IsNullOrEmpty(slot.PalletCode));
-    private bool CanStageDeleteCargo => AllSelectedSlots(slot => !string.IsNullOrEmpty(slot.CargoCode));
-
-    /// <summary>库存增删动作暂为 UI 占位，不执行任何本地或 RCS 写入。</summary>
-    private void NoopInventoryAction() { }
-
     private string ManualVisualKind(string mark)
     {
         if (!_manualSlots.TryGetValue(mark, out var slot)) return "empty";
@@ -718,71 +784,6 @@
             string.Equals(station.Mark, mark, StringComparison.OrdinalIgnoreCase))?.Floor;
     }
 
-    private async Task ManualEnter()
-    {
-        _manualSubmitting = true;
-        try
-        {
-            if (_manualInventoryType == ManualInventoryTypes.Pallet)
-            {
-                var (created, statusCode, createJson) = await WcsService.AutoContainerEnterAsync(
-                    "", "", _manualPrefix, -1, _manualFloor, type: 2);
-                if (!created)
-                {
-                    _manualResult = new ManualInventoryEnterResult
-                    {
-                        Message = $"RCS 托盘生成失败：{createJson}",
-                        Items = [new ManualInventoryEnterItemResult
-                        {
-                            StationMark = $"{_manualFloor} 层（RCS 自动分配）",
-                            Code = _manualPrefix,
-                            InventoryType = ManualInventoryTypes.Pallet,
-                            RcsStatusCode = statusCode,
-                            Message = createJson,
-                        }]
-                    };
-                    ShowFeedback("❌", _manualResult.Message);
-                    return;
-                }
-
-                _manualResult = new ManualInventoryEnterResult
-                {
-                    WcsWritten = false,
-                    Message = "RCS 已生成当前楼层全部可用托盘，WCS 库存未同步",
-                    Items = [new ManualInventoryEnterItemResult
-                    {
-                        StationMark = $"{_manualFloor} 层（RCS 自动分配）",
-                        Code = _manualPrefix,
-                        InventoryType = ManualInventoryTypes.Pallet,
-                        WcsWritten = false,
-                        RcsSynced = true,
-                        RcsStatusCode = statusCode,
-                        Message = "RCS 已生成，WCS 未同步",
-                    }]
-                };
-                _manualSelectedMarks.Clear();
-                ShowFeedback("✅", _manualResult.Message);
-                await RefreshManualSnapshot();
-                return;
-            }
-
-            var request = new ManualInventoryEnterRequest
-            {
-                StationMarks = _manualSelectedMarks.Order(StringComparer.OrdinalIgnoreCase).ToList(),
-                InventoryType = _manualInventoryType,
-                Prefix = _manualPrefix,
-                CargoSizeId = _manualCargoSizeId,
-            };
-            var (ok, _, json) = await WcsService.ManualInventoryEnterAsync(request);
-            _manualResult = JsonSerializer.Deserialize<ManualInventoryEnterResult>(json, JsonOpts)
-                ?? new ManualInventoryEnterResult { Message = json };
-            if (ok) _manualSelectedMarks.Clear();
-            ShowFeedback(ok ? "✅" : "❌", _manualResult.Message);
-            await RefreshManualSnapshot();
-        }
-        catch (Exception ex) { ShowFeedback("❌", ex.Message); }
-        finally { _manualSubmitting = false; }
-    }
 
 }
 

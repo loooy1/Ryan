@@ -67,7 +67,6 @@ public static class WcsMapping
         KvMap<WcsSettingsDto>("wcs_settings");
         KvMap<RangeConfigDto>("auto_range");
         KvMap<NestConfigDto>("nest_config");
-        KvMap<MapUploadDto>("map_stations");
     }
 
     private static void KvMap<T>(string key) where T : class, new()

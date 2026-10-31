@@ -1,7 +1,9 @@
-using Contracts.Entities;
+﻿using Contracts.Entities;
 using Contracts.Dtos;
 using Backend.Shared.Infrastructure.Repository;
 using WCSBackend.Modules.Wcs.Console.Services;
+using Microsoft.EntityFrameworkCore;
+using Backend.Shared.Infrastructure;
 
 namespace WCSBackend.Modules.Wcs.Infrastructure;
 
@@ -16,7 +18,6 @@ public class WcsInventoryStore
 {
     public record InvItem(string Code, string Mark, bool IsLoaded, string? CargoCode = null, string? Station = null);
     /// <summary>手工入库的一个纯库存单元。类型只能是 pallet 或 cargo。</summary>
-    public record ManualStockUnit(string Mark, string Code, string InventoryType);
     public record TransitUnit(string TaskId, string? PalletCode, string? CargoCode, string SourceMark)
     {
         public IEnumerable<string> Codes => new[] { PalletCode, CargoCode }
@@ -30,19 +31,21 @@ public class WcsInventoryStore
     public const string SelectionTaskEndLocked = "task_end_locked";
     public const string SelectionStartUnavailable = "start_unavailable";
     public const string SelectionDestinationUnavailable = "destination_unavailable";
-    private const string SyncedMarksKey = "inv_synced_marks";
 
     private static readonly object WriteLock = new(); // 进程内统一串行化库存选择和写入
 
     private readonly IUnitOfWorkFactory _uow;
-    private readonly MapStoreService _map;
+    private readonly IDbContextFactory<GrcsDbContext> _dbContextFactory;
+    private readonly WcsMapCatalog _map;
     private readonly ITaskStageService _stages;
     private readonly ILogger<WcsInventoryStore> _logger;
 
-    public WcsInventoryStore(IUnitOfWorkFactory uow, MapStoreService map, ITaskStageService stages,
+    public WcsInventoryStore(IUnitOfWorkFactory uow, IDbContextFactory<GrcsDbContext> dbContextFactory,
+        WcsMapCatalog map, ITaskStageService stages,
         ILogger<WcsInventoryStore> logger)
     {
         _uow = uow;
+        _dbContextFactory = dbContextFactory;
         _map = map;
         _stages = stages;
         _logger = logger;
@@ -289,11 +292,11 @@ public class WcsInventoryStore
             // 同步库存会重建账本行，但人工分拣台关联是 WCS 自己维护的配置，必须保留。
             // 必须无跟踪读取：后续 ExecuteDelete 后会为相同 Mark 建立新对象，
             // 旧对象仍被 DbContext 跟踪时会触发“同主键实体已被跟踪”。
+            var stations = InventoryMapStations();
             var parentByMark = repo.FindAllAsync().GetAwaiter().GetResult()
                 .Where(row => !string.IsNullOrWhiteSpace(row.ParentStationCode))
                 .ToDictionary(row => row.Mark, row => row.ParentStationCode, StringComparer.OrdinalIgnoreCase);
             repo.DeleteWhereAsync(_ => true).GetAwaiter().GetResult();
-            var stations = InventoryMapStations();
             foreach (var st in stations)
             {
                 if (!IsInventoryMapStation(st)) continue;
@@ -302,9 +305,16 @@ public class WcsInventoryStore
                 {
                     Mark = st.Mark,
                     SiteType = siteType,
+                    StationTypeBits = st.StationType,
                     Floor = st.Floor,
                     X = st.X,
                     Y = st.Y,
+                    StaEnable = st.StaEnable,
+                    CargoAreasJson = System.Text.Json.JsonSerializer.Serialize(st.CargoAreas),
+                    SupportLoadState = st.SupportLoadState,
+                    AllowTurn = st.AllowTurn,
+                    AllowAvoid = st.AllowAvoid,
+                    AllowStop = st.AllowStop,
                     ParentStationCode = parentByMark.TryGetValue(st.Mark, out var parent) ? parent : "",
                     SelectionStatus = siteType == "Storage" ? SelectionStartUnavailable : SelectionAvailable,
                     UpdatedAt = DateTime.Now.ToString("O")
@@ -315,45 +325,45 @@ public class WcsInventoryStore
     }
 
     /// <summary>
-    /// 地图读取后更新站点定义。相同 Mark 的库存、锁和人工分拣关联均保留，仅刷新类型和坐标；
-    /// 新站点按空库存创建，使库存地图不再依赖浏览器地图缓存。
+    /// 用编辑器地图全量替换库存站点；站点几何与库存状态保存在同一张表。
     /// </summary>
-    public int SyncMapSlots()
+    public (bool Success, int Count, string Message) SyncMapSlots(IReadOnlyCollection<MapStationLite> mapStations)
     {
         lock (WriteLock)
         {
             using var uow = _uow.Create();
             var repo = uow.Repository<WcsSlotRow>();
-            var rows = repo.Query().ToList().ToDictionary(row => row.Mark, StringComparer.OrdinalIgnoreCase);
+            // 地图保存全量替换站点，允许空地图；新建站点初始为空库存。
+            repo.DeleteWhereAsync(_ => true).GetAwaiter().GetResult();
+            var stations = mapStations.Where(IsInventoryMapStation)
+                .GroupBy(station => station.Mark, StringComparer.OrdinalIgnoreCase)
+                .Select(group => group.Last()).ToList();
+
             var count = 0;
-            foreach (var station in InventoryMapStations())
+            foreach (var station in stations)
             {
                 var siteType = SiteTypeOf(station);
-                if (rows.TryGetValue(station.Mark, out var row))
+                repo.AddAsync(new WcsSlotRow
                 {
-                    row.SiteType = siteType;
-                    row.Floor = station.Floor;
-                    row.X = station.X;
-                    row.Y = station.Y;
-                    row.UpdatedAt = DateTime.Now.ToString("O");
-                }
-                else
-                {
-                    repo.AddAsync(new WcsSlotRow
-                    {
-                        Mark = station.Mark,
-                        SiteType = siteType,
-                        Floor = station.Floor,
-                        X = station.X,
-                        Y = station.Y,
-                        SelectionStatus = siteType == "Storage" ? SelectionStartUnavailable : SelectionAvailable,
-                        UpdatedAt = DateTime.Now.ToString("O")
-                    }).GetAwaiter().GetResult();
-                }
+                    Mark = station.Mark,
+                    SiteType = siteType,
+                    StationTypeBits = station.StationType,
+                    Floor = station.Floor,
+                    X = station.X,
+                    Y = station.Y,
+                    StaEnable = station.StaEnable,
+                    CargoAreasJson = System.Text.Json.JsonSerializer.Serialize(station.CargoAreas),
+                    SupportLoadState = station.SupportLoadState,
+                    AllowTurn = station.AllowTurn,
+                    AllowAvoid = station.AllowAvoid,
+                    AllowStop = station.AllowStop,
+                    SelectionStatus = siteType == "Storage" ? SelectionStartUnavailable : SelectionAvailable,
+                    UpdatedAt = DateTime.Now.ToString("O")
+                }).GetAwaiter().GetResult();
                 count++;
             }
             uow.CommitAsync().GetAwaiter().GetResult();
-            return count;
+            return (true, count, "");
         }
     }
 
@@ -373,67 +383,6 @@ public class WcsInventoryStore
         if ((station.StationType & MapStationTypeBits.TransferPoint) != 0) return "Terminal";
         if ((station.StationType & MapStationTypeBits.PeopleStation) != 0) return "PeopleStation";
         return "Sorting";
-    }
-
-    /// <summary>
-    /// 批量写入手工库存。所有站点先校验通过后才提交，避免一个站点失败造成半批本地库存。
-    /// 仅允许写入空闲储位的纯托盘或纯货物，不允许覆盖库存、任务锁或带货托。
-    /// </summary>
-    public (bool Ok, string Message) TryAddManualStock(IReadOnlyCollection<ManualStockUnit> units)
-    {
-        if (units.Count == 0) return (false, "未选择储位");
-        lock (WriteLock)
-        {
-            var normalized = units.Select(unit => new ManualStockUnit(
-                    unit.Mark?.Trim() ?? "", unit.Code?.Trim() ?? "", unit.InventoryType?.Trim().ToLowerInvariant() ?? ""))
-                .ToList();
-            if (normalized.Any(unit => string.IsNullOrWhiteSpace(unit.Mark) || string.IsNullOrWhiteSpace(unit.Code)))
-                return (false, "站点或库存编码不能为空");
-            if (normalized.Any(unit => unit.InventoryType is not (ManualInventoryTypes.Pallet or ManualInventoryTypes.Cargo)))
-                return (false, "库存类型只能是托盘或货物");
-            if (normalized.Select(unit => unit.Mark).Distinct(StringComparer.OrdinalIgnoreCase).Count() != normalized.Count)
-                return (false, "同一储位不能重复写入");
-            if (normalized.Select(unit => unit.Code).Distinct(StringComparer.OrdinalIgnoreCase).Count() != normalized.Count)
-                return (false, "生成的库存编码重复");
-
-            using var uow = _uow.Create();
-            var repo = uow.Repository<WcsSlotRow>();
-            var slots = repo.Query().ToList();
-            foreach (var unit in normalized)
-            {
-                var slot = slots.FirstOrDefault(row => string.Equals(row.Mark, unit.Mark, StringComparison.OrdinalIgnoreCase));
-                if (slot == null) return (false, $"储位 {unit.Mark} 不存在，请先同步地图储位");
-                if (!string.Equals(slot.SiteType, "Storage", StringComparison.OrdinalIgnoreCase))
-                    return (false, $"站点 {unit.Mark} 不是储位");
-                if (!string.IsNullOrEmpty(slot.PalletCode) || !string.IsNullOrEmpty(slot.CargoCode))
-                    return (false, $"储位 {unit.Mark} 已有库存，不能覆盖");
-                if (!string.IsNullOrEmpty(slot.TaskLockId))
-                    return (false, $"储位 {unit.Mark} 已被任务锁定");
-                if (slots.Any(row => string.Equals(row.PalletCode, unit.Code, StringComparison.OrdinalIgnoreCase)
-                    || string.Equals(row.CargoCode, unit.Code, StringComparison.OrdinalIgnoreCase)))
-                    return (false, $"库存编码 {unit.Code} 已存在于 WCS 库存");
-            }
-
-            foreach (var unit in normalized)
-            {
-                var slot = slots.First(row => string.Equals(row.Mark, unit.Mark, StringComparison.OrdinalIgnoreCase));
-                if (unit.InventoryType == ManualInventoryTypes.Pallet)
-                {
-                    slot.PalletCode = unit.Code;
-                    slot.PalletStatus = "ready";
-                }
-                else
-                {
-                    slot.CargoCode = unit.Code;
-                    slot.CargoStatus = "ready";
-                }
-                RefreshSelectionStatus(slot);
-                slot.UpdatedAt = DateTime.Now.ToString("O");
-            }
-            uow.CommitAsync().GetAwaiter().GetResult();
-            LogInventory("ManualStockAdded", $"手工库存写入 Count={normalized.Count} Codes={string.Join(',', normalized.Select(x => x.Code))}");
-            return (true, "WCS 库存已写入");
-        }
     }
 
     // ── 选池（自动化每轮调用）──
@@ -953,111 +902,278 @@ public class WcsInventoryStore
         }
     }
 
+    /// <summary>自动化全部重置时，强制清除所有储位任务锁（包括已下发任务的锁）。</summary>
+    public int ClearAllTaskLocks()
+    {
+        lock (WriteLock)
+        {
+            using var uow = _uow.Create();
+            var rows = uow.Repository<WcsSlotRow>().Query()
+                .Where(row => row.TaskLockId != null && row.TaskLockId.Trim() != "")
+                .ToList();
+            if (rows.Count == 0) return 0;
+
+            foreach (var row in rows)
+            {
+                row.TaskLockId = "";
+                RefreshSelectionStatus(row);
+                row.UpdatedAt = DateTime.Now.ToString("O");
+            }
+
+            uow.CommitAsync().GetAwaiter().GetResult();
+            LogInventory("AllTaskLocksCleared", $"自动化全部重置：强制清除 {rows.Count} 个储位任务锁",
+                level: LogLevel.Warning);
+            return rows.Count;
+        }
+    }
+
     // ── 同步 ──
 
     /// <summary>
     /// 全量重建（同步按钮）：清空 WCS 库存表，然后按当前地图站点重建站点行，
     /// 再用 GRCS 返回的库存号码回填对应站点。GRCS 只提供位置和号码，状态统一为 ready。
     /// </summary>
-    public void RebuildFromGrcs(List<Contracts.Dtos.CargoInventoryItem> records)
+    // ── 储位集合    // ── 储位集合（选池共用的过滤条件）──
+
+    /// <summary>在空闲储位新增托盘或货物实例；库存状态只写入 WCS 本地账本。</summary>
+    public InventoryUnitMutationResult AddUnit(InventoryUnitMutationRequest request)
     {
+        var mark = request.Mark?.Trim() ?? "";
+        var kind = request.Kind?.Trim().ToLowerInvariant() ?? "";
+        var code = request.Code?.Trim() ?? "";
+        if (string.IsNullOrWhiteSpace(mark) || string.IsNullOrWhiteSpace(code))
+            return MutationFailure(mark, kind, code, "储位编码和实例编码不能为空");
+        if (kind is not ("pallet" or "cargo"))
+            return MutationFailure(mark, kind, code, "实例类型必须是 pallet 或 cargo");
+        if (code.Length > 128)
+            return MutationFailure(mark, kind, code, "实例编码不能超过 128 个字符");
+
         lock (WriteLock)
         {
             using var uow = _uow.Create();
             var repo = uow.Repository<WcsSlotRow>();
-            // 同步是全量替换：删除旧库存行（包括旧点位、旧库存、旧锁和旧关联），
-            // 防止已不存在于 RCS/当前地图的数据残留。
-            repo.DeleteWhereAsync(_ => true).GetAwaiter().GetResult();
+            var slot = repo.FindAsync(mark).GetAwaiter().GetResult();
+            if (slot == null || !string.Equals(slot.SiteType, "Storage", StringComparison.OrdinalIgnoreCase))
+                return MutationFailure(mark, kind, code, "只能在地图中的储位添加库存");
+            if (!CanManuallyMutate(slot))
+                return MutationFailure(mark, kind, code, "储位已被任务锁定或库存正在处理中，不能修改");
 
-            var slotsByMark = new Dictionary<string, WcsSlotRow>(StringComparer.OrdinalIgnoreCase);
-            foreach (var station in InventoryMapStations())
+            var normalizedCode = code.ToUpperInvariant();
+            if (repo.Query().Any(row => row.PalletCode != null && row.PalletCode.ToUpper() == normalizedCode
+                || row.CargoCode != null && row.CargoCode.ToUpper() == normalizedCode))
+                return MutationFailure(mark, kind, code, $"实例编码 {code} 已存在");
+
+            if (kind == "pallet")
             {
-                var siteType = SiteTypeOf(station);
-                var slot = new WcsSlotRow
-                {
-                    Mark = station.Mark,
-                    SiteType = siteType,
-                    Floor = station.Floor,
-                    X = station.X,
-                    Y = station.Y,
-                    SelectionStatus = siteType == "Storage" ? SelectionStartUnavailable : SelectionAvailable,
-                    UpdatedAt = DateTime.Now.ToString("O")
-                };
-                repo.AddAsync(slot).GetAwaiter().GetResult();
-                slotsByMark[slot.Mark] = slot;
+                if (!string.IsNullOrWhiteSpace(slot.PalletCode))
+                    return MutationFailure(mark, kind, code, $"储位已有托盘 {slot.PalletCode}");
+                slot.PalletCode = code;
+                slot.PalletStatus = "ready";
+            }
+            else
+            {
+                if (!string.IsNullOrWhiteSpace(slot.CargoCode))
+                    return MutationFailure(mark, kind, code, $"储位已有货物 {slot.CargoCode}");
+                slot.CargoCode = code;
+                slot.CargoStatus = "ready";
             }
 
-            foreach (var r in records)
-            {
-                var code = r.Code ?? "";
-                if (string.IsNullOrEmpty(code) || string.IsNullOrEmpty(r.CurrentStationCode)) continue;
-                if (!slotsByMark.TryGetValue(r.CurrentStationCode, out var slot)) continue;
-                if (IsCargo(code)) { slot.CargoCode = code; slot.CargoStatus = "ready"; }
-                else { slot.PalletCode = code; slot.PalletStatus = "ready"; }
-                RefreshSelectionStatus(slot);
-                slot.UpdatedAt = DateTime.Now.ToString("O");
-            }
+            RefreshSelectionStatus(slot);
+            slot.UpdatedAt = DateTime.Now.ToString("O");
             uow.CommitAsync().GetAwaiter().GetResult();
-            LogInventory("InventoryRebuilt", $"清空并重建库存表：地图站点={slotsByMark.Count}，GRCS库存={records.Count}");
+            LogInventory("InventoryUnitAdded", $"新增{(kind == "pallet" ? "托盘" : "货物")} Mark={mark} Code={code}",
+                stationCode: mark, containerCode: kind == "pallet" ? code : "", cargoCode: kind == "cargo" ? code : "");
+            return new() { Success = true, Mark = mark, Kind = kind, Code = code, Message = "库存实例已添加" };
         }
     }
 
-    /// <summary>增量合并（新增选点点位）：只处理 stationSet 内的储位记录——新码插入空位；占用中跳过。状态一律 ready。</summary>
-    public void SyncMerge(List<Contracts.Dtos.CargoInventoryItem> records, HashSet<string>? stationSet)
+    /// <summary>从储位移除一个托盘或货物实例；任务锁及处理中库存不可移除。</summary>
+    public InventoryUnitMutationResult RemoveUnit(string mark, string kind)
     {
+        mark = mark?.Trim() ?? "";
+        kind = kind?.Trim().ToLowerInvariant() ?? "";
+        if (string.IsNullOrWhiteSpace(mark) || kind is not ("pallet" or "cargo"))
+            return MutationFailure(mark, kind, "", "储位编码或实例类型无效");
+
+        lock (WriteLock)
+        {
+            using var uow = _uow.Create();
+            var slot = uow.Repository<WcsSlotRow>().FindAsync(mark).GetAwaiter().GetResult();
+            if (slot == null || !string.Equals(slot.SiteType, "Storage", StringComparison.OrdinalIgnoreCase))
+                return MutationFailure(mark, kind, "", "只能在地图中的储位移除库存");
+            if (!CanManuallyMutate(slot))
+                return MutationFailure(mark, kind, "", "储位已被任务锁定或库存正在处理中，不能修改");
+
+            var code = kind == "pallet" ? slot.PalletCode : slot.CargoCode;
+            if (string.IsNullOrWhiteSpace(code))
+                return MutationFailure(mark, kind, "", kind == "pallet" ? "储位没有托盘" : "储位没有货物");
+            if (kind == "pallet")
+            {
+                slot.PalletCode = "";
+                slot.PalletStatus = "";
+            }
+            else
+            {
+                slot.CargoCode = "";
+                slot.CargoStatus = "";
+            }
+
+            RefreshSelectionStatus(slot);
+            slot.UpdatedAt = DateTime.Now.ToString("O");
+            uow.CommitAsync().GetAwaiter().GetResult();
+            LogInventory("InventoryUnitRemoved", $"移除{(kind == "pallet" ? "托盘" : "货物")} Mark={mark} Code={code}",
+                stationCode: mark, containerCode: kind == "pallet" ? code : "", cargoCode: kind == "cargo" ? code : "");
+            return new() { Success = true, Mark = mark, Kind = kind, Code = code, Message = "库存实例已移除" };
+        }
+    }
+
+    private static bool CanManuallyMutate(WcsSlotRow slot)
+        => string.IsNullOrWhiteSpace(slot.TaskLockId)
+            && (string.IsNullOrWhiteSpace(slot.PalletStatus) || string.Equals(slot.PalletStatus, "ready", StringComparison.OrdinalIgnoreCase))
+            && (string.IsNullOrWhiteSpace(slot.CargoStatus) || string.Equals(slot.CargoStatus, "ready", StringComparison.OrdinalIgnoreCase));
+
+    private int ExecuteBulkGenerate(string kind, IReadOnlyList<InventoryUnitChange> changes)
+    {
+        var args = new List<object?>();
+        var caseParts = new List<string>(changes.Count);
+        var markParts = new List<string>(changes.Count);
+        foreach (var change in changes)
+        {
+            var markIndex = args.Count;
+            args.Add(change.Mark);
+            var codeIndex = args.Count;
+            args.Add(change.Code);
+            caseParts.Add($"WHEN {{{markIndex}}} THEN {{{codeIndex}}}");
+            markParts.Add($"{{{markIndex}}}");
+        }
+
+        var nowIndex = args.Count;
+        args.Add(DateTime.Now.ToString("O"));
+        var selectionIndex = args.Count;
+        args.Add(SelectionDestinationUnavailable);
+        var targetCodeCondition = kind == "pallet"
+            ? "(`pallet_code` IS NULL OR TRIM(`pallet_code`) = '')"
+            : "(`cargo_code` IS NULL OR TRIM(`cargo_code`) = '')";
+        var codeColumn = kind == "pallet" ? "pallet_code" : "cargo_code";
+        var statusColumn = kind == "pallet" ? "pallet_status" : "cargo_status";
+        var sql = $"UPDATE `wcs_slots` SET `{codeColumn}` = CASE `mark` {string.Join(" ", caseParts)} ELSE `{codeColumn}` END, " +
+                  $"`{statusColumn}` = 'ready', `selection_status` = {{{selectionIndex}}}, `updated_at` = {{{nowIndex}}} " +
+                  $"WHERE `mark` IN ({string.Join(",", markParts)}) AND UPPER(`site_type`) = 'STORAGE' " +
+                  "AND (`task_lock_id` IS NULL OR TRIM(`task_lock_id`) = '') " +
+                  "AND (`pallet_status` IS NULL OR TRIM(`pallet_status`) = '' OR UPPER(`pallet_status`) = 'READY') " +
+                  "AND (`cargo_status` IS NULL OR TRIM(`cargo_status`) = '' OR UPPER(`cargo_status`) = 'READY') " +
+                  $"AND {targetCodeCondition}";
+        var formattableSql = System.Runtime.CompilerServices.FormattableStringFactory.Create(sql, args.ToArray()!);
+        using var db = _dbContextFactory.CreateDbContext();
+        return db.Database.ExecuteSqlInterpolatedAsync(formattableSql).GetAwaiter().GetResult();
+    }
+
+    private static InventoryUnitMutationResult MutationFailure(string mark, string kind, string code, string message)
+        => new() { Success = false, Mark = mark, Kind = kind, Code = code, Message = message };
+
+    /// <summary>为所有可修改的 WCS 储位生成指定类型的实例。</summary>
+    public InventoryBatchMutationResult GenerateAllUnits(InventoryBatchMutationRequest request)
+    {
+        var kind = request.Kind?.Trim().ToLowerInvariant() ?? "";
+        var prefix = request.Prefix?.Trim() ?? "";
+        if (kind is not ("pallet" or "cargo"))
+            return new() { Success = false, Kind = kind, Message = "实例类型必须是 pallet 或 cargo" };
+        if (string.IsNullOrWhiteSpace(prefix) || prefix.Length > 120)
+            return new() { Success = false, Kind = kind, Message = "编码前缀不能为空且不能超过 120 个字符" };
+
         lock (WriteLock)
         {
             using var uow = _uow.Create();
             var repo = uow.Repository<WcsSlotRow>();
-            foreach (var r in records)
+            var existingCodes = new HashSet<string>(repo.Query().AsNoTracking()
+                .Select(row => new { row.PalletCode, row.CargoCode }).ToList()
+                .SelectMany(row => new[] { row.PalletCode, row.CargoCode })
+                .Where(code => !string.IsNullOrWhiteSpace(code))!, StringComparer.OrdinalIgnoreCase);
+            var allStorage = repo.Query().Where(row => row.SiteType != null && row.SiteType.ToUpper() == "STORAGE");
+            var storageCount = allStorage.Count();
+            var mutableStatuses = allStorage.Where(row =>
+                (row.TaskLockId == null || row.TaskLockId.Trim() == "")
+                && (row.PalletStatus == null || row.PalletStatus.Trim() == "" || row.PalletStatus.ToUpper() == "READY")
+                && (row.CargoStatus == null || row.CargoStatus.Trim() == "" || row.CargoStatus.ToUpper() == "READY"));
+            var storage = (kind == "pallet"
+                    ? mutableStatuses.Where(row => row.PalletCode == null || row.PalletCode.Trim() == "")
+                    : mutableStatuses.Where(row => row.CargoCode == null || row.CargoCode.Trim() == ""))
+                .AsNoTracking()
+                .Select(row => new { row.Mark, row.PalletCode, row.CargoCode })
+                .ToList();
+            var sequence = 1;
+            var changes = new List<InventoryUnitChange>();
+            foreach (var slot in storage)
             {
-                var code = r.Code ?? "";
-                if (string.IsNullOrEmpty(code) || string.IsNullOrEmpty(r.CurrentStationCode)) continue;
-                if (stationSet != null && !stationSet.Contains(r.CurrentStationCode)) continue;
-                var slot = repo.FindAsync(r.CurrentStationCode).GetAwaiter().GetResult();
-                if (slot == null) continue;
-                if (IsCargo(code))
-                {
-                    if (!string.IsNullOrEmpty(slot.CargoCode)) continue;
-                    slot.CargoCode = code; slot.CargoStatus = "ready";
-                }
-                else
-                {
-                    if (!string.IsNullOrEmpty(slot.PalletCode)) continue;
-                    slot.PalletCode = code; slot.PalletStatus = "ready";
-                }
-                RefreshSelectionStatus(slot);
-                slot.UpdatedAt = DateTime.Now.ToString("O");
+                string code;
+                do { code = prefix + (sequence++).ToString("D4"); }
+                while (existingCodes.Contains(code));
+                existingCodes.Add(code);
+                changes.Add(new InventoryUnitChange { Mark = slot.Mark, Kind = kind, Code = code });
             }
-            uow.CommitAsync().GetAwaiter().GetResult();
-            LogInventory("InventoryMerged", $"从 GRCS 增量合并库存 Records={records.Count} Stations={stationSet?.Count ?? 0}");
+
+            // One parameterized CASE UPDATE replaces one tracked UPDATE per generated slot.
+            var changed = changes.Count == 0 ? 0 : ExecuteBulkGenerate(kind, changes);
+
+            var skipped = storageCount - changed;
+            LogInventory("InventoryUnitsGenerated", $"批量生成{(kind == "pallet" ? "托盘" : "货物")} Prefix={prefix} Changed={changed} Skipped={skipped}");
+            return new() { Success = true, Kind = kind, ChangedCount = changed, SkippedCount = skipped, Changes = changes,
+                Message = $"已生成 {changed} 个{(kind == "pallet" ? "托盘" : "货物")}，跳过 {skipped} 个储位" };
         }
     }
 
-    /// <summary>上次已同步过的选点范围（kv 持久化），启动轮询时做 diff。</summary>
-    public HashSet<string> GetSyncedMarks()
+    /// <summary>删除所有可修改储位中的指定类型实例；任务锁及处理中库存会跳过。</summary>
+    public InventoryBatchMutationResult RemoveAllUnits(string kind)
     {
+        kind = kind?.Trim().ToLowerInvariant() ?? "";
+        if (kind is not ("pallet" or "cargo"))
+            return new() { Success = false, Kind = kind, Message = "实例类型必须是 pallet 或 cargo" };
+
         lock (WriteLock)
         {
-            var s = KvAccess.Get(_uow, SyncedMarksKey);
-            if (string.IsNullOrEmpty(s)) return [];
-            try
+            using var uow = _uow.Create();
+            var repo = uow.Repository<WcsSlotRow>();
+            var storageQuery = repo.Query().Where(row => row.SiteType != null && row.SiteType.ToUpper() == "STORAGE");
+            var targetItems = kind == "pallet"
+                ? storageQuery.Where(row => row.PalletCode != null && row.PalletCode.Trim() != "")
+                : storageQuery.Where(row => row.CargoCode != null && row.CargoCode.Trim() != "");
+            var total = targetItems.Count();
+            var mutableItems = targetItems.Where(row =>
+                (row.TaskLockId == null || row.TaskLockId.Trim() == "")
+                && (row.PalletStatus == null || row.PalletStatus.Trim() == "" || row.PalletStatus.ToUpper() == "READY")
+                && (row.CargoStatus == null || row.CargoStatus.Trim() == "" || row.CargoStatus.ToUpper() == "READY"));
+            var marks = mutableItems.Select(row => row.Mark).ToList();
+            var now = DateTime.Now.ToString("O");
+            var changed = 0;
+            if (marks.Count > 0 && kind == "pallet")
             {
-                return System.Text.Json.JsonSerializer.Deserialize<HashSet<string>>(s) ?? [];
+                changed = mutableItems.ExecuteUpdateAsync(setters => setters
+                    .SetProperty(row => row.PalletCode, "")
+                    .SetProperty(row => row.PalletStatus, "")
+                    .SetProperty(row => row.UpdatedAt, now)
+                    .SetProperty(row => row.SelectionStatus, row =>
+                        row.CargoCode == null || row.CargoCode == "" || row.CargoStatus == "transit"
+                            ? SelectionStartUnavailable : SelectionDestinationUnavailable))
+                    .GetAwaiter().GetResult();
             }
-            catch { return []; }
+            else if (marks.Count > 0)
+            {
+                changed = mutableItems.ExecuteUpdateAsync(setters => setters
+                    .SetProperty(row => row.CargoCode, "")
+                    .SetProperty(row => row.CargoStatus, "")
+                    .SetProperty(row => row.UpdatedAt, now)
+                    .SetProperty(row => row.SelectionStatus, row =>
+                        row.PalletCode == null || row.PalletCode == "" || row.PalletStatus == "transit"
+                            ? SelectionStartUnavailable : SelectionDestinationUnavailable))
+                    .GetAwaiter().GetResult();
+            }
+            var skipped = total - changed;
+            var changes = marks.Select(mark => new InventoryUnitChange { Mark = mark, Kind = kind, Code = "" }).ToList();
+            LogInventory("InventoryUnitsRemoved", $"批量删除{(kind == "pallet" ? "托盘" : "货物")} Changed={changed} Skipped={skipped}");
+            return new() { Success = true, Kind = kind, ChangedCount = changed, SkippedCount = skipped, Changes = changes,
+                Message = $"已删除 {changed} 个{(kind == "pallet" ? "托盘" : "货物")}，跳过 {skipped} 个" };
         }
     }
-
-    public void SetSyncedMarks(HashSet<string> marks)
-    {
-        lock (WriteLock)
-        {
-            KvAccess.Set(_uow, SyncedMarksKey, System.Text.Json.JsonSerializer.Serialize(marks));
-        }
-    }
-
-    // ── 储位集合（选池共用的过滤条件）──
 
     public HashSet<string> StorageMarks()
     {

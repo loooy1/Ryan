@@ -1,13 +1,21 @@
 @namespace Dashboard.Modules.WcsSimulator.Pages
 @using Dashboard.Modules.WcsSimulator.Models
 
-@* ── 可视化创建地图：从空白画布点击放置储位，当前仅保存在内存 ── *@
 <div class="section-card map-builder-card">
     <div class="section-header">
         🗺️ 创建地图
         <span class="badge-info">可视化编辑</span>
-        <span class="hint-text" style="margin:0;">从空白画布创建 · 支持单点与点阵 · 不持久化</span>
-        <button class="btn btn-outline btn-sm map-save-btn" style="margin-left:auto;" @onclick="Host.SaveCreatedMapPlaceholder"><MudIcon Icon="@Icons.Material.Filled.Save" Size="Size.Small" /> 保存到库存地图</button>
+        <span class="hint-text" style="margin:0;">创建站点后保存到 WCS 库存地图</span>
+        @if (!string.IsNullOrWhiteSpace(Host._mapSaveMessage))
+        {
+            <span class="hint-text" style="margin:0;color:@(Host._mapSaveSucceeded ? "#4ade80" : "#f87171");">@Host._mapSaveMessage</span>
+        }
+        <button class="btn btn-outline btn-sm" style="margin-left:auto;" @onclick="Host.LoadInventoryMap" disabled="@(Host._mapLoading || Host._mapSaving)">
+            <MudIcon Icon="@Icons.Material.Filled.Refresh" Size="Size.Small" /> @(Host._mapLoading ? "正在读取…" : "读取地图")
+        </button>
+        <button class="btn btn-outline btn-sm map-save-btn" style="margin-left:0;" @onclick="Host.SaveCreatedMap" disabled="@(Host._mapSaving || Host._mapLoading)">
+            <MudIcon Icon="@Icons.Material.Filled.Save" Size="Size.Small" /> @(Host._mapSaving ? "正在入库…" : "保存到库存地图")
+        </button>
     </div>
     <div class="map-builder-layout">
         <aside class="map-builder-tools">
@@ -35,7 +43,7 @@
             <div class="map-builder-count">地图元素 <b>@Host._createdMapStations.Count</b><small>已选 @Host._selectedCreatedMarks.Count</small></div>
         </aside>
         <div class="map-builder-stage">
-            <div class="map-builder-stagebar"><strong>空白地图画布</strong><span class="map-builder-hint">@(Host._mapBuilderTool switch { "storage" => "点击画布放置储位", "transfer" => "点击画布放置接驳位", "people" => "点击画布放置人工分拣台", "sorting" => "点击画布放置分拣台", _ => "拖拽框选 · 点击元素查看属性" })</span><div class="map-builder-legend" aria-label="地图图标说明"><span class="map-legend-title">图例</span><span class="map-legend-item map-legend-storage"><span class="map-legend-icon-box"><MudIcon Icon="@Icons.Material.Filled.Storage" /></span>储位</span><span class="map-legend-item map-legend-transfer"><span class="map-legend-icon-box"><MudIcon Icon="@Icons.Material.Filled.SwapHoriz" /></span>接驳位</span><span class="map-legend-item map-legend-people"><span class="map-legend-icon-box"><MudIcon Icon="@Icons.Material.Filled.Person" /></span>人工分拣台</span><span class="map-legend-item map-legend-sorting"><span class="map-legend-icon-box"><MudIcon Icon="@Icons.Material.Filled.Sort" /></span>分拣台</span></div><div class="map-builder-zoom"><button class="map-zoom-btn" title="缩小" @onclick="Host.ZoomMapOut">−</button><button class="map-zoom-btn" title="重置视图" @onclick="Host.ResetMapZoom">⌂</button><button class="map-zoom-btn" title="放大" @onclick="Host.ZoomMapIn">＋</button></div></div>
+            <div class="map-builder-stagebar"><strong>地图画布</strong><span class="map-builder-hint">@(Host._mapBuilderTool switch { "storage" => "点击画布放置储位", "transfer" => "点击画布放置接驳位", "people" => "点击画布放置人工分拣台", "sorting" => "点击画布放置分拣台", _ => "拖拽框选 · 点击元素查看属性" })</span><div class="map-builder-legend" aria-label="地图图标说明"><span class="map-legend-title">图例</span><span class="map-legend-item map-legend-storage"><span class="map-legend-icon-box"><MudIcon Icon="@Icons.Material.Filled.Storage" /></span>储位</span><span class="map-legend-item map-legend-transfer"><span class="map-legend-icon-box"><MudIcon Icon="@Icons.Material.Filled.SwapHoriz" /></span>接驳位</span><span class="map-legend-item map-legend-people"><span class="map-legend-icon-box"><MudIcon Icon="@Icons.Material.Filled.Person" /></span>人工分拣台</span><span class="map-legend-item map-legend-sorting"><span class="map-legend-icon-box"><MudIcon Icon="@Icons.Material.Filled.Sort" /></span>分拣台</span></div><div class="map-builder-zoom"><button class="map-zoom-btn" title="缩小" @onclick="Host.ZoomMapOut">−</button><button class="map-zoom-btn" title="适应全图" @onclick="Host.ResetMapZoom">⌂</button><button class="map-zoom-btn" title="放大" @onclick="Host.ZoomMapIn">＋</button></div></div>
             <div id="map-create-canvas-host" class="map-create-canvas-host">
                 <canvas id="map-create-canvas" class="map-create-canvas" aria-label="地图创建画布"></canvas>
                 <svg id="map-create-overlay" class="map-create-overlay" aria-hidden="true"></svg>

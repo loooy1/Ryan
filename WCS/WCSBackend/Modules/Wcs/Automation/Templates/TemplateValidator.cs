@@ -5,12 +5,12 @@ namespace WCSBackend.Modules.Wcs.Automation.Services;
 
 public class TemplateValidator
 {
-    private readonly MapStoreService _map;
+    private readonly WcsMapCatalog _map;
     private readonly RangeConfigService _range;
     private readonly TaskTemplateStore _taskTemplates;
     private readonly AutoTemplateStore _templates;
 
-    public TemplateValidator(MapStoreService map, RangeConfigService range, TaskTemplateStore taskTemplates, AutoTemplateStore templates)
+    public TemplateValidator(WcsMapCatalog map, RangeConfigService range, TaskTemplateStore taskTemplates, AutoTemplateStore templates)
     {
         _map = map; _range = range; _taskTemplates = taskTemplates; _templates = templates;
     }

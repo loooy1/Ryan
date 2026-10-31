@@ -12,14 +12,14 @@ public class TaskDispatcher
     private readonly WcsInventoryStore _invStore;
     private readonly AutomationLogService _log;
     private readonly RangeConfigService _range;
-    private readonly MapStoreService _map;
+    private readonly WcsMapCatalog _map;
     private readonly TaskTemplateStore _taskTemplates;
     private readonly TaskCompletionCoordinator _completion;
     private readonly object _chainLock = new();
 
     public TaskDispatcher(ITaskStageService stage, ModuleRunService modules,
         WcsInventoryStore invStore, AutomationLogService log, RangeConfigService range,
-        MapStoreService map, TaskTemplateStore taskTemplates, TaskCompletionCoordinator completion)
+        WcsMapCatalog map, TaskTemplateStore taskTemplates, TaskCompletionCoordinator completion)
     {
         _stage = stage; _modules = modules; _invStore = invStore;
         _log = log; _range = range; _map = map; _taskTemplates = taskTemplates;
@@ -195,7 +195,11 @@ public class TaskDispatcher
 
         try
         {
-            if ((tpl.End?.AfterModules?.Count ?? 0) > 0 || step.WaitForFinish)
+            var configuredSteps = tpl.WorkflowSteps?.Where(item => item.Enabled).ToList() ?? [];
+            var dispatchIndex = configuredSteps.FindIndex(item =>
+                string.Equals(item.Kind, TaskWorkflowStepKinds.Dispatch, StringComparison.OrdinalIgnoreCase));
+            var hasPostDispatchWorkflow = dispatchIndex >= 0 && configuredSteps.Skip(dispatchIndex + 1).Any();
+            if (hasPostDispatchWorkflow || step.WaitForFinish)
             {
                 if (!await _stage.WaitWcsCompletedAsync(taskId!))
                 {

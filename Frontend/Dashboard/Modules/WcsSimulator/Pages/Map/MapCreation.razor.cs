@@ -4,6 +4,6 @@ namespace Dashboard.Modules.WcsSimulator.Pages;
 
 public partial class MapCreation
 {
-    [CascadingParameter] internal MapReader Host { get; set; } = null!;
+    [CascadingParameter] internal MapEditor Host { get; set; } = null!;
 }
 

@@ -1,4 +1,4 @@
-using System.Net.Http.Json;
+﻿using System.Net.Http.Json;
 using System.Text.Json;
 using Contracts.Dtos;
 using Contracts.Entities;
@@ -154,19 +154,29 @@ public class WcsApiClient
     }
 
     /// <summary>同步库存账本（清空重建，以 GRCS 为准；有在途任务时后端返回 400 与拒绝原因）。</summary>
-    public async Task<(bool ok, string json)> SyncInventoryAsync()
-    {
-        if (!GrcsReady()) return (false, "backend offline");
-        try
-        {
-            var resp = await _http.PostAsJsonAsync(U("/api/wcs/inventory/sync"), new { });
-            return (resp.IsSuccessStatusCode, await resp.Content.ReadAsStringAsync());
-        }
-        catch (Exception ex) { NotifyIfUnreachable(); return (false, ex.Message); }
-    }
-
+    
     /// <summary>读取 WCS 本地储位快照，供手工入库地图渲染库存、锁和选点状态。</summary>
     public Task<List<WcsSlotRow>?> GetWcsSlotsAsync() => GetAsync<List<WcsSlotRow>>("/api/wcs/inventory/slots");
+
+    /// <summary>读取从 wcs_slots 投影的地图站点，编辑地图与库存管理共用同一数据源。</summary>
+    public Task<MapSnapshotDto?> GetInventoryMapAsync() => GetAsync<MapSnapshotDto>("/api/wcs/inventory/map");
+
+    /// <summary>将编辑后的地图写入 WCS 库存站点表。</summary>
+    public async Task<(bool Ok, string Json)> SaveInventoryMapAsync(MapUploadPayload payload)
+    {
+        await _store.PreloadAsync(_js);
+        if (!ConnectionReady()) return (false, "WCS backend offline");
+        try
+        {
+            var response = await _http.PostAsJsonAsync(U("/api/wcs/inventory/map/upload"), payload);
+            return (response.IsSuccessStatusCode, await response.Content.ReadAsStringAsync());
+        }
+        catch (Exception ex)
+        {
+            NotifyIfUnreachable();
+            return (false, ex.Message);
+        }
+    }
 
     /// <summary>Reads the WCS inventory-summary endpoint backed only by wcs_slots.</summary>
     public Task<InventorySummaryDto?> GetInventorySummaryAsync()
@@ -185,20 +195,56 @@ public class WcsApiClient
     }
 
     /// <summary>手工入库：后端先写 WCS，再逐条调用 RCS 入库接口。</summary>
-    public async Task<(bool Ok, int StatusCode, string Json)> ManualInventoryEnterAsync(ManualInventoryEnterRequest request)
-    {
-        if (!ConnectionReady()) return (false, 0, "backend offline");
-        try
-        {
-            var response = await _http.PostAsJsonAsync(U("/api/wcs/inventory/manual-enter"), request);
-            return (response.IsSuccessStatusCode, (int)response.StatusCode, await response.Content.ReadAsStringAsync());
-        }
-        catch (Exception ex) { NotifyIfUnreachable(); return (false, 0, ex.Message); }
-    }
-
+    
     /// <summary>读取一次 RCS 在途托盘位置快照；页面不启动实时轮询。</summary>
     public Task<List<TransitPalletPositionDto>?> GetTransitPalletPositionsAsync()
         => GetAsync<List<TransitPalletPositionDto>>("/api/wcs/inventory/transit-pallet-positions");
+
+    public async Task<(bool Ok, string Json)> AddInventoryUnitAsync(InventoryUnitMutationRequest request)
+    {
+        if (!ConnectionReady()) return (false, "WCS backend offline");
+        try
+        {
+            var response = await _http.PostAsJsonAsync(U("/api/wcs/inventory/units"), request);
+            return (response.IsSuccessStatusCode, await response.Content.ReadAsStringAsync());
+        }
+        catch (Exception ex) { NotifyIfUnreachable(); return (false, ex.Message); }
+    }
+
+    public async Task<(bool Ok, string Json)> RemoveInventoryUnitAsync(string mark, string kind)
+    {
+        if (!ConnectionReady()) return (false, "WCS backend offline");
+        try
+        {
+            var path = $"/api/wcs/inventory/units/{Uri.EscapeDataString(mark)}/{Uri.EscapeDataString(kind)}";
+            var response = await _http.DeleteAsync(U(path));
+            return (response.IsSuccessStatusCode, await response.Content.ReadAsStringAsync());
+        }
+        catch (Exception ex) { NotifyIfUnreachable(); return (false, ex.Message); }
+    }
+
+    public async Task<(bool Ok, string Json)> GenerateAllInventoryUnitsAsync(InventoryBatchMutationRequest request)
+    {
+        if (!ConnectionReady()) return (false, "WCS backend offline");
+        try
+        {
+            var response = await _http.PostAsJsonAsync(U("/api/wcs/inventory/units/generate-all"), request);
+            return (response.IsSuccessStatusCode, await response.Content.ReadAsStringAsync());
+        }
+        catch (Exception ex) { NotifyIfUnreachable(); return (false, ex.Message); }
+    }
+
+    public async Task<(bool Ok, string Json)> RemoveAllInventoryUnitsAsync(string kind)
+    {
+        if (!ConnectionReady()) return (false, "WCS backend offline");
+        try
+        {
+            var path = $"/api/wcs/inventory/units/all/{Uri.EscapeDataString(kind)}";
+            var response = await _http.DeleteAsync(U(path));
+            return (response.IsSuccessStatusCode, await response.Content.ReadAsStringAsync());
+        }
+        catch (Exception ex) { NotifyIfUnreachable(); return (false, ex.Message); }
+    }
 
     public async Task<string> PostAsync<TReq>(string path, TReq body)
     {
@@ -461,41 +507,6 @@ public class WcsApiClient
         return r;
     }
 
-    /// <summary>读取 RCS 已配置的货物尺寸模型，供手工货物入库动态选择。</summary>
-    public async Task<List<RcsCargoSizeDto>> GetCargoSizesAsync()
-    {
-        if (!GrcsReady()) return [];
-        var response = await GetProxyAsync("/api/wcs/grcs/cargo-sizes");
-        if (!response.Ok)
-        {
-            NotifyGrcsIfUnreachable(response.Json);
-            return [];
-        }
-
-        try
-        {
-            using var doc = JsonDocument.Parse(response.Json);
-            var root = doc.RootElement;
-            if (!root.TryGetProperty("data", out var data)
-                || !data.TryGetProperty("records", out var records)
-                || records.ValueKind != JsonValueKind.Array) return [];
-            return JsonSerializer.Deserialize<List<RcsCargoSizeDto>>(records.GetRawText(), JsonOpts) ?? [];
-        }
-        catch { return []; }
-    }
-
-    /// <summary>模拟生成容器入库（代理 → GRCS /AutoContainerEnter，场景按后端设置）。</summary>
-    public async Task<(bool Ok, int StatusCode, string Json)> AutoContainerEnterAsync(string baseUrl, string sceneName,
-        string prefix = "container", int num = -1, int floor = -1, int type = 1)
-    {
-        if (!GrcsReady()) return (false, 0, JsonSerializer.Serialize(new { error = "backend offline" }));
-        var url = "/api/wcs/grcs/auto-container-enter"
-            + $"?prefix={Uri.EscapeDataString(prefix)}&num={num}&floor={floor}&type={type}";
-        var r = await GetProxyAsync(url);
-        if (!r.Ok) NotifyGrcsIfUnreachable(r.Json);
-        return r;
-    }
-
     /// <summary>删除指定任务的所有阶段事件（WCS 管理接口 DELETE /api/wcs/task-stages/{taskId}）。</summary>
     /// <summary>Read task_records directly from the WCS backend database snapshot.</summary>
     public async Task<List<TaskRecord>?> GetTaskRecordsAsync()
@@ -524,27 +535,6 @@ public class WcsApiClient
     }
 
     /// <summary>下载地图 zip（代理 → GRCS /api/Map/GetMap，成功返回 zip 字节流；失败返回错误文本并弹 GRCS 告警兜底）。</summary>
-    public async Task<(bool Ok, string Error, byte[]? Bytes)> GetMapZipAsync()
-    {
-        if (!GrcsReady()) return (false, "backend offline", null);
-        try
-        {
-            var resp = await _http.GetAsync(U("/api/wcs/grcs/map"));
-            var contentType = resp.Content.Headers.ContentType?.MediaType ?? "";
-            if (contentType.Contains("json", StringComparison.OrdinalIgnoreCase))
-            {
-                var errText = await resp.Content.ReadAsStringAsync();
-                var (ok, _, json) = ParseProxy(errText);
-                var error = ok ? "后端代理返回异常" : json;
-                NotifyGrcsIfUnreachable(error);
-                return (false, error, null);
-            }
-            var bytes = await resp.Content.ReadAsByteArrayAsync();
-            return bytes.Length == 0 ? (false, "地图数据为空", null) : (true, "", bytes);
-        }
-        catch (Exception ex) { return (false, ex.Message, null); }
-    }
-
     private async Task<(bool Ok, int StatusCode, string Json)> PostProxyAsync<T>(string path, T payload)
     {
         try

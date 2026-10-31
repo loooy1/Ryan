@@ -12,10 +12,18 @@ public class WcsSlotRow
     public string Mark { get; set; } = "";
     /// <summary>站点类型：Storage（储位）/ Terminal（接驳位）/ PeopleStation（人工拣选台）/ Sorting（实际分拣点）。</summary>
     public string SiteType { get; set; } = "";
+    /// <summary>完整地图类型位，保留普通道等附加类型。</summary>
+    public int StationTypeBits { get; set; }
     /// <summary>地图绘制坐标，由读取 RCS 地图时写入；库存页以本表为唯一地图数据源。</summary>
     public int Floor { get; set; }
     public double X { get; set; }
     public double Y { get; set; }
+    public bool StaEnable { get; set; } = true;
+    public string CargoAreasJson { get; set; } = "[]";
+    public int SupportLoadState { get; set; }
+    public bool AllowTurn { get; set; } = true;
+    public bool AllowAvoid { get; set; } = true;
+    public bool AllowStop { get; set; } = true;
     public string PalletCode { get; set; } = "";
     public string PalletStatus { get; set; } = "";
     public string CargoCode { get; set; } = "";

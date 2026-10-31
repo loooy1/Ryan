@@ -29,16 +29,13 @@ public class WorkParamDto
     public string FixedValue { get; set; } = "";
 }
 
-/// <summary>任务模板中的一个点（起点/终点）：标签 + 关联模块（之前/之后）+ 站点类型约束。</summary>
+/// <summary>任务模板中的一个点（起点/终点）：标签、站点编码格式和站点类型约束。</summary>
 public class TaskPointDto
 {
     public string Label { get; set; } = "";
 
-    /// <summary>此点「之前」模块（起点之前 = 下发前执行）。</summary>
-    public List<string> BeforeModules { get; set; } = [];
-
-    /// <summary>此点「之后」模块（起点之后 = 下发 success 后；终点之后 = FINISHED 后）。</summary>
-    public List<string> AfterModules { get; set; } = [];
+    /// <summary>此端点下发到 RCS 时的站点编码格式；支持 {{StationCode}} 与 {{Floor}}，未指定后向兼容原样传值。</summary>
+    public string StationCodeTemplate { get; set; } = "{{StationCode}}";
 
     /// <summary>站点类型位约束（MapStationTypeBits 组合）。</summary>
     public int StationTypeBits { get; set; }

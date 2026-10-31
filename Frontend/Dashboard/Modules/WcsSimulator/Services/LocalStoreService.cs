@@ -13,7 +13,7 @@ namespace Dashboard.Modules.WcsSimulator.Services;
 ///
 /// ── 边界 ──
 /// 只预加载配置/开关/折叠状态等小 key；台账（grcs_task_ledger，上限 2000 条大 JSON）
-/// 和地图缓存（grcs_map_stations）等大 key 由各自服务（task_records 等）独立缓存，
+/// 和任务记录等大 key 由各自服务独立缓存，
 /// 避免启动时一次性反序列化大对象。新增持久化 key 时想清楚它属于哪一类。
 ///
 /// ── 跨标签页 ──
@@ -103,7 +103,6 @@ public class LocalStoreService
         // 任务类型模板 / 功能模块（注册表持久化，跨页共享；新标签页需预载才能同步读）
         "grcs_td_templates", "grcs_si_modules",
         // 地图缓存（过渡期只读，验收后删）
-        "grcs_map_stations",
         // 归巢车队（「归巢车队」页勾选，自动化任务页归巢执行用）
         "grcs_nest_fleet",
         // 当前项目（异常记录 / 项目记录按项目隔离，记住切换）

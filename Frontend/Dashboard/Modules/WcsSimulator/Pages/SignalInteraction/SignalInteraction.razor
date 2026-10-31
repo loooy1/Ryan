@@ -472,8 +472,8 @@
                             <div><code>{{TaskId}}</code>：当前任务编号</div>
                             <div><code>{{TaskType}}</code>：当前任务类型</div>
                             <div><code>{{Warehouse}}</code>：当前任务仓库</div>
-                            <div><code>{{Start}}</code>：任务起点站点编码</div>
-                            <div><code>{{End}}</code>：任务终点站点编码</div>
+                            <div><code>{{Start}}</code>：任务起点站点编码；编码格式在任务类型模板中配置</div>
+                            <div><code>{{End}}</code>：任务终点站点编码；编码格式在任务类型模板中配置</div>
                             <div><code>{{Container}}</code>：任务容器编码</div>
                             <div><code>{{Pallet}}</code>：任务托盘编码</div>
                             <div><code>{{Cargo}}</code>：任务货物编码</div>
@@ -483,7 +483,7 @@
                             <div><code>{{PayloadJson}}</code>：现有参数映射生成的完整 JSON 对象</div>
                         </div>
                         <div style="margin-top:12px;color:#8ca5c2;">
-                            StationCode、ContainerCode、MsgTime 等业务字段沿用模板中已保存的映射；新建模板会预置常用映射。占位符会替换成合法 JSON 值，直接写在 JSON 字段值处即可，不要再加引号。起点/终点使用任务中的站点编码，楼层后缀会保留。
+                            StationCode、ContainerCode、MsgTime 等业务字段沿用模板中已保存的映射；新建模板会预置常用映射。占位符会替换成合法 JSON 值，直接写在 JSON 字段值处即可，不要再加引号。起点/终点使用任务中的站点编码，楼层后缀会保留；指定数字楼层的占位符会替换已有楼层后缀。
                         </div>
                         <pre style="margin:8px 0 0;padding:8px;border-radius:6px;background:#081321;color:#b9e5ff;white-space:pre-wrap;">{"TaskId":{{TaskId}},"Warehouse":{{Warehouse}},"StationCode":[{{Start}},{{End}}]}</pre>
                     </aside>

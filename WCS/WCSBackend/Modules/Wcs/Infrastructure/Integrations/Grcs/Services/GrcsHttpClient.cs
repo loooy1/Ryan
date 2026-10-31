@@ -1,4 +1,4 @@
-using System.Net.Http.Json;
+﻿using System.Net.Http.Json;
 using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
@@ -17,16 +17,19 @@ public class GrcsHttpClient
 {
     private readonly IHttpClientFactory _factory;
     private readonly RcsProtocolTemplateStore _protocols;
-    private readonly MapStoreService _map;
+    private readonly WcsMapCatalog _map;
+    private readonly TaskTemplateStore _taskTemplates;
     private readonly object _healthLock = new();
     private bool? _grcsOnline;
     private DateTime _healthCheckedAt = DateTime.MinValue;
 
-    public GrcsHttpClient(IHttpClientFactory factory, RcsProtocolTemplateStore protocols, MapStoreService map)
+    public GrcsHttpClient(IHttpClientFactory factory, RcsProtocolTemplateStore protocols, WcsMapCatalog map,
+        TaskTemplateStore taskTemplates)
     {
         _factory = factory;
         _protocols = protocols;
         _map = map;
+        _taskTemplates = taskTemplates;
     }
 
     /// <summary>GRCS 在线状态缓存（PingAsync 每次探测写入，5 秒内有效；超期返回 null）。
@@ -117,21 +120,61 @@ public class GrcsHttpClient
         };
         if (payload is WcsTaskGroup group)
         {
+            var mapStations = _map.GetStations();
+            var templatesByType = _taskTemplates.GetAll()
+                .GroupBy(item => item.Value, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(items => items.Key, items => items.First(), StringComparer.OrdinalIgnoreCase);
+            var outgoingTasks = group.Tasks.Select(item =>
+            {
+                var stationCodes = item.StationCode.ToList();
+                templatesByType.TryGetValue(item.TaskType, out var taskTemplate);
+                if (stationCodes.Count > 0)
+                {
+                    stationCodes[0] = ApplyStationCodeTemplate(stationCodes[0], taskTemplate?.Start, mapStations);
+                    if (stationCodes.Count > 1)
+                        stationCodes[^1] = ApplyStationCodeTemplate(stationCodes[^1], taskTemplate?.End, mapStations);
+                }
+
+                return new WcsTaskItem
+                {
+                    TaskId = item.TaskId,
+                    TaskType = item.TaskType,
+                    ContainerCode = item.ContainerCode,
+                    StationCode = stationCodes,
+                    AreaCode = item.AreaCode.ToList(),
+                    PalletCode = item.PalletCode,
+                    CargoCode = item.CargoCode,
+                };
+            }).ToList();
+            var outboundGroup = new WcsTaskGroup
+            {
+                GroupId = group.GroupId,
+                MsgTime = group.MsgTime,
+                PriorityCode = group.PriorityCode,
+                Warehouse = group.Warehouse,
+                Tasks = outgoingTasks,
+            };
+            values["PayloadJson"] = JsonSerializer.Serialize(outboundGroup, JsonSerializerOptions.Web);
             values["GroupId"] = JsonSerializer.Serialize(group.GroupId);
             values["MsgTime"] = JsonSerializer.Serialize(group.MsgTime);
             values["PriorityCode"] = group.PriorityCode.ToString(CultureInfo.InvariantCulture);
             values["Warehouse"] = JsonSerializer.Serialize(group.Warehouse);
-            values["TasksJson"] = JsonSerializer.Serialize(group.Tasks, JsonSerializerOptions.Web);
+            values["TasksJson"] = JsonSerializer.Serialize(outgoingTasks, JsonSerializerOptions.Web);
             var task = group.Tasks.FirstOrDefault();
             if (task != null)
             {
-                var start = task.StationCode.FirstOrDefault() ?? "";
-                var end = task.StationCode.LastOrDefault() ?? "";
+                var rawStart = task.StationCode.FirstOrDefault() ?? "";
+                var rawEnd = task.StationCode.LastOrDefault() ?? "";
+                templatesByType.TryGetValue(task.TaskType, out var taskTemplate);
+                var start = ApplyStationCodeTemplate(rawStart, taskTemplate?.Start, mapStations);
+                var end = ApplyStationCodeTemplate(rawEnd, taskTemplate?.End, mapStations);
                 values["Start"] = JsonSerializer.Serialize(start);
                 values["End"] = JsonSerializer.Serialize(end);
-                values["Start_Floor"] = JsonSerializer.Serialize(StationWithFloor(start));
-                values["End_Floor"] = JsonSerializer.Serialize(StationWithFloor(end));
-                values["End_0"] = JsonSerializer.Serialize(StationWithFixedFloor(end, 0));
+                values["Start_Raw"] = JsonSerializer.Serialize(rawStart);
+                values["End_Raw"] = JsonSerializer.Serialize(rawEnd);
+                values["Start_Floor"] = JsonSerializer.Serialize(StationWithFloor(rawStart));
+                values["End_Floor"] = JsonSerializer.Serialize(StationWithFloor(rawEnd));
+                values["End_0"] = JsonSerializer.Serialize(StationWithFixedFloor(rawEnd, 0));
                 values["TaskId"] = JsonSerializer.Serialize(task.TaskId);
                 values["TaskType"] = JsonSerializer.Serialize(task.TaskType);
                 values["ContainerCode"] = JsonSerializer.Serialize(task.ContainerCode);
@@ -187,6 +230,39 @@ public class GrcsHttpClient
 
     /// <summary>根据地图缓存中的站点 Z/楼层生成“站点编码_楼层号”。输入允许是 Mark 或已带数字后缀的编码。</summary>
     private string StationWithFloor(string? stationCode) => StationWithMapFloor(stationCode, null);
+
+    private static string ApplyStationCodeTemplate(string? stationCode, TaskPointDto? point,
+        IReadOnlyCollection<MapStationLite> mapStations)
+    {
+        if (string.IsNullOrWhiteSpace(stationCode)) return "";
+
+        var input = stationCode.Trim();
+        var station = mapStations.FirstOrDefault(item => string.Equals(item.Mark, input, StringComparison.OrdinalIgnoreCase));
+        var mark = input;
+        string? suffixFloor = null;
+        var separator = input.LastIndexOf('_');
+        if (station == null && separator > 0 && int.TryParse(input[(separator + 1)..], NumberStyles.Integer,
+                CultureInfo.InvariantCulture, out var parsedFloor))
+        {
+            mark = input[..separator];
+            suffixFloor = parsedFloor.ToString(CultureInfo.InvariantCulture);
+            station ??= mapStations.FirstOrDefault(item => string.Equals(item.Mark, mark, StringComparison.OrdinalIgnoreCase));
+        }
+
+        var floor = station?.Floor.ToString(CultureInfo.InvariantCulture) ?? suffixFloor;
+        var template = string.IsNullOrWhiteSpace(point?.StationCodeTemplate)
+            ? "{{StationCode}}"
+            : point.StationCodeTemplate.Trim();
+        if (template.Contains("{{Floor}}", StringComparison.OrdinalIgnoreCase) && floor == null)
+            throw new InvalidOperationException($"站点“{mark}”无法获取楼层，无法生成下发编码；请确认地图数据或使用固定后缀（例如 {{StationCode}}_0）。");
+
+        var rendered = template
+            .Replace("{{StationCode}}", mark, StringComparison.OrdinalIgnoreCase)
+            .Replace("{{Floor}}", floor ?? "", StringComparison.OrdinalIgnoreCase);
+        if (rendered.Contains("{{", StringComparison.Ordinal))
+            throw new InvalidOperationException($"站点编码格式包含未知占位符：{rendered}");
+        return rendered;
+    }
 
     /// <summary>根据地图站点生成固定楼层编码，例如 End_0 对应“站点编码_0”。</summary>
     private string StationWithFixedFloor(string? stationCode, int floor) => StationWithMapFloor(stationCode, floor);
@@ -294,36 +370,11 @@ public class GrcsHttpClient
     }
 
     /// <summary>读取 RCS 配置的货物尺寸模型（GET /api/CargoSize）。</summary>
-    public async Task<(bool Ok, int StatusCode, string Json)> QueryCargoSizesAsync(string baseUrl)
-    {
-        try
-        {
-            var resp = await NewClient().GetAsync($"{baseUrl.TrimEnd('/')}/api/CargoSize");
-            var body = await resp.Content.ReadAsStringAsync();
-            return (resp.IsSuccessStatusCode, (int)resp.StatusCode, body);
-        }
-        catch (Exception ex) { return (false, 0, JsonSerializer.Serialize(new { error = ex.Message })); }
-    }
-
+    
     /// <summary>模拟生成容器入库（GET /AutoContainerEnter，场景名取设置）。</summary>
-    public async Task<(bool Ok, int StatusCode, string Json)> AutoContainerEnterAsync(string baseUrl, string sceneName,
-        string prefix = "container", int num = -1, int floor = -1, int type = 1)
-    {
-        var url = $"{baseUrl.TrimEnd('/')}/AutoContainerEnter?sceneName={Uri.EscapeDataString(sceneName)}"
-            + $"&prefix={Uri.EscapeDataString(prefix)}&num={num}&floor={floor}&type={type}";
-        try
-        {
-            var resp = await NewClient().GetAsync(url);
-            var body = await resp.Content.ReadAsStringAsync();
-            return (resp.IsSuccessStatusCode, (int)resp.StatusCode, body);
-        }
-        catch (Exception ex) { return (false, 0, JsonSerializer.Serialize(new { error = ex.Message })); }
-    }
-
+    
     /// <summary>指定站点创建 RCS 库存（POST /api/Cargo/Enter）。</summary>
-    public Task<(bool Ok, int StatusCode, string Json)> EnterCargoAsync<T>(string baseUrl, T payload)
-        => PostAsync($"{baseUrl.TrimEnd('/')}/api/Cargo/Enter", payload);
-
+    
     /// <summary>地图 zip 下载（GET /api/Map/GetMap，场景名取设置）。</summary>
     public async Task<(bool Ok, int StatusCode, byte[] Bytes, string Error)> GetMapBytesAsync(string baseUrl, string sceneName)
     {

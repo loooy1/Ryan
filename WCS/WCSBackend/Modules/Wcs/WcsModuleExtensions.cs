@@ -1,4 +1,4 @@
-using WCSBackend.Modules.Wcs.Infrastructure;
+﻿using WCSBackend.Modules.Wcs.Infrastructure;
 using WCSBackend.Modules.Wcs.Automation.Services;
 using WCSBackend.Modules.Wcs.Console.Services;
 using WCSBackend.Modules.Wcs.Proxy.Services;
@@ -18,7 +18,7 @@ public static class WcsModuleExtensions
 
         // 鈹€鈹€ Automation锛堣嚜鍔ㄤ笅鍙?淇″彿/鍙拌处/鏃ュ織/鏁版嵁鍩虹璁炬柦锛夆攢鈹€
         services.AddSingleton<AutomationLogService>();
-        services.AddSingleton<MapStoreService>();
+        services.AddSingleton<WcsMapCatalog>();
         services.AddSingleton<RangeConfigService>();
         services.AddSingleton<WcsSettingsService>();
         services.AddSingleton<CargoCodeStore>();
@@ -38,8 +38,7 @@ public static class WcsModuleExtensions
         // WCS 自持库存账本（自动化选池、占用、释放的唯一事实源，MySQL 持久化）
         services.AddSingleton<WcsInventoryStore>();
         // GRCS 搴撳瓨鏌ヨ缂撳瓨锛堟寜闇€鏌ヨ锛涜嚜鍔ㄥ寲閫夋睜宸茬敤 WcsInventoryStore 璐︽湰锛屼笉鍐嶅悗鍙拌疆璇級
-        services.AddSingleton<GrcsInventoryCacheService>();
-        services.AddSingleton<ManualInventoryService>();
+        services.AddSingleton<TransitPalletPositionService>();
         // 杞/鎵归噺浜掓枼闂革紙澶氭爣绛鹃〉涔熻兘淇濊瘉鍙湁涓€涓湪鎵ц锛?
         services.AddSingleton<AutomationGate>();
         // 绾Щ鍔ㄤ换鍔″惊鐜紙鍚庣鎵ц锛氶€夌偣/涓嬪彂/缁熻/鏃ュ織锛孲ignalR 骞挎挱 MoveTaskStats锛?

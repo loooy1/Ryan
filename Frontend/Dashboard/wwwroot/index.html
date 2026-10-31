@@ -119,7 +119,7 @@
             const ctx = canvas.getContext('2d');
             let config = { ...JSON.parse(mapJson || '{}'), ...JSON.parse(configJson || '{}') }, view = { x: 0, y: 0, w: 1200, h: 700 }, fittedViewWidth = 0, drag = null, hover = null;
             let spatial = { cellSize: 1, pointBuckets: new Map(), lineBuckets: new Map(), stationsByMark: new Map(), stations: [], lines: [], globalLines: [] };
-            let routePairs=new Set(),lockedPoints=new Set(),lockedLines=new Set(),selectedMarks=new Set(),inventoryByMark=new Map();
+            let routePairs=new Set(),lockedPoints=new Set(),lockedLines=new Set(),selectedMarks=new Set(),inventoryByMark=new Map(),stationSpacingByMark=new Map();
             const iconPaths = {
                 storage: new Path2D('M20 2H4c-1.1 0-2 .9-2 2v3c0 .55.22 1.05.59 1.41C2.22 8.78 2 9.28 2 9.83V13c0 .55.22 1.05.59 1.41C2.22 14.78 2 15.28 2 15.83V20c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2v-4.17c0-.55-.22-1.05-.59-1.41.37-.36.59-.86.59-1.41V9.83c0-.55-.22-1.05-.59-1.41.37-.37.59-.86.59-1.41V4c0-1.1-.9-2-2-2zm0 18H4v-4h16v4zm0-6H4v-4h16v4zm0-6H4V4h16v4z'),
                 transfer: new Path2D('M16 3h5v5h-2V6.41l-5.29 5.3-1.42-1.42L17.59 5H16V3zM8 21H3v-5h2v1.59l5.29-5.3 1.42 1.42L6.41 19H8v2z'),
@@ -137,13 +137,36 @@
                 const stations = config.Stations || [], lines = config.Lines || [];
                 inventoryByMark = new Map((config.InventoryByStation || []).map(item => [item.Mark, item]));
                 const valid = stations.filter(s => Number.isFinite(s.X) && Number.isFinite(s.Y));
-                if (!valid.length) { spatial = { cellSize: 1, pointBuckets: new Map(), lineBuckets: new Map(), stationsByMark: new Map(), stations, lines, globalLines: [] }; return; }
+                if (!valid.length) { spatial = { cellSize: 1, pointBuckets: new Map(), lineBuckets: new Map(), stationsByMark: new Map(), stations, lines, globalLines: [] }; stationSpacingByMark = new Map(); return; }
                 let minX=Infinity,maxX=-Infinity,minY=Infinity,maxY=-Infinity;
                 for (const s of valid) { minX=Math.min(minX,s.X); maxX=Math.max(maxX,s.X); minY=Math.min(minY,700-s.Y); maxY=Math.max(maxY,700-s.Y); }
                 const area=Math.max(1,(maxX-minX)*(maxY-minY)), cellSize=Math.max(1,Math.sqrt(area/valid.length)*6);
                 const pointBuckets=new Map(), lineBuckets=new Map(), stationsByMark=new Map(valid.map(s=>[s.Mark,s]));
                 const add=(buckets,x,y,value)=>{ const key=bucketKey(Math.floor(x/cellSize),Math.floor(y/cellSize)); let bucket=buckets.get(key); if(!bucket)buckets.set(key,bucket=[]); bucket.push(value); };
                 for (const s of valid) add(pointBuckets,s.X,700-s.Y,s);
+                stationSpacingByMark=new Map();
+                if (config.ScaleMapElementsWithZoom===true) {
+                    const fallbackSpacing=Math.max(1,Math.sqrt(area/valid.length));
+                    for (const s of valid) {
+                        const cellX=Math.floor(s.X/cellSize),cellY=Math.floor((700-s.Y)/cellSize);
+                        const nearbyBuckets=[];
+                        let nearbyCount=0,nearestSquared=Infinity;
+                        for (let dx=-1;dx<=1;dx++) for (let dy=-1;dy<=1;dy++) {
+                            const bucket=pointBuckets.get(bucketKey(cellX+dx,cellY+dy))||[];
+                            nearbyBuckets.push(bucket);
+                            nearbyCount+=bucket.length;
+                        }
+                        if (nearbyCount<=256) {
+                            for (const bucket of nearbyBuckets) for (const other of bucket) {
+                                if (other===s) continue;
+                                const deltaX=s.X-other.X,deltaY=s.Y-other.Y,distanceSquared=deltaX*deltaX+deltaY*deltaY;
+                                if (distanceSquared<nearestSquared) nearestSquared=distanceSquared;
+                            }
+                        }
+                        const spacing=Number.isFinite(nearestSquared)?Math.sqrt(nearestSquared):valid.length===1?Infinity:nearbyCount>1?cellSize*3/Math.sqrt(nearbyCount):fallbackSpacing;
+                        stationSpacingByMark.set(s.Mark,spacing);
+                    }
+                }
                 const globalLines=[];
                 for (const line of lines) {
                     const a=stationsByMark.get(line.FromPointCode), b=stationsByMark.get(line.ToPointCode); if(!a||!b) continue;
@@ -243,8 +266,9 @@
                 const ax = (0 - view.x) / view.w * w, ay = (700 - view.y) / view.h * h; ctx.strokeStyle = 'rgba(34,211,238,.45)'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(ax,0); ctx.lineTo(ax,h); ctx.moveTo(0,ay); ctx.lineTo(w,ay); ctx.stroke();
                 ctx.font = '10px Consolas, monospace'; ctx.textAlign = 'left'; ctx.fillStyle = '#67e8f9'; if (ax > 0 && ax < w) ctx.fillText('X 0', ax + 5, Math.max(14, ay - 6)); if (ay > 0 && ay < h) ctx.fillText('Y 0', 6, ay - 6);
                 const stations=spatial.stationsByMark, bounds=visibleBounds(40), baseStationScale=Math.max(.35,Math.min(1,Number(config.StationVisualScale)||1));
-                const zoomScale=config.ShowLineDirections===true&&fittedViewWidth>0?Math.max(.22,Math.min(1.35,fittedViewWidth/view.w)):1;
-                const stationScale=config.ShowLineDirections===true?Math.max(.22,Math.min(1.35,baseStationScale*zoomScale)):baseStationScale;
+                const scaleElementsWithZoom=config.ScaleMapElementsWithZoom===true||config.ShowLineDirections===true;
+                const zoomScale=scaleElementsWithZoom&&fittedViewWidth>0?Math.max(.22,Math.min(1.35,fittedViewWidth/view.w)):1;
+                const stationScale=scaleElementsWithZoom?Math.max(.22,Math.min(1.35,baseStationScale*zoomScale)):baseStationScale;
                 const stationSize=28*stationScale;
                 const pathSize=stationSize*.72;
                 for (const l of queryBuckets(spatial.lineBuckets,bounds,spatial.globalLines)) {
@@ -266,27 +290,29 @@
                     ctx.restore();
                 }
                 for (const s of queryBuckets(spatial.pointBuckets,bounds)) { const p = toScreen(point(s)); if (p.x < -30 || p.x > w+30 || p.y < -30 || p.y > h+30) continue; const selected = selectedMarks.has(s.Mark), anchor = s.Mark === config.AnchorMark, lockPoint = s.Mark === config.LockPointMark, locked = lockedPoints.has(s.Mark); const color = selected ? '#fbbf24' : config.ShowLineDirections===true&&s.StaEnable===false ? '#64748b' : colorFor(s); const stock=inventoryByMark.get(s.Mark);
+                    const spacingPixels=(stationSpacingByMark.get(s.Mark)||0)/view.w*w;
+                    const pointScale=config.ScaleMapElementsWithZoom===true?Math.max(.04,Math.min(stationScale,spacingPixels*.68/28)):stationScale;
                     const nestedCargo=stock?.NestedCargoCount||0, looseCargo=stock?.StandaloneCargoCount||0, loadedPallets=stock?.LoadedPalletCount||0, pallets=stock?.PurePalletCount||0;
-                    ctx.save(); ctx.globalAlpha = s.StaEnable === false ? .45 : 1; ctx.translate(p.x,p.y); ctx.scale(stationScale,stationScale); ctx.fillStyle = selected ? '#164e63' : '#0e293b'; ctx.strokeStyle = color; ctx.lineWidth = selected ? 2.5 : 1.2; ctx.beginPath(); ctx.roundRect(-14,-14,28,28,6); ctx.fill(); ctx.stroke();
+                    ctx.save(); ctx.globalAlpha = s.StaEnable === false ? .45 : 1; ctx.translate(p.x,p.y); ctx.scale(pointScale,pointScale); ctx.fillStyle = selected ? '#164e63' : '#0e293b'; ctx.strokeStyle = color; ctx.lineWidth = selected ? 2.5 : 1.2; ctx.beginPath(); ctx.roundRect(-14,-14,28,28,6); ctx.fill(); ctx.stroke();
                     if(nestedCargo===0 && looseCargo===0 && loadedPallets===0 && pallets===0) { ctx.save(); ctx.translate(-12,-12); ctx.fillStyle = color; ctx.fill(iconFor(s)); ctx.restore(); }
                     ctx.restore();
                     const stockIcons=[];
                     if(nestedCargo>0) stockIcons.push(['loaded',loadedPallets||nestedCargo]);
                     if(pallets>0) stockIcons.push(['pallet',pallets]);
                     if(looseCargo>0) stockIcons.push(['cargo',looseCargo]);
-                    const inventoryScale=config.ShowLineDirections===true?Math.max(.22,Math.min(1,zoomScale*.82)):1;
+                    const inventoryScale=scaleElementsWithZoom?Math.max(.22,Math.min(1,zoomScale*.82)):1;
                     const inventoryWidth=stockIcons.length?(stockIcons.length-1)*24*inventoryScale+23*inventoryScale:0;
                     const firstStockCenterX=p.x-inventoryWidth/2+11.5*inventoryScale;
                     stockIcons.forEach(([kind,count],index)=>drawInventoryIcon(firstStockCenterX+index*24*inventoryScale-11.5,p.y-11.5,kind,count,inventoryScale));
-                    if (selected || hover === s) { ctx.fillStyle='#e2e8f0'; ctx.font='11px Consolas, monospace'; ctx.textAlign='center'; ctx.fillText(s.Mark,p.x,p.y-22); }
-                    if (anchor) { ctx.save(); ctx.strokeStyle='#a78bfa'; ctx.setLineDash([4,3]); ctx.lineWidth=2; ctx.beginPath(); ctx.arc(p.x,p.y,25*stationScale,0,Math.PI*2); ctx.stroke(); ctx.restore(); }
-                    if (locked && !lockPoint) { ctx.save(); ctx.strokeStyle='#c084fc'; ctx.lineWidth=2.5; ctx.beginPath(); ctx.arc(p.x,p.y,22*stationScale,0,Math.PI*2); ctx.stroke(); ctx.restore(); }
-                    if (lockPoint) { ctx.save(); ctx.strokeStyle='#c084fc'; ctx.lineWidth=2.5; ctx.beginPath(); ctx.arc(p.x,p.y,25*stationScale,0,Math.PI*2); ctx.stroke(); ctx.fillStyle='#e9d5ff'; ctx.font='bold 10px sans-serif'; ctx.textAlign='center'; ctx.fillText('锁点',p.x,p.y+37*stationScale); ctx.restore(); }
-                    else if (locked && config.SelectedVehicleStatus !== 'Running' && config.SelectedVehicleStatus !== 'Paused') { ctx.save(); ctx.fillStyle='#e9d5ff'; ctx.font='bold 10px sans-serif'; ctx.textAlign='center'; ctx.fillText('占用',p.x,p.y+34); ctx.restore(); }
+                    if (selected || hover === s) { ctx.fillStyle='#e2e8f0'; ctx.font=`${11*pointScale}px Consolas, monospace`; ctx.textAlign='center'; ctx.fillText(s.Mark,p.x,p.y-22*pointScale); }
+                    if (anchor) { ctx.save(); ctx.strokeStyle='#a78bfa'; ctx.setLineDash([4,3]); ctx.lineWidth=2*pointScale; ctx.beginPath(); ctx.arc(p.x,p.y,25*pointScale,0,Math.PI*2); ctx.stroke(); ctx.restore(); }
+                    if (locked && !lockPoint) { ctx.save(); ctx.strokeStyle='#c084fc'; ctx.lineWidth=2.5*pointScale; ctx.beginPath(); ctx.arc(p.x,p.y,22*pointScale,0,Math.PI*2); ctx.stroke(); ctx.restore(); }
+                    if (lockPoint) { ctx.save(); ctx.strokeStyle='#c084fc'; ctx.lineWidth=2.5*pointScale; ctx.beginPath(); ctx.arc(p.x,p.y,25*pointScale,0,Math.PI*2); ctx.stroke(); ctx.fillStyle='#e9d5ff'; ctx.font=`bold ${10*pointScale}px sans-serif`; ctx.textAlign='center'; ctx.fillText('锁点',p.x,p.y+37*pointScale); ctx.restore(); }
+                    else if (locked && config.SelectedVehicleStatus !== 'Running' && config.SelectedVehicleStatus !== 'Paused') { ctx.save(); ctx.fillStyle='#e9d5ff'; ctx.font=`bold ${10*pointScale}px sans-serif`; ctx.textAlign='center'; ctx.fillText('占用',p.x,p.y+34*pointScale); ctx.restore(); }
                 }
                 for (const [mark, label, color] of [[config.StartMark,'起点','#4ade80'],[config.EndMark,'终点','#f472b6']]) {
                     const station=stations.get(mark); if(!station) continue; const p=toScreen(point(station));
-                    ctx.save();ctx.strokeStyle=color;ctx.lineWidth=2;ctx.beginPath();ctx.arc(p.x,p.y,21,0,Math.PI*2);ctx.stroke();ctx.fillStyle=color;ctx.font='11px sans-serif';ctx.textAlign='center';ctx.fillText(label,p.x,p.y+35);ctx.restore();
+                    ctx.save();ctx.strokeStyle=color;ctx.lineWidth=2*pointScale;ctx.beginPath();ctx.arc(p.x,p.y,21*pointScale,0,Math.PI*2);ctx.stroke();ctx.fillStyle=color;ctx.font=`${11*pointScale}px sans-serif`;ctx.textAlign='center';ctx.fillText(label,p.x,p.y+35*pointScale);ctx.restore();
                 }
                 const vehicles = config.Vehicles || (config.Vehicle ? [config.Vehicle] : []);
                 const vehicleEntries = Array.from(vehicles.entries());

@@ -456,6 +456,23 @@ namespace WCSBackend.Migrations
                         .HasColumnType("longtext")
                         .HasColumnName("cargo_status");
 
+                    b.Property<bool>("AllowAvoid")
+                        .HasColumnType("tinyint(1)")
+                        .HasColumnName("allow_avoid");
+
+                    b.Property<bool>("AllowStop")
+                        .HasColumnType("tinyint(1)")
+                        .HasColumnName("allow_stop");
+
+                    b.Property<bool>("AllowTurn")
+                        .HasColumnType("tinyint(1)")
+                        .HasColumnName("allow_turn");
+
+                    b.Property<string>("CargoAreasJson")
+                        .IsRequired()
+                        .HasColumnType("longtext")
+                        .HasColumnName("cargo_areas_json");
+
                     b.Property<int>("Floor")
                         .HasColumnType("int")
                         .HasColumnName("floor");
@@ -480,10 +497,22 @@ namespace WCSBackend.Migrations
                         .HasColumnType("longtext")
                         .HasColumnName("selection_status");
 
+                    b.Property<bool>("StaEnable")
+                        .HasColumnType("tinyint(1)")
+                        .HasColumnName("sta_enable");
+
                     b.Property<string>("SiteType")
                         .IsRequired()
                         .HasColumnType("longtext")
                         .HasColumnName("site_type");
+
+                    b.Property<int>("StationTypeBits")
+                        .HasColumnType("int")
+                        .HasColumnName("station_type_bits");
+
+                    b.Property<int>("SupportLoadState")
+                        .HasColumnType("int")
+                        .HasColumnName("support_load_state");
 
                     b.Property<string>("TaskLockId")
                         .IsRequired()

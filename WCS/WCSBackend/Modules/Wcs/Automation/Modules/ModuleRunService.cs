@@ -11,7 +11,6 @@ namespace WCSBackend.Modules.Wcs.Automation.Services;
 /// <summary>Runs task modules and records each result in task_records.</summary>
 public class ModuleRunService
 {
-    private const int TestAfterDispatchDelayMs = 2000;
     private readonly GrcsHttpClient _grcs;
     private readonly WcsSettingsService _settings;
     private readonly TaskTemplateStore _templates;
@@ -100,12 +99,6 @@ public class ModuleRunService
         if (template?.WorkflowSteps is { Count: > 0 })
             return await SendTaskWithWorkflowAsync(group, task, template, ctx, roundId, requestBodyCaptured);
 
-        if (template != null && !await RunModulesAsync("BEFORE_MODULE", template.Start?.BeforeModules ?? [], ctx, roundId, true))
-        {
-            _stages.TryRecordSystemEvent(task.TaskId, "CANCELLED", false, -1);
-            return (false, -1, "A before-start module failed; task was not dispatched.");
-        }
-
         if (roundId != null)
             _logs.Add(roundId, "Dispatch payload (active RCS carry template): " + JsonSerializer.Serialize(group), "#93c5fd");
         _lifecycle.BeginDispatch(task.TaskId);
@@ -120,12 +113,7 @@ public class ModuleRunService
         }
 
         _stages.RecordDispatchResult(task.TaskId, true, code);
-        if (roundId != null) _logs.Add(roundId, $"Active RCS accepted task ({task.TaskId}); waiting 2 seconds.", "#4ade80");
-        if (template != null)
-        {
-            await Task.Delay(TestAfterDispatchDelayMs);
-            await RunModulesAsync("AFTER_START_MODULE", template.Start?.AfterModules ?? [], ctx, roundId);
-        }
+        if (roundId != null) _logs.Add(roundId, $"Active RCS accepted task ({task.TaskId}).", "#4ade80");
         return (true, code, json);
     }
 
@@ -137,12 +125,7 @@ public class ModuleRunService
             finally { _workflowCompletions.TryRemove(taskId, out _); }
         }
 
-        var ctx = preset ?? BuildCtxFromRecord(taskId);
-        if (ctx == null) return false;
-        var template = _templates.GetAll().FirstOrDefault(t =>
-            string.Equals(t.Value, ctx.TaskType, StringComparison.OrdinalIgnoreCase));
-        return template == null
-            || await RunModulesAsync("AFTER_END_MODULE", template.End?.AfterModules ?? [], ctx, roundId, true);
+        return true;
     }
 
     private async Task<(bool ok, int code, string json)> SendTaskWithWorkflowAsync(
@@ -412,23 +395,6 @@ public class ModuleRunService
         TaskType = task.TaskType,
         TaskId = task.TaskId,
     };
-
-    private ModuleCtx? BuildCtxFromRecord(string taskId)
-    {
-        var record = _stages.GetAll().FirstOrDefault(r => r.IsCreated && string.Equals(r.TaskId, taskId, StringComparison.OrdinalIgnoreCase));
-        return record == null ? null : new ModuleCtx
-        {
-            Start = record.StartStationCode,
-            End = record.EndStationCode,
-            // task_records 将托盘与货物拆列保存；纯货任务没有托盘时，任务容器回退为货物号。
-            Container = !string.IsNullOrWhiteSpace(record.ContainerCode) ? record.ContainerCode : record.CargoCode,
-            Pallet = record.ContainerCode,
-            Cargo = record.CargoCode,
-            Warehouse = record.Warehouse,
-            TaskType = record.TaskType,
-            TaskId = record.TaskId,
-        };
-    }
 
     private static object? Resolve(WorkParamDto parameter, ModuleCtx ctx) => parameter.Source switch
     {

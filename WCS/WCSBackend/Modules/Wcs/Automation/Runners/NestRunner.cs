@@ -27,7 +27,7 @@ public class NestRunner
     };
 
     private readonly GrcsHttpClient _grcs;
-    private readonly MapStoreService _map;
+    private readonly WcsMapCatalog _map;
     private readonly NestConfigService _nestConfig;
     private readonly WcsSettingsService _settings;
     private readonly AutomationLogService _logs;
@@ -54,7 +54,7 @@ public class NestRunner
     /// <summary>轮询间隔：下发后等待车辆移动的时间。</summary>
     private static readonly TimeSpan PollInterval = TimeSpan.FromSeconds(8);
 
-    public NestRunner(GrcsHttpClient grcs, MapStoreService map, NestConfigService nestConfig,
+    public NestRunner(GrcsHttpClient grcs, WcsMapCatalog map, NestConfigService nestConfig,
         WcsSettingsService settings, AutomationLogService logs, IHubContext<TaskStageRealtimeHub> hub)
     {
         _grcs = grcs;

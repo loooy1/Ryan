@@ -51,6 +51,9 @@ public class StationMapPickerConfig
 
     /// <summary>库存地图对已选中的人工分拣台右击时，显示实际分拣台关联菜单。</summary>
     public bool RightClickPeopleStationSelection { get; set; }
+
+    /// <summary>库存地图储位右击时，按库存状态显示增删菜单。</summary>
+    public bool RightClickInventorySelection { get; set; }
 }
 
 /// <summary>框选器画布里的单个站点（精简字段，仅供 JS 绘制/命中）。</summary>
@@ -70,4 +73,6 @@ public class StationMapPickerStation
     public string? BadgeText { get; set; }
     /// <summary>实际分拣台所属人工分拣台，仅用于地图绘制关联线。</summary>
     public string? ParentMark { get; set; }
+    /// <summary>储位右键可执行的库存操作。</summary>
+    public List<string> ContextActions { get; set; } = [];
 }

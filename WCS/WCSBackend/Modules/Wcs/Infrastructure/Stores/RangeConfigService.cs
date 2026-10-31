@@ -11,11 +11,11 @@ namespace WCSBackend.Modules.Wcs.Infrastructure;
 public class RangeConfigService
 {
     private readonly IUnitOfWorkFactory _uow;
-    private readonly MapStoreService _map;
+    private readonly WcsMapCatalog _map;
     private readonly object _lock = new();
     private RangeConfigDto _range = new();
 
-    public RangeConfigService(IUnitOfWorkFactory uowFactory, MapStoreService map)
+    public RangeConfigService(IUnitOfWorkFactory uowFactory, WcsMapCatalog map)
     {
         _uow = uowFactory; _map = map;
         try
