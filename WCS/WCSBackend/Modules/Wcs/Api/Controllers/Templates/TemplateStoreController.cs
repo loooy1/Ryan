@@ -23,22 +23,22 @@ public class TaskTemplateController : ControllerBase
 
     /// <summary>全部任务类型模板。</summary>
     [HttpGet]
-    public ActionResult<object> GetAll() => Ok(new { success = true, items = _store.GetAll() });
+    public ActionResult<object> GetAll([FromQuery] string? profileId) => Ok(new { success = true, items = _store.GetAll(profileId) });
 
     /// <summary>整体替换任务类型模板列表（前端保存整个自定义集）。</summary>
     [HttpPost]
-    public ActionResult<object> ReplaceAll([FromBody] List<TaskTemplateDto> items)
+    public ActionResult<object> ReplaceAll([FromBody] List<TaskTemplateDto> items, [FromQuery] string? profileId)
     {
-        _store.ReplaceAll(items ?? []);
+        _store.ReplaceAll(items ?? [], profileId);
         _ = _hub.Clients.All.SendAsync("ConfigurationChanged", "task-templates");
-        return Ok(new { success = true, count = _store.GetAll().Count });
+        return Ok(new { success = true, count = _store.GetAll(profileId).Count });
     }
 
     /// <summary>按 Value 删除一条任务类型模板。</summary>
     [HttpDelete("{value}")]
-    public ActionResult<object> Remove(string value)
+    public ActionResult<object> Remove(string value, [FromQuery] string? profileId)
     {
-        var ok = _store.Remove(value);
+        var ok = _store.Remove(value, profileId);
         if (ok) _ = _hub.Clients.All.SendAsync("ConfigurationChanged", "task-templates");
         return Ok(new { success = ok, value });
     }
@@ -62,25 +62,25 @@ public class FeatureModuleController : ControllerBase
 
     /// <summary>全部功能模板。</summary>
     [HttpGet]
-    public ActionResult<object> GetAll() => Ok(new { success = true, items = _store.GetActive().FeatureModules });
+    public ActionResult<object> GetAll([FromQuery] string? profileId) => Ok(new { success = true, items = _store.GetFeatureModules(profileId) });
 
     /// <summary>整体替换功能模板列表（前端保存整个自定义集）。</summary>
     [HttpPost]
-    public ActionResult<object> ReplaceAll([FromBody] List<FeatureModuleDto> items)
+    public ActionResult<object> ReplaceAll([FromBody] List<FeatureModuleDto> items, [FromQuery] string? profileId)
     {
-        _store.ReplaceActiveFeatureModules(items ?? []);
+        _store.ReplaceFeatureModules(items ?? [], profileId);
         _ = _hub.Clients.All.SendAsync("ConfigurationChanged", "feature-modules");
-        return Ok(new { success = true, count = _store.GetActive().FeatureModules.Count });
+        return Ok(new { success = true, count = _store.GetFeatureModules(profileId).Count });
     }
 
     /// <summary>按 Id 删除一条功能模板。</summary>
     [HttpDelete("{id}")]
-    public ActionResult<object> Remove(string id)
+    public ActionResult<object> Remove(string id, [FromQuery] string? profileId)
     {
-        var profile = _store.GetActive();
-        var remaining = profile.FeatureModules.Where(x => !string.Equals(x.Id, id, StringComparison.OrdinalIgnoreCase)).ToList();
-        var ok = remaining.Count != profile.FeatureModules.Count;
-        if (ok) _store.ReplaceActiveFeatureModules(remaining);
+        var existing = _store.GetFeatureModules(profileId);
+        var remaining = existing.Where(x => !string.Equals(x.Id, id, StringComparison.OrdinalIgnoreCase)).ToList();
+        var ok = remaining.Count != existing.Count;
+        if (ok) _store.ReplaceFeatureModules(remaining, profileId);
         if (ok) _ = _hub.Clients.All.SendAsync("ConfigurationChanged", "feature-modules");
         return Ok(new { success = ok, id });
     }

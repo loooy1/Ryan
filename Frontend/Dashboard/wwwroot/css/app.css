@@ -475,10 +475,10 @@ input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 18px;
 .hint-inline { font-weight: 400; font-size: 0.68rem; color: #64748b; }
 
 /* ── 功能模板卡片网格（信号交互页）── */
-.mod-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 10px; }
+.mod-grid, .mock-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; align-items: stretch; }
 .mod-card {
     background: linear-gradient(160deg, #131c30 0%, #0f172a 70%);
-    border: 1px solid #2a3a55; border-radius: 12px; padding: 12px 14px;
+    border: 1px solid #2a3a55; border-radius: 14px; padding: 12px 14px; height: 244px; box-sizing: border-box;
     display: flex; flex-direction: column; gap: 8px; position: relative; overflow: hidden;
 }
 .mod-card::before {
@@ -499,15 +499,14 @@ input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 18px;
     background: #0f172a; border: 1px solid #1e293b; border-radius: 6px; padding: 5px 8px;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.mod-card-meta { display: flex; align-items: center; gap: 6px; }
+.mod-card-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .mod-card-actions { display: flex; gap: 6px; margin-top: auto; }
 
 /* ── 通用 Mock 入站卡片网格（信号交互页）：更宽更舒展 ── */
-.mock-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; }
 .mock-card {
     background: linear-gradient(165deg, #14203a 0%, #0f172a 60%);
-    border: 1px solid #2a3a55; border-radius: 14px; padding: 14px 16px;
-    display: flex; flex-direction: column; gap: 10px; position: relative; overflow: hidden;
+    border: 1px solid #2a3a55; border-radius: 14px; padding: 12px 14px; height: 244px; box-sizing: border-box;
+    display: flex; flex-direction: column; gap: 8px; position: relative; overflow: hidden;
     transition: transform .15s, box-shadow .15s, border-color .15s;
 }
 .mock-card::before {
@@ -518,9 +517,9 @@ input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 18px;
 .mock-card-head { display: flex; align-items: center; gap: 8px; }
 .mock-card-path {
     font-family: 'Consolas', 'Monaco', monospace; font-size: 0.85rem; font-weight: 600;
-    color: #7dd3fc; word-break: break-all; line-height: 1.4;
+    color: #7dd3fc; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; line-height: 1.4;
 }
-.mock-card-desc { font-size: 0.75rem; color: #94a3b8; white-space: pre-wrap; line-height: 1.5; }
+.mock-card-desc { font-size: 0.75rem; color: #94a3b8; white-space: pre-wrap; line-height: 1.45; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .mock-card-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .mock-card-body {
     font-family: 'Consolas', 'Monaco', monospace; font-size: 0.68rem; color: #cbd5e1;

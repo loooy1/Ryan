@@ -63,6 +63,14 @@
     .exec-copy-btn:hover { border-color: #38bdf8; background: #1d4ed8; color: #fff; }
     .exec-copy-btn.copied { border-color: #22c55e; background: #14532d; color: #dcfce7; }
     .exec-detail-content { margin: 0; max-height: 260px; overflow: auto; padding: 10px; white-space: pre-wrap; word-break: break-word; color: #cbd5e1; font: .78rem/1.55 Consolas, "Cascadia Code", monospace; }
+    .task-interface-status { display:flex; align-items:center; justify-content:space-between; gap:12px; margin:0 0 12px; padding:11px 13px; border:1px solid #7f1d1d; border-radius:9px; background:rgba(127,29,29,.14); color:#fecaca; }
+    .task-interface-status.ready { border-color:#166534; background:rgba(22,101,52,.13); color:#bbf7d0; }
+    .task-interface-status-main { display:flex; flex-direction:column; gap:5px; min-width:0; }
+    .task-interface-status-main strong { font-size:.78rem; }
+    .task-interface-status-roles { display:flex; flex-wrap:wrap; gap:7px; }
+    .task-interface-role { border:1px solid #7f1d1d; border-radius:999px; padding:3px 8px; color:#fecaca; background:rgba(127,29,29,.12); font-size:.68rem; }
+    .task-interface-role.ready { border-color:#166534; color:#bbf7d0; background:rgba(22,101,52,.12); }
+    .task-interface-count { flex:none; border:1px solid currentColor; border-radius:999px; padding:4px 9px; font-size:.68rem; font-weight:700; white-space:nowrap; }
     @@media (max-width: 760px) { .exec-log-detail { grid-template-columns: 1fr; } .exec-detail-section-wide { grid-column: auto; } }
 </style>
 
@@ -70,12 +78,12 @@
     上方选择的 RCS 模板包含任务接口、功能模板和 Mock 入站；切换后下方列表自动加载对应内容。
 </div>
 
-<RcsProtocolTemplatePanel OnProfileActivated="OnRcsProfileActivated" />
+<RcsProtocolTemplatePanel OnProfileActivated="OnRcsProfileActivated" OnEditingProfileChanged="OnEditingRcsProfileChanged" />
 
 <div class="section-card">
     <div class="section-header collapsible" @onclick="ToggleSignalSection" title="点击折叠/展开">
         🔌 RCS 模板
-        <span class="hint-text" style="margin:0;">原有业务功能模板 + Mock 入站</span>
+        <span class="hint-text" style="margin:0;">HTTP 客户端 + HTTP 服务器配置</span>
         <span class="collapse-arrow">@(_panelCollapsed ? "▸ 展开" : "▾ 收起")</span>
     </div>
     @if (!_panelCollapsed)
@@ -85,13 +93,13 @@
 
     @* ── 通用 Mock 入站：任意 RCS→WCS 回调均可拦截，前端新建卡片即生效 ── *@
     <div class="sub-header">
-        🌐 通用 Mock 入站
-        <span class="hint-text" style="margin:0;">按 URL+参数匹配返回自定义 JSON（如 station_entry_request 控制是否允许）</span>
-        <button class="btn btn-primary btn-sm" @onclick="CreateMockRule" style="margin-left:auto;">+ 新建 Mock</button>
+        🌐 HTTP 服务器（接受 RCS 的请求）
+        <span class="hint-text" style="margin:0;">WCS 接收 RCS 回调，可按 URL 和参数匹配请求并返回配置的 JSON。</span>
+        <button class="btn btn-primary btn-sm" @onclick="CreateMockRule" style="margin-left:auto;">+ 新建服务器规则</button>
     </div>
     @if (_mockRules.Count == 0)
     {
-        <div class="hint-text">暂无 Mock 规则。示例：新建 <code>/api/v1/station_entry_request</code> + 匹配 <code>body.VehicleCode=Car_101</code> + 返回 <code>{"success":false,"message":"拒绝进入"}</code>，保存后 RCS 下次请求即按此返回，无需重启。</div>
+        <div class="hint-text">暂无 HTTP 服务器规则。新建规则后，RCS 请求匹配该 URL 和参数时，WCS 会返回配置的响应内容。</div>
     }
     else
     {
@@ -139,13 +147,23 @@
 
     @* ── 功能模板管理：创建/编辑/删除，供任务模板起点/终点关联 ── *@
     <div class="sub-header">
-        🧩 业务功能模板
-        <span class="hint-text" style="margin:0;">含搬运/移动任务下发模板与起点/终点业务模块，均按当前 RCS 配置集保存</span>
-        <button class="btn btn-primary btn-sm" @onclick="CreateModule" style="margin-left:auto;">+ 创建模块</button>
+        🧩 HTTP 客户端（发送请求给 RCS）
+        <span class="hint-text" style="margin:0;">WCS 通过这里配置并发送搬运/移动任务及其他业务请求到 RCS。</span>
+        <button class="btn btn-primary btn-sm" @onclick="CreateModule" style="margin-left:auto;">+ 新建客户端请求</button>
+    </div>
+    <div class="task-interface-status @(TaskInterfacesReady ? "ready" : "")">
+        <div class="task-interface-status-main">
+            <strong>@(TaskInterfacesReady ? "搬运和移动任务接口配置完整" : "搬运与移动任务接口均为必需项，各只能配置一个")</strong>
+            <div class="task-interface-status-roles">
+                <span class="task-interface-role @(TaskInterfaceCount(TaskInterfaceTypes.Carry) == 1 ? "ready" : "")">搬运：@TaskInterfaceRoleStatus(TaskInterfaceTypes.Carry)</span>
+                <span class="task-interface-role @(TaskInterfaceCount(TaskInterfaceTypes.Move) == 1 ? "ready" : "")">移动：@TaskInterfaceRoleStatus(TaskInterfaceTypes.Move)</span>
+            </div>
+        </div>
+        <span class="task-interface-count">搬运 @TaskInterfaceCount(TaskInterfaceTypes.Carry)/1 · 移动 @TaskInterfaceCount(TaskInterfaceTypes.Move)/1</span>
     </div>
     @if (ModuleRegistry.All.Count == 0)
     {
-        <div class="hint-text">暂无模块。点击「+ 创建模块」新建：自定义名称、API 地址（WCS 后端代理相对路径）、参数（值来源可选）。</div>
+        <div class="hint-text">暂无 HTTP 客户端请求。新建请求后，可配置名称、API 地址、方法、请求内容和参数来源。</div>
     }
     else
     {
@@ -184,7 +202,7 @@
                     </div>
                     <div class="mod-card-actions">
                         <button class="btn btn-outline btn-xs" @onclick="() => EditModule(m)">✏️ 编辑</button>
-                        <button class="btn btn-danger btn-xs" @onclick="() => RequestDeleteModule(m.Id, m.Name)" disabled="@IsRequiredTaskTemplate(m.Id)" title="@(IsRequiredTaskTemplate(m.Id) ? "任务下发模板为系统必需项" : "删除模板")">✕ 删除</button>
+                        <button class="btn btn-danger btn-xs" @onclick="() => RequestDeleteModule(m.Id, m.Name)" title="删除模板；搬运和移动接口需在最终保存前补齐">✕ 删除</button>
                     </div>
                 </div>
             }
@@ -357,11 +375,10 @@
                         <div class="form-group" style="grid-column:1/-1;">
                             <label>任务下发接口</label>
                             <div style="display:flex;gap:8px;flex-wrap:wrap;">
-                                <button type="button" class="btn btn-outline btn-xs" @onclick="() => SetTaskInterfaceType(TaskInterfaceTypes.None)">不设为任务接口</button>
                                 <button type="button" class="btn @(m.TaskInterfaceType == TaskInterfaceTypes.Carry ? "btn-primary" : "btn-outline") btn-xs" @onclick="() => SetTaskInterfaceType(TaskInterfaceTypes.Carry)">@(m.TaskInterfaceType == TaskInterfaceTypes.Carry ? "✓ 搬运任务接口" : "设置为搬运任务接口")</button>
                                 <button type="button" class="btn @(m.TaskInterfaceType == TaskInterfaceTypes.Move ? "btn-primary" : "btn-outline") btn-xs" @onclick="() => SetTaskInterfaceType(TaskInterfaceTypes.Move)">@(m.TaskInterfaceType == TaskInterfaceTypes.Move ? "✓ 移动任务接口" : "设置为移动任务接口")</button>
                             </div>
-                            <span class="hint-text">同一 RCS 模板中，每种任务接口只能指定一个功能模板；未指定时，相应任务将被拒绝下发。</span>
+                            <span class="hint-text">每个 RCS 模板必须各有一个搬运和移动任务接口。保存时，同类型接口会自动转移到当前模板。</span>
                         </div>
                         <div class="form-group" style="grid-column:1/-1;">
                             <label>名称 <span class="req-star">*</span></label>
@@ -816,6 +833,7 @@
 
     // ── 功能模板管理（持久化 grcs_si_modules）──
     private const string ModuleStorageKey = "grcs_si_modules";
+    private string _editingRcsProfileId = "";
     private FeatureModuleDto? _editingModule;
     private FeatureModuleDto? _moduleDraft;
     private string _moduleError = "";
@@ -833,6 +851,26 @@
         "prepare_return_task" => "回库任务预处理",
         _ => effect,
     };
+
+    private int TaskInterfaceCount(string taskInterfaceType)
+        => ModuleRegistry.All.Count(module => string.Equals(module.TaskInterfaceType, taskInterfaceType, StringComparison.OrdinalIgnoreCase));
+
+    private FeatureModuleDto? TaskInterfaceModule(string taskInterfaceType)
+        => ModuleRegistry.All.FirstOrDefault(module => string.Equals(module.TaskInterfaceType, taskInterfaceType, StringComparison.OrdinalIgnoreCase));
+
+    private bool TaskInterfacesReady
+        => TaskInterfaceCount(TaskInterfaceTypes.Carry) == 1 && TaskInterfaceCount(TaskInterfaceTypes.Move) == 1;
+
+    private string TaskInterfaceRoleStatus(string taskInterfaceType)
+    {
+        var count = TaskInterfaceCount(taskInterfaceType);
+        return count switch
+        {
+            0 => "未设置",
+            1 => $"已设置 · {TaskInterfaceModule(taskInterfaceType)?.Name}",
+            _ => $"重复配置 {count} 个",
+        };
+    }
 
     private bool IsRequiredTaskTemplate(string? id)
         => string.Equals(id, "task.carry", StringComparison.OrdinalIgnoreCase)
@@ -908,7 +946,7 @@
     {
         if (ModuleRegistry.Remove(id))
         {
-            try { await Api.DeleteFeatureModuleAsync(id); } catch { }
+            try { await Api.DeleteFeatureModuleAsync(id, _editingRcsProfileId); } catch { }
             await SaveModules();
             StateHasChanged();
         }
@@ -924,7 +962,29 @@
     private void SetTaskInterfaceType(string role)
     {
         if (_moduleDraft is null) return;
-        _moduleDraft.TaskInterfaceType = role;
+        if (string.Equals(_moduleDraft.TaskInterfaceType, role, StringComparison.OrdinalIgnoreCase)) return;
+
+        var currentOwner = ModuleRegistry.All.FirstOrDefault(module =>
+            !string.Equals(module.Id, _moduleDraft.Id, StringComparison.OrdinalIgnoreCase)
+            && string.Equals(module.TaskInterfaceType, role, StringComparison.OrdinalIgnoreCase));
+        if (currentOwner is null)
+        {
+            _moduleDraft.TaskInterfaceType = role;
+            return;
+        }
+
+        var roleName = role == TaskInterfaceTypes.Carry ? "搬运任务接口" : "移动任务接口";
+        ShowConfirm(
+            "确认切换任务接口",
+            $"当前已有{roleName}「{currentOwner.Name}」。确认将此接口切换到当前模板「{_moduleDraft.Name}」吗？保存后，原模板将不再负责该类任务。",
+            () => ApplyTaskInterfaceType(role));
+    }
+
+    private Task ApplyTaskInterfaceType(string role)
+    {
+        if (_moduleDraft is not null) _moduleDraft.TaskInterfaceType = role;
+        StateHasChanged();
+        return Task.CompletedTask;
     }
 
     private async Task SaveModuleEdit()
@@ -941,6 +1001,33 @@
             TaskInterfaceTypes.Move => TaskInterfaceTypes.Move,
             _ => TaskInterfaceTypes.None,
         };
+
+        var otherModules = ModuleRegistry.All
+            .Where(module => !string.Equals(module.Id, d.Id, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        var carryCountAfterSave = d.TaskInterfaceType == TaskInterfaceTypes.Carry
+            ? 1
+            : otherModules.Count(module => string.Equals(module.TaskInterfaceType, TaskInterfaceTypes.Carry, StringComparison.OrdinalIgnoreCase));
+        var moveCountAfterSave = d.TaskInterfaceType == TaskInterfaceTypes.Move
+            ? 1
+            : otherModules.Count(module => string.Equals(module.TaskInterfaceType, TaskInterfaceTypes.Move, StringComparison.OrdinalIgnoreCase));
+        if (carryCountAfterSave > 1 || moveCountAfterSave > 1)
+        {
+            _moduleError = $"每种任务接口只能指定一个模板。当前保存后将有搬运 {carryCountAfterSave}/1 个、移动 {moveCountAfterSave}/1 个；请在同类型模板间转移接口。";
+            return;
+        }
+        if (_editingModule?.TaskInterfaceType == TaskInterfaceTypes.Carry
+            && d.TaskInterfaceType != TaskInterfaceTypes.Carry && carryCountAfterSave == 0)
+        {
+            _moduleError = "搬运任务接口为必需项，不能取消最后一个搬运接口。请将搬运接口转移到其他模板。";
+            return;
+        }
+        if (_editingModule?.TaskInterfaceType == TaskInterfaceTypes.Move
+            && d.TaskInterfaceType != TaskInterfaceTypes.Move && moveCountAfterSave == 0)
+        {
+            _moduleError = "移动任务接口为必需项，不能取消最后一个移动接口。请将移动接口转移到其他模板。";
+            return;
+        }
 
         if (_editingModule is not null)
         {
@@ -1032,7 +1119,7 @@
     private async Task SaveModules()
     {
         var list = ModuleRegistry.All.ToList();
-        try { await Api.SaveFeatureModulesAsync(list); } catch { }
+        try { await Api.SaveFeatureModulesAsync(list, _editingRcsProfileId); } catch { }
         try { await LocalStore.SetAsync(Js, ModuleStorageKey,
             System.Text.Json.JsonSerializer.Serialize(list)); } catch { }
     }
@@ -1042,7 +1129,7 @@
     {
         try
         {
-            var remote = await Api.GetFeatureModulesAsync();
+            var remote = await Api.GetFeatureModulesAsync(_editingRcsProfileId);
             if (remote != null)
             {
                 ModuleRegistry.SetCustoms(remote);
@@ -1066,7 +1153,7 @@
     {
         try
         {
-            var remote = await Api.GetMockRulesAsync();
+            var remote = await Api.GetMockRulesAsync(_editingRcsProfileId);
             if (remote != null) _mockRules = remote;
         }
         catch { }
@@ -1179,12 +1266,13 @@
     }
     private async Task SaveMocks()
     {
-        try { await Api.SaveMockRulesAsync(_mockRules); } catch { }
+        try { await Api.SaveMockRulesAsync(_mockRules, _editingRcsProfileId); } catch { }
         StateHasChanged();
     }
 
     protected override async Task OnInitializedAsync()
     {
+        try { _editingRcsProfileId = (await Api.GetRcsProtocolProfilesAsync())?.ActiveProfileId ?? ""; } catch { }
         await LoadModules();
         await LoadMockRules();
 
@@ -1229,6 +1317,14 @@
 
     private async Task OnRcsProfileActivated()
     {
+        await LoadModules();
+        await LoadMockRules();
+        StateHasChanged();
+    }
+
+    private async Task OnEditingRcsProfileChanged(RcsProtocolProfileDto? profile)
+    {
+        _editingRcsProfileId = profile?.Id ?? "";
         await LoadModules();
         await LoadMockRules();
         StateHasChanged();

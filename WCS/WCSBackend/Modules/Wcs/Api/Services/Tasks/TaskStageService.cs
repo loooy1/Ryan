@@ -162,8 +162,16 @@ public class TaskStageService : ITaskStageService
         TaskRecord? record = null;
         lock (_writeLock)
         {
-            if (HasStageAt(change.TaskId, change.Stage, change.MsgTime)) return;
             var created = FindCreated(change.TaskId);
+            if (created == null)
+            {
+                _logger.LogWarning(
+                    "忽略未关联到 WCS 已创建任务的 RCS 阶段回调 TaskId={TaskId} Stage={Stage}",
+                    change.TaskId, change.Stage);
+                return;
+            }
+
+            if (HasStageAt(change.TaskId, change.Stage, change.MsgTime)) return;
             record = new TaskRecord
             {
                 TaskId = change.TaskId,

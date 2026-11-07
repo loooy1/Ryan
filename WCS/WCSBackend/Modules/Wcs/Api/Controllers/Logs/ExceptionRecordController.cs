@@ -28,6 +28,24 @@ public class ExceptionRecordController : ControllerBase
     [HttpGet("projects")]
     public ActionResult<object> Projects() => Ok(_store.Projects());
 
+    [HttpPut("projects/{name}")]
+    public ActionResult<object> RenameProject(string name, [FromBody] RenameProjectRequest request)
+    {
+        var currentName = name?.Trim() ?? "";
+        var newName = request?.NewName?.Trim() ?? "";
+        if (currentName.Length == 0) return BadRequest(new { success = false, message = "当前项目名不能为空" });
+        if (newName.Length == 0) return BadRequest(new { success = false, message = "新项目名不能为空" });
+        if (newName.Length > 191) return BadRequest(new { success = false, message = "项目名称不能超过 191 个字符" });
+        if (request?.Password != "wayzim") return StatusCode(403, new { success = false, message = "密码错误" });
+
+        var projects = _store.Projects();
+        if (!projects.Contains(currentName)) return NotFound(new { success = false, message = "项目不存在或当前项目还没有异常记录" });
+        if (string.Equals(currentName, newName, StringComparison.Ordinal)) return Ok(new { success = true, name = newName });
+        if (projects.Contains(newName)) return Conflict(new { success = false, message = "目标项目名称已存在" });
+        if (!_store.RenameProject(currentName, newName)) return NotFound(new { success = false, message = "项目不存在或当前项目还没有异常记录" });
+        return Ok(new { success = true, name = newName });
+    }
+
     /// <summary>删除某项目及其全部异常记录（需密码，不可恢复）。</summary>
     [HttpDelete("projects/{name}")]
     public ActionResult<object> DeleteProject(string name, [FromQuery] string? password = null)
@@ -74,5 +92,11 @@ public class ExceptionRecordController : ControllerBase
         if (password != "wayzim") return StatusCode(403, new { success = false, message = "删除密码错误" });
         _store.Remove(id);
         return Ok(new { success = true, id });
+    }
+
+    public sealed class RenameProjectRequest
+    {
+        public string NewName { get; set; } = "";
+        public string Password { get; set; } = "";
     }
 }

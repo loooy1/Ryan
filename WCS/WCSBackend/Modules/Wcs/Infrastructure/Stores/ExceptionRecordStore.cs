@@ -67,6 +67,22 @@ public class ExceptionRecordStore
         Audit("ExceptionLedgerProjectRemoved", "删除项目全部异常台账 Project={Project}", project);
     }
 
+    public bool RenameProject(string currentName, string newName)
+    {
+        using var uow = _uow.Create();
+        var rows = uow.Repository<Entities.ExceptionRecordDto>().Query().Where(r => r.Project == currentName).ToList();
+        if (rows.Count == 0) return false;
+        var now = DateTime.Now.ToString("O");
+        foreach (var row in rows)
+        {
+            row.Project = newName;
+            row.UpdatedAt = now;
+        }
+        uow.CommitAsync().GetAwaiter().GetResult();
+        Audit("ExceptionLedgerProjectRenamed", "重命名异常项目 Project={OldProject} NewProject={NewProject}", currentName, newName);
+        return true;
+    }
+
     public void Update(Entities.ExceptionRecordDto rec)
     {
         using var uow = _uow.Create();

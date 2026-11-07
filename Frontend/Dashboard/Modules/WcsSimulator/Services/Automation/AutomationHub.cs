@@ -76,6 +76,23 @@ public class AutomationHub : IDisposable
         catch { }
     }
 
+    /// <summary>系统连接配置保存后立即使用新地址检查 WCS 与 RCS，不等待健康检查的轮询间隔。</summary>
+    public async Task<bool> RefreshConfigurationAsync(CancellationToken cancellationToken)
+    {
+        await EnsureStartedAsync();
+        while (true)
+        {
+            try { await PollOnceAsync(forceHealthCheck: true, cancellationToken: cancellationToken); }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+            catch { }
+
+            if (_health.WcsOnline == true && _health.GrcsOnline == true)
+                return true;
+
+            await Task.Delay(TimeSpan.FromMilliseconds(400), cancellationToken);
+        }
+    }
+
     /// <summary>乐观更新：信号自动开关（到达/移除）POST 后立即反映到快照，不等下一轮轮询。</summary>
     private async Task PollAsync()
     {
@@ -85,15 +102,15 @@ public class AutomationHub : IDisposable
     }
 
     /// <summary>执行一轮轮询（不修改 SuppressAlerts，由调用方控制）。</summary>
-    private async Task PollOnceAsync()
+    private async Task PollOnceAsync(bool forceHealthCheck = false, CancellationToken cancellationToken = default)
     {
         // 进入申请状态（用于后端健康判定；进入信号已由 MockApprovalService 取代）
-        if ((DateTime.UtcNow - _lastHealthCheck).TotalSeconds >= 5)
+        if (forceHealthCheck || (DateTime.UtcNow - _lastHealthCheck).TotalSeconds >= 5)
         {
             _lastHealthCheck = DateTime.UtcNow;
-            var adm = await _api.GetHealthAsync<AdmittanceStatusDto>("/api/wcs/status");
+            var adm = await _api.GetHealthAsync<AdmittanceStatusDto>("/api/wcs/status", cancellationToken);
             _health.ReportWcs(adm != null);
-            var grcs = await _api.GetHealthAsync<GrcsProxyResult>("/api/wcs/grcs/health");
+            var grcs = await _api.GetHealthAsync<GrcsProxyResult>("/api/wcs/grcs/health", cancellationToken);
             _health.ReportGrcs(grcs?.Ok == true);
         }
         Changed?.Invoke();

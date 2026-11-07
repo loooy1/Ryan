@@ -107,20 +107,45 @@ public class WcsApiClient
 
     private string U(string path) => BaseUrl.TrimEnd('/') + path;
 
+    /// <summary>在给定时间窗口内重试访问指定 WCS 地址；网络错误不会立即结束保存流程。</summary>
+    public async Task WaitUntilReachableAsync(string baseUrl, CancellationToken cancellationToken)
+    {
+        var url = baseUrl.Trim().TrimEnd('/') + "/api/wcs/status";
+
+        while (true)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            try
+            {
+                using var response = await _http.GetAsync(url, cancellationToken);
+                if (response.IsSuccessStatusCode) return;
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception)
+            {
+            }
+
+            await Task.Delay(TimeSpan.FromMilliseconds(400), cancellationToken);
+        }
+    }
+
     public async Task<T?> GetAsync<T>(string path)
-        => await GetAsync<T>(path, allowWhenOffline: false);
+        => await GetAsync<T>(path, allowWhenOffline: false, CancellationToken.None);
 
     /// <summary>健康检查专用读取：即使上一次状态为离线，也必须允许探测新地址是否已恢复。</summary>
-    public async Task<T?> GetHealthAsync<T>(string path)
-        => await GetAsync<T>(path, allowWhenOffline: true);
+    public async Task<T?> GetHealthAsync<T>(string path, CancellationToken cancellationToken = default)
+        => await GetAsync<T>(path, allowWhenOffline: true, cancellationToken);
 
-    private async Task<T?> GetAsync<T>(string path, bool allowWhenOffline)
+    private async Task<T?> GetAsync<T>(string path, bool allowWhenOffline, CancellationToken cancellationToken)
     {
         await _store.PreloadAsync(_js);
         if (!allowWhenOffline && !ConnectionReady()) return default;
         try
         {
-            var json = await _http.GetStringAsync(U(path));
+            var json = await _http.GetStringAsync(U(path), cancellationToken);
             using var doc = JsonDocument.Parse(json);
             var el = doc.RootElement;
             // 仅当 T 为集合类型时，从 {success,items/data/result/list:[...]} 包装体提取数组再反序列化；
@@ -137,6 +162,7 @@ public class WcsApiClient
             }
             return JsonSerializer.Deserialize<T>(json, JsonOpts);
         }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
         catch { NotifyIfUnreachable(); return default; }
     } 
 
@@ -274,15 +300,17 @@ public class WcsApiClient
     }
 
     /// <summary>带状态码的 PUT：无论成功失败都返回响应体（用于保存校验失败时的错误透传）。</summary>
-    public async Task<(bool Ok, int StatusCode, string Json)> PutWithStatusAsync<TReq>(string path, TReq body)
+    public async Task<(bool Ok, int StatusCode, string Json)> PutWithStatusAsync<TReq>(string path, TReq body, string? baseUrl = null, CancellationToken cancellationToken = default)
     {
-        if (!ConnectionReady()) return (false, 0, "backend offline");
+        if (string.IsNullOrWhiteSpace(baseUrl) && !ConnectionReady()) return (false, 0, "backend offline");
         try
         {
-            var resp = await _http.PutAsJsonAsync(U(path), body);
+            var requestUrl = string.IsNullOrWhiteSpace(baseUrl) ? U(path) : baseUrl.Trim().TrimEnd('/') + path;
+            var resp = await _http.PutAsJsonAsync(requestUrl, body, cancellationToken);
             var json = await resp.Content.ReadAsStringAsync();
             return (resp.IsSuccessStatusCode, (int)resp.StatusCode, json);
         }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
         catch (Exception ex) { NotifyIfUnreachable(); return (false, 0, ex.Message); }
     }
 
@@ -297,41 +325,41 @@ public class WcsApiClient
     // ── 任务类型模板 / 功能模板（后端 MySQL 持久化，跨浏览器共享）──
 
     /// <summary>拉取全部任务类型模板（后端 task_templates 表）。返回 null 表示后端不可用。</summary>
-    public async Task<List<TaskTemplateDto>?> GetTaskTemplatesAsync()
+    public async Task<List<TaskTemplateDto>?> GetTaskTemplatesAsync(string? profileId = null)
     {
-        var resp = await GetAsync<TemplateListResponse>( "/api/wcs/templates");
+        var resp = await GetAsync<TemplateListResponse>("/api/wcs/templates" + ProfileQuery(profileId));
         return resp?.Items;
     }
 
     /// <summary>整体保存任务类型模板（替换后端全部）。</summary>
-    public async Task<bool> SaveTaskTemplatesAsync(IEnumerable<TaskTemplateDto> items)
+    public async Task<bool> SaveTaskTemplatesAsync(IEnumerable<TaskTemplateDto> items, string? profileId = null)
     {
-        return await PostAsync<IEnumerable<TaskTemplateDto>, SaveResponse>("/api/wcs/templates", items) is { Success: true };
+        return await PostAsync<IEnumerable<TaskTemplateDto>, SaveResponse>("/api/wcs/templates" + ProfileQuery(profileId), items) is { Success: true };
     }
 
     /// <summary>按 Value 删除一条任务类型模板。</summary>
-    public async Task<bool> DeleteTaskTemplateAsync(string value)
+    public async Task<bool> DeleteTaskTemplateAsync(string value, string? profileId = null)
     {
-        return await DeleteAsync($"/api/wcs/templates/{Uri.EscapeDataString(value)}");
+        return await DeleteAsync($"/api/wcs/templates/{Uri.EscapeDataString(value)}" + ProfileQuery(profileId));
     }
 
     /// <summary>拉取全部功能模板（后端 feature_modules 表）。返回 null 表示后端不可用。</summary>
-    public async Task<List<FeatureModuleDto>?> GetFeatureModulesAsync()
+    public async Task<List<FeatureModuleDto>?> GetFeatureModulesAsync(string? profileId = null)
     {
-        var resp = await GetAsync<ModuleListResponse>("/api/wcs/modules");
+        var resp = await GetAsync<ModuleListResponse>("/api/wcs/modules" + ProfileQuery(profileId));
         return resp?.Items;
     }
 
     /// <summary>整体保存功能模板（替换后端全部）。</summary>
-    public async Task<bool> SaveFeatureModulesAsync(IEnumerable<FeatureModuleDto> items)
+    public async Task<bool> SaveFeatureModulesAsync(IEnumerable<FeatureModuleDto> items, string? profileId = null)
     {
-        return await PostAsync<IEnumerable<FeatureModuleDto>, SaveResponse>("/api/wcs/modules", items) is { Success: true };
+        return await PostAsync<IEnumerable<FeatureModuleDto>, SaveResponse>("/api/wcs/modules" + ProfileQuery(profileId), items) is { Success: true };
     }
 
     /// <summary>按 Id 删除一条功能模板。</summary>
-    public async Task<bool> DeleteFeatureModuleAsync(string id)
+    public async Task<bool> DeleteFeatureModuleAsync(string id, string? profileId = null)
     {
-        return await DeleteAsync($"/api/wcs/modules/{Uri.EscapeDataString(id)}");
+        return await DeleteAsync($"/api/wcs/modules/{Uri.EscapeDataString(id)}" + ProfileQuery(profileId));
     }
 
     /// <summary>获取 RCS 配置集及其协议模板。</summary>
@@ -599,15 +627,18 @@ public class WcsApiClient
     }
 
     // ── 通用 Mock 规则（入站可配）──
-    public async Task<List<MockRuleDto>?> GetMockRulesAsync()
+    public async Task<List<MockRuleDto>?> GetMockRulesAsync(string? profileId = null)
     {
-        var resp = await GetAsync<MockRuleListResponse>("/api/wcs/mocks");
+        var resp = await GetAsync<MockRuleListResponse>("/api/wcs/mocks" + ProfileQuery(profileId));
         return resp?.Items;
     }
-    public async Task<bool> SaveMockRulesAsync(IEnumerable<MockRuleDto> items)
+    public async Task<bool> SaveMockRulesAsync(IEnumerable<MockRuleDto> items, string? profileId = null)
     {
-        return await PostAsync<IEnumerable<MockRuleDto>, SaveResponse>("/api/wcs/mocks", items) is { Success: true };
+        return await PostAsync<IEnumerable<MockRuleDto>, SaveResponse>("/api/wcs/mocks" + ProfileQuery(profileId), items) is { Success: true };
     }
+
+    private static string ProfileQuery(string? profileId)
+        => string.IsNullOrWhiteSpace(profileId) ? "" : $"?profileId={Uri.EscapeDataString(profileId.Trim())}";
     private class MockRuleListResponse { public bool Success { get; set; } public List<MockRuleDto>? Items { get; set; } }
 
     // ── 准入请求（RCS->WCS station_entry_request）──

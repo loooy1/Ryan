@@ -2,41 +2,50 @@
 @using Contracts.Dtos
 @using Dashboard.Modules.WcsSimulator.Models
 @using Microsoft.AspNetCore.Components
-@using Microsoft.JSInterop
 @using System.Text.Json
 @inject WcsApiClient Api
-@inject IJSRuntime Js
 
 <style>
-    .rcs-template-shell { border:1px solid #263b56; border-radius:12px; padding:16px; margin:12px 0 18px; background:linear-gradient(145deg,#111f34,#0c1728); }
-    .rcs-template-head { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:13px; }
-    .rcs-template-title { color:#e8f3ff; font-weight:700; font-size:1rem; }
-    .rcs-template-sub { color:#8ca5c2; font-size:.76rem; margin-top:3px; }
-    .rcs-template-grid { display:grid; grid-template-columns:minmax(0,1fr); gap:13px; }
-    .rcs-template-card { background:#0b1728; border:1px solid #243953; border-radius:9px; padding:12px; }
-    .rcs-template-label { display:block; color:#88a2c0; font-size:.72rem; margin:8px 0 4px; }
-    .rcs-template-control { width:100%; border:1px solid #2b415e; border-radius:6px; background:#081321; color:#e1efff; padding:8px; font-size:.78rem; }
+    .rcs-template-shell { border:1px solid #2b405d; border-radius:15px; padding:18px 20px; margin:10px 0 18px; background:linear-gradient(145deg,#111f34,#0b1526 74%); box-shadow:0 12px 32px rgba(2,8,23,.16); }
+    .rcs-template-head { display:flex; align-items:center; justify-content:space-between; gap:18px; padding-bottom:16px; margin-bottom:16px; border-bottom:1px solid #263953; }
+    .rcs-template-title { color:#f1f7ff; font-weight:750; font-size:1.08rem; letter-spacing:.01em; }
+    .rcs-template-sub { color:#91a9c5; font-size:.77rem; margin-top:5px; line-height:1.5; }
+    .rcs-template-head-actions { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:8px; }
+    .rcs-profile-layout { display:grid; grid-template-columns:minmax(0,1.2fr) minmax(280px,.8fr); gap:12px; }
+    .rcs-template-card { min-width:0; background:#0c192b; border:1px solid #293e59; border-radius:11px; padding:15px; }
+    .rcs-template-label { display:block; color:#91a8c2; font-size:.72rem; font-weight:600; margin:0 0 6px; }
+    .rcs-template-control { width:100%; min-height:40px; border:1px solid #314966; border-radius:8px; background:#091526; color:#e5f1ff; padding:9px 11px; font-size:.8rem; transition:border-color .15s,box-shadow .15s; }
+    .rcs-template-control:focus { outline:0; border-color:#38bdf8; box-shadow:0 0 0 3px rgba(56,189,248,.12); }
     .rcs-template-code { min-height:96px; resize:vertical; font: .72rem/1.5 Consolas,monospace; }
-    .rcs-template-row { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
-    .rcs-template-actions { display:flex; justify-content:flex-end; gap:7px; margin-top:12px; }
-    .rcs-template-status { color:#77e2b2; font-size:.73rem; margin-right:auto; align-self:center; }
-    .rcs-template-warning { border:1px solid #614d2c; border-radius:7px; background:#211b12; color:#d8bd88; padding:8px 10px; font-size:.7rem; margin-top:10px; }
-    .rcs-template-operation { color:#d9efff; font-weight:650; font-size:.82rem; }
-    .rcs-template-summary { display:flex; flex-wrap:wrap; gap:7px; margin-top:10px; }
-    .rcs-template-summary span { border:1px solid #294260; border-radius:999px; color:#9dc7ec; padding:4px 9px; font-size:.68rem; }
+    .rcs-template-row { display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-top:12px; }
+    .rcs-template-profile-select { display:block; margin-top:10px; }
+    .rcs-template-current { display:inline-flex; align-items:center; gap:7px; min-height:28px; padding:0 9px; border:1px solid #1b654a; border-radius:999px; background:rgba(16,91,63,.2); color:#86efac; font-size:.69rem; font-weight:650; white-space:nowrap; }
+    .rcs-template-current::before { content:""; width:7px; height:7px; border-radius:50%; background:#4ade80; box-shadow:0 0 9px rgba(74,222,128,.55); }
+    .rcs-template-summary { display:grid; grid-template-columns:1fr 1fr; gap:9px; margin-top:12px; }
+    .rcs-template-summary span { display:flex; flex-direction:column; gap:3px; border:1px solid #293f5b; border-radius:9px; color:#91a8c2; background:#101f33; padding:10px 12px; font-size:.68rem; }
+    .rcs-template-summary strong { color:#67e8f9; font-size:1.08rem; line-height:1; }
+    .rcs-template-summary-head { display:flex; align-items:center; justify-content:space-between; gap:10px; }
+    .rcs-template-summary-title { color:#d9efff; font-size:.82rem; font-weight:700; }
+    .rcs-template-summary-note { margin-top:11px; color:#94a9c2; font-size:.71rem; line-height:1.6; }
+    .rcs-template-warning { display:flex; align-items:flex-start; gap:9px; border:1px solid rgba(245,158,11,.25); border-radius:8px; background:rgba(120,74,12,.1); color:#dbc58f; padding:9px 11px; font-size:.7rem; line-height:1.5; margin-top:12px; }
+    .rcs-template-warning::before { content:"ⓘ"; color:#fbbf24; font-weight:700; }
+    .rcs-template-actions { display:flex; align-items:center; justify-content:flex-end; flex-wrap:wrap; gap:8px; margin-top:14px; padding-top:13px; border-top:1px solid #263953; }
+    .rcs-template-status { color:#77e2b2; font-size:.74rem; margin-right:auto; }
+    .rcs-template-operation { color:#d9efff; font-weight:700; font-size:.84rem; }
     .rcs-template-delete { border:1px solid #8c3e4d; color:#ff9aa8; background:#2a1520; }
     .rcs-template-delete:hover:not(:disabled) { background:#4a1d2b; color:#ffd5dc; }
-    @@media(max-width:850px) { .rcs-template-grid { grid-template-columns:1fr; } }
+    @@media(max-width:850px) { .rcs-profile-layout { grid-template-columns:1fr; } }
+    @@media(max-width:700px) { .rcs-template-shell { padding:15px; } .rcs-template-head { align-items:flex-start; flex-direction:column; } .rcs-template-head-actions { width:100%; justify-content:flex-start; } .rcs-template-row { grid-template-columns:1fr; } .rcs-template-actions { justify-content:flex-start; } }
 </style>
 
 <section class="rcs-template-shell">
     <div class="rcs-template-head">
         <div>
             <div class="rcs-template-title">🔌 RCS 协议模板</div>
-            <div class="rcs-template-sub">业务功能模板（含搬运 / 移动下发）和 Mock 入站按 RCS 类型整体保存与切换；RCS 地址统一使用系统设置。</div>
+            <div class="rcs-template-sub">HTTP 客户端向 RCS 发送请求，HTTP 服务器接收 RCS 请求；两类配置均随 RCS 类型整体保存与切换。</div>
         </div>
-        <div style="display:flex;gap:7px;">
-            <button class="btn btn-sm rcs-template-delete" @onclick="DeleteProfile" disabled="@(_loading || _saving || _config == null || _config.Profiles.Count <= 1)" title="删除所选 RCS 模板及其全部配置">删除此 RCS 模板</button>
+        <div class="rcs-template-head-actions">
+            <button class="btn btn-sm rcs-template-delete" @onclick="RequestDeleteProfile" disabled="@(_loading || _saving || _config == null || _config.Profiles.Count <= 1)" title="删除所选 RCS 模板及其全部配置">删除此 RCS 模板</button>
             <button class="btn btn-primary btn-sm" @onclick="CreateProfile" disabled="@_loading">＋ 新建 RCS 类型</button>
         </div>
     </div>
@@ -56,46 +65,98 @@
     else
     {
         var profile = EditingProfile;
-        <div class="rcs-template-grid">
+        <div class="rcs-profile-layout">
             <div class="rcs-template-card">
-                <div class="rcs-template-operation">配置集</div>
-                <label class="rcs-template-label">编辑 RCS 类型</label>
-                <select class="rcs-template-control" value="@_editingProfileId" @onchange="ChangeEditingProfile">
-                    @foreach (var item in _config.Profiles)
-                    {
-                        <option value="@item.Id">@item.Name (@item.Id)@(_config.ActiveProfileId == item.Id ? " · 当前使用" : "")</option>
-                    }
-                </select>
+                <div class="rcs-template-operation">配置集选择与编辑</div>
+                <div class="rcs-template-profile-select">
+                    <label class="rcs-template-label">RCS 类型</label>
+                    <select class="rcs-template-control" value="@_editingProfileId" @onchange="ChangeEditingProfile">
+                        @foreach (var item in _config.Profiles)
+                        {
+                            <option value="@item.Id">@item.Name (@item.Id)@(_config.ActiveProfileId == item.Id ? " · 当前使用" : "")</option>
+                        }
+                    </select>
+                </div>
                 <div class="rcs-template-row">
                     <div><label class="rcs-template-label">配置编码</label><input class="rcs-template-control" value="@profile.Id" readonly /></div>
                     <div><label class="rcs-template-label">显示名称</label><input class="rcs-template-control" @bind="profile.Name" /></div>
                 </div>
-                <div class="rcs-template-summary">
-                    <span>@profile.FeatureModules.Count 个业务功能模板</span>
-                    <span>@profile.MockRules.Count 个 Mock 入站规则</span>
-                </div>
-                <div class="rcs-template-warning">下方功能模板与 Mock 入站也属于此配置集。点击“保存整个模板”会保存完整配置；点击“保存并切换”后，新请求、任务及 Mock 入站立即使用该配置集。执行中的任务不受切换影响。</div>
-                <div class="rcs-template-actions">
-                    <span class="rcs-template-status">@_status</span>
-                    <button class="btn btn-outline btn-sm" @onclick="SaveProfile" disabled="@_saving">保存整个模板</button>
-                    <button class="btn btn-primary btn-sm" @onclick="ActivateProfile" disabled="@_saving">保存并切换</button>
-                </div>
             </div>
-
+            <div class="rcs-template-card">
+                <div class="rcs-template-summary-head">
+                    <span class="rcs-template-summary-title">配置内容</span>
+                    @if (_config.ActiveProfileId == profile.Id)
+                    {
+                        <span class="rcs-template-current">当前运行中</span>
+                    }
+                    else
+                    {
+                        <span class="rcs-template-current" style="border-color:#3b4e6a;background:#142238;color:#b8c8dc;">待切换</span>
+                    }
+                </div>
+                <div class="rcs-template-summary">
+                    <span><strong>@profile.FeatureModules.Count</strong>HTTP 客户端模板</span>
+                    <span><strong>@profile.MockRules.Count</strong>HTTP 服务器规则</span>
+                </div>
+                <div class="rcs-template-summary-note">HTTP 客户端模板负责向 RCS 发送请求；HTTP 服务器规则负责接收 RCS 请求。两者都随当前 RCS 类型整体保存与切换。</div>
+            </div>
+        </div>
+        <div class="rcs-template-warning">当前运行中的模板点击“保存”即可保存修改；其他模板点击“切换”会先保存整套配置，再将它设为当前运行模板。已下发的任务不受影响。</div>
+        <div class="rcs-template-actions">
+            <span class="rcs-template-status">@_status</span>
+            <button class="btn btn-primary btn-sm" @onclick="SaveOrActivateProfile" disabled="@_saving">@(IsEditingActiveProfile ? "保存" : "切换")</button>
         </div>
     }
 </section>
 
+<AppConfirmDialog IsOpen="@_deletePromptVisible"
+                  Title="删除 RCS 模板"
+                  Message="@_deletePromptMessage"
+                  ConfirmText="删除模板"
+                  IsDangerous="true"
+                  OnConfirm="ConfirmDeleteProfile"
+                  OnCancel="CancelDeleteProfile" />
+
+@if (_unsavedPromptVisible)
+{
+    <div class="template-modal-overlay" @onclick="CancelProfileChange">
+        <div class="tpl-modal" @onclick:stopPropagation style="max-width:460px;">
+            <div class="tpl-modal-header">
+                <div class="tpl-modal-title">模板有未保存的修改</div>
+                <button class="tpl-modal-close" @onclick="CancelProfileChange" title="关闭">✕</button>
+            </div>
+            <div class="tpl-modal-body">
+                <div class="hint-text" style="white-space:pre-wrap;color:#e2e8f0;">当前模板「@EditingProfile?.Name」有未保存的修改。切换到其他模板前，是否先保存？</div>
+            </div>
+            <div class="tpl-modal-footer" style="display:flex;gap:10px;justify-content:flex-end;margin-top:12px;">
+                <button class="btn btn-outline" @onclick="DiscardAndContinue" disabled="@_saving">放弃修改并继续</button>
+                <button class="btn btn-primary" @onclick="SaveAndContinue" disabled="@_saving">保存后继续</button>
+                <button class="btn btn-outline" @onclick="CancelProfileChange" disabled="@_saving">取消</button>
+            </div>
+        </div>
+    </div>
+}
+
 @code {
     [Parameter] public EventCallback OnProfileActivated { get; set; }
+    [Parameter] public EventCallback<RcsProtocolProfileDto?> OnEditingProfileChanged { get; set; }
 
     private RcsProtocolProfilesDto? _config;
     private string _editingProfileId = "";
     private bool _loading = true;
     private bool _saving;
     private string _status = "";
+    private bool _deletePromptVisible;
+    private bool _deleteApproved;
+    private string _deleteProfileId = "";
+    private string _deleteProfileName = "";
+    private string _deletePromptMessage => $"确定删除 RCS 模板「{_deleteProfileName}」吗？\n\n该模板中的接口模板、功能模板和 HTTP 服务器规则都会一并删除。此操作不可撤销。";
+    private string _pendingProfileId = "";
+    private bool _unsavedPromptVisible;
+    private readonly Dictionary<string, string> _savedProfileSnapshots = new(StringComparer.OrdinalIgnoreCase);
 
     private RcsProtocolProfileDto? EditingProfile => _config?.Profiles.FirstOrDefault(p => string.Equals(p.Id, _editingProfileId, StringComparison.OrdinalIgnoreCase));
+    private bool IsEditingActiveProfile => _config != null && string.Equals(_config.ActiveProfileId, _editingProfileId, StringComparison.OrdinalIgnoreCase);
     protected override async Task OnInitializedAsync() => await Load();
 
     private async Task Load()
@@ -106,65 +167,198 @@
         {
             _editingProfileId = _config.ActiveProfileId;
             _status = "";
+            CaptureSavedSnapshots();
         }
         _loading = false;
     }
 
-    private void ChangeEditingProfile(ChangeEventArgs args)
+    private async Task ChangeEditingProfile(ChangeEventArgs args)
     {
-        _editingProfileId = args.Value?.ToString() ?? "";
+        var nextProfileId = args.Value?.ToString() ?? "";
+        if (string.IsNullOrWhiteSpace(nextProfileId) || string.Equals(nextProfileId, _editingProfileId, StringComparison.OrdinalIgnoreCase))
+            return;
+
+        if (IsEditingProfileDirty())
+        {
+            _pendingProfileId = nextProfileId;
+            _unsavedPromptVisible = true;
+            return;
+        }
+
+        _editingProfileId = nextProfileId;
+        _status = "";
+        await OnEditingProfileChanged.InvokeAsync(EditingProfile);
     }
 
-    private void CreateProfile()
+    private bool IsEditingProfileDirty()
+    {
+        var profile = EditingProfile;
+        if (profile == null) return false;
+        return !_savedProfileSnapshots.TryGetValue(profile.Id, out var savedSnapshot)
+            || !string.Equals(savedSnapshot, SerializeProfile(profile), StringComparison.Ordinal);
+    }
+
+    private void CaptureSavedSnapshots()
+    {
+        _savedProfileSnapshots.Clear();
+        if (_config == null) return;
+        foreach (var profile in _config.Profiles)
+            _savedProfileSnapshots[profile.Id] = SerializeProfile(profile);
+    }
+
+    private static string SerializeProfile(RcsProtocolProfileDto profile) => JsonSerializer.Serialize(profile);
+
+    private void CancelProfileChange()
+    {
+        _unsavedPromptVisible = false;
+        _pendingProfileId = "";
+    }
+
+    private async Task SaveAndContinue()
+    {
+        if (await PersistProfileAsync())
+        {
+            _editingProfileId = _pendingProfileId;
+            _status = "当前模板已保存。";
+            CancelProfileChange();
+            await OnEditingProfileChanged.InvokeAsync(EditingProfile);
+        }
+    }
+
+    private async Task DiscardAndContinue()
+    {
+        var discardedProfileId = _editingProfileId;
+        var isNewProfile = !_savedProfileSnapshots.ContainsKey(discardedProfileId);
+        RestoreEditingProfile();
+        _editingProfileId = _pendingProfileId;
+        _status = "已放弃未保存的修改。";
+        CancelProfileChange();
+        if (isNewProfile)
+        {
+            try { await Api.DeleteRcsProtocolProfileAsync(discardedProfileId); } catch { }
+        }
+        await OnEditingProfileChanged.InvokeAsync(EditingProfile);
+    }
+
+    private void RestoreEditingProfile()
+    {
+        if (_config == null || EditingProfile == null) return;
+        var profileId = EditingProfile.Id;
+        var profileIndex = _config.Profiles.FindIndex(p => string.Equals(p.Id, profileId, StringComparison.OrdinalIgnoreCase));
+        if (profileIndex < 0) return;
+
+        if (!_savedProfileSnapshots.TryGetValue(profileId, out var savedSnapshot))
+        {
+            _config.Profiles.RemoveAt(profileIndex);
+            return;
+        }
+
+        var savedProfile = JsonSerializer.Deserialize<RcsProtocolProfileDto>(savedSnapshot);
+        if (savedProfile != null) _config.Profiles[profileIndex] = savedProfile;
+    }
+
+    private Task SaveOrActivateProfile() => IsEditingActiveProfile ? SaveProfile() : ActivateProfile();
+
+    private async Task CreateProfile()
     {
         if (_config == null) return;
-        var source = EditingProfile ?? _config.Profiles.FirstOrDefault();
         var next = 1;
         while (_config.Profiles.Any(p => string.Equals(p.Id, $"RCS{next}", StringComparison.OrdinalIgnoreCase))) next++;
         var id = $"RCS{next}";
-        var profile = source == null
-            ? new RcsProtocolProfileDto { Id = id, Name = id, Operations = DefaultOperations() }
-            : JsonSerializer.Deserialize<RcsProtocolProfileDto>(JsonSerializer.Serialize(source))!;
-        profile.Id = id;
-        profile.Name = id;
+        var profile = new RcsProtocolProfileDto { Id = id, Name = id, Operations = [], FeatureModules = [], MockRules = [] };
         _config.Profiles.Add(profile);
         _editingProfileId = id;
-        _status = "新配置集已创建，请配置接口后保存。";
+        _status = "已创建空白配置集；HTTP 服务器和客户端均为空，请各配置一个搬运及移动接口后保存。";
+        await OnEditingProfileChanged.InvokeAsync(profile);
     }
 
     private async Task SaveProfile()
     {
-        if (_config == null) return;
-        _saving = true;
-        await MergePersistedProfileContents();
-        var result = await Api.SaveRcsProtocolProfilesAsync(_config);
-        if (result.Success)
+        if (await PersistProfileAsync()) _status = "配置已保存。";
+    }
+
+    private static string? ValidateTaskInterfaces(RcsProtocolProfileDto? profile)
+    {
+        if (profile == null) return "无法确定当前 RCS 模板。";
+        var modules = profile.FeatureModules ?? [];
+        var carryCount = modules.Count(module => string.Equals(module.TaskInterfaceType, TaskInterfaceTypes.Carry, StringComparison.OrdinalIgnoreCase));
+        var moveCount = modules.Count(module => string.Equals(module.TaskInterfaceType, TaskInterfaceTypes.Move, StringComparison.OrdinalIgnoreCase));
+        if (carryCount == 1 && moveCount == 1) return null;
+        return $"当前模板必须各配置一个搬运和移动任务接口；现状：搬运 {carryCount}/1，移动 {moveCount}/1。请到 HTTP 客户端模板中补齐或处理重复配置后再保存/切换。";
+    }
+
+    private static string? ValidateAllTaskInterfaces(IEnumerable<RcsProtocolProfileDto> profiles)
+    {
+        foreach (var profile in profiles)
         {
-            _config = result.Data ?? _config;
-            _status = "配置已保存。";
+            var validationMessage = ValidateTaskInterfaces(profile);
+            if (!string.IsNullOrWhiteSpace(validationMessage))
+                return $"RCS 类型「{profile.Name}」未配置完整。{validationMessage}";
         }
-        else _status = string.IsNullOrWhiteSpace(result.Message) ? "保存失败，请检查配置或后端连接。" : result.Message;
-        _saving = false;
+        return null;
+    }
+
+    private async Task<bool> PersistProfileAsync()
+    {
+        if (_config == null || _saving) return false;
+        _saving = true;
+        try
+        {
+            await MergePersistedProfileContents();
+            var validationMessage = ValidateAllTaskInterfaces(_config.Profiles);
+            if (!string.IsNullOrWhiteSpace(validationMessage))
+            {
+                _status = validationMessage;
+                return false;
+            }
+
+            var result = await Api.SaveRcsProtocolProfilesAsync(_config);
+            if (!result.Success)
+            {
+                _status = string.IsNullOrWhiteSpace(result.Message) ? "保存失败，请检查配置或后端连接。" : result.Message;
+                return false;
+            }
+
+            _config = result.Data ?? _config;
+            CaptureSavedSnapshots();
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _status = $"保存失败：{ex.Message}";
+            return false;
+        }
+        finally
+        {
+            _saving = false;
+        }
     }
 
     private async Task ActivateProfile()
     {
         if (_config == null || EditingProfile == null) return;
-        _saving = true;
-        await MergePersistedProfileContents();
-        var save = await Api.SaveRcsProtocolProfilesAsync(_config);
-        if (!save.Success)
+        if (!await PersistProfileAsync())
         {
-            _status = string.IsNullOrWhiteSpace(save.Message) ? "保存失败，未切换运行配置。" : save.Message;
-            _saving = false;
+            _status = string.IsNullOrWhiteSpace(_status) ? "保存失败，未切换运行配置。" : _status;
             return;
         }
-        _config = save.Data ?? _config;
-        var active = await Api.ActivateRcsProtocolProfileAsync(_editingProfileId);
-        _config = active.Data ?? _config;
-        _status = active.Success ? $"已切换到 {EditingProfile?.Name}；新任务将使用此模板集。" : "配置已保存，但切换失败。";
-        if (active.Success) await OnProfileActivated.InvokeAsync();
-        _saving = false;
+        try
+        {
+            _saving = true;
+            var active = await Api.ActivateRcsProtocolProfileAsync(_editingProfileId);
+            _config = active.Data ?? _config;
+            _status = active.Success ? $"已切换到 {EditingProfile?.Name}；新任务将使用此模板集。" : string.IsNullOrWhiteSpace(active.Message) ? "配置已保存，但切换失败。" : active.Message;
+            if (active.Success) await OnProfileActivated.InvokeAsync();
+            CaptureSavedSnapshots();
+        }
+        catch (Exception ex)
+        {
+            _status = $"配置已保存，但切换失败：{ex.Message}";
+        }
+        finally
+        {
+            _saving = false;
+        }
     }
 
     private async Task MergePersistedProfileContents()
@@ -185,10 +379,16 @@
     private async Task DeleteProfile()
     {
         if (_config == null || EditingProfile == null || _config.Profiles.Count <= 1) return;
-        var profileId = EditingProfile.Id;
-        var profileName = EditingProfile.Name;
-        var confirmed = await Js.InvokeAsync<bool>("confirm", $"确定删除 RCS 模板「{profileName}」吗？\n\n该模板中的接口模板、功能模板和 Mock 入站规则都会一并删除。此操作不可撤销。");
-        if (!confirmed) return;
+        var profileId = _deleteApproved ? _deleteProfileId : EditingProfile.Id;
+        var profileName = _deleteApproved ? _deleteProfileName : EditingProfile.Name;
+        if (!_deleteApproved)
+        {
+            _deleteProfileId = profileId;
+            _deleteProfileName = profileName;
+            _deletePromptVisible = true;
+            return;
+        }
+        _deleteApproved = false;
 
         _saving = true;
         _status = "正在删除模板…";
@@ -198,6 +398,7 @@
             _config = result.Data;
             _editingProfileId = _config.ActiveProfileId;
             _status = $"已删除「{profileName}」整套模板。";
+            await OnEditingProfileChanged.InvokeAsync(EditingProfile);
             await OnProfileActivated.InvokeAsync();
         }
         else
@@ -207,10 +408,80 @@
         _saving = false;
     }
 
-    private static List<RcsProtocolOperationTemplateDto> DefaultOperations() =>
-    [
-        new() { Key = "task.carry", Name = "搬运任务下发", HttpMethod = "POST", ApiPath = "/api/v1/task_receive", SuccessProperty = "success", SuccessValue = "true", TimeoutSeconds = 10 },
-        new() { Key = "task.move", Name = "移动任务下发", HttpMethod = "POST", ApiPath = "/api/RawOrder/ChangeFloor", TimeoutSeconds = 7 },
-    ];
+    private async Task ConfirmDeleteProfile()
+    {
+        if (_config == null || string.IsNullOrWhiteSpace(_deleteProfileId) || _saving) return;
+        var profileId = _deleteProfileId;
+        var profileName = _deleteProfileName;
+        _deletePromptVisible = false;
+        _saving = true;
+        _status = "正在删除模板…";
+        try
+        {
+            var persisted = await Api.GetRcsProtocolProfilesAsync();
+            if (persisted == null)
+            {
+                _status = "无法读取 RCS 模板列表，删除未执行。请检查 WCS 后端连接后重试。";
+                return;
+            }
+
+            var isPersisted = persisted.Profiles.Any(profile =>
+                string.Equals(profile.Id, profileId, StringComparison.OrdinalIgnoreCase));
+            if (isPersisted)
+            {
+                var result = await Api.DeleteRcsProtocolProfileAsync(profileId);
+                if (!result.Success || result.Data == null)
+                {
+                    _status = string.IsNullOrWhiteSpace(result.Message) ? "删除失败，请检查 WCS 后端连接。" : result.Message;
+                    return;
+                }
+                _config = result.Data;
+            }
+            else
+            {
+                _config.Profiles.RemoveAll(profile =>
+                    string.Equals(profile.Id, profileId, StringComparison.OrdinalIgnoreCase));
+                var fallback = _config.Profiles.FirstOrDefault();
+                if (string.Equals(_config.ActiveProfileId, profileId, StringComparison.OrdinalIgnoreCase))
+                    _config.ActiveProfileId = fallback?.Id ?? "";
+            }
+
+            var nextProfile = _config.Profiles.FirstOrDefault(profile =>
+                string.Equals(profile.Id, _config.ActiveProfileId, StringComparison.OrdinalIgnoreCase))
+                ?? _config.Profiles.FirstOrDefault();
+            _editingProfileId = nextProfile?.Id ?? "";
+            _status = $"已删除「{profileName}」，已切换到「{nextProfile?.Name ?? "其他 RCS 模板"}」。";
+            CaptureSavedSnapshots();
+            await OnEditingProfileChanged.InvokeAsync(nextProfile);
+            await OnProfileActivated.InvokeAsync();
+        }
+        catch (Exception ex)
+        {
+            _status = $"删除失败：{ex.Message}";
+        }
+        finally
+        {
+            _saving = false;
+            _deleteProfileId = "";
+            _deleteProfileName = "";
+        }
+    }
+
+    private Task RequestDeleteProfile()
+    {
+        if (_config == null || EditingProfile == null || _config.Profiles.Count <= 1 || _saving)
+            return Task.CompletedTask;
+        _deleteProfileId = EditingProfile.Id;
+        _deleteProfileName = EditingProfile.Name;
+        _deletePromptVisible = true;
+        return Task.CompletedTask;
+    }
+
+    private void CancelDeleteProfile()
+    {
+        _deletePromptVisible = false;
+        _deleteProfileId = "";
+        _deleteProfileName = "";
+    }
 
 }

@@ -64,15 +64,15 @@
             <div class="form-group"><label>RCS 地址</label><input @bind="_grcsBaseUrl" @bind:event="oninput" placeholder="http://localhost:8232" /></div>
         </div>
         <div class="settings-actions">
-            @if (_saving) { <span class="settings-saving">正在保存配置…</span> }
-            <button class="btn btn-primary" @onclick="SaveAsync" disabled="@_saving">💾 保存设置</button>
+            @if (_saving) { <span class="settings-saving">正在保存并应用配置…</span> }
+            <button class="btn btn-primary" @onclick="SaveAsync" disabled="@_saving">@(_saving ? "正在应用…" : "💾 保存设置")</button>
         </div>
         @if (!string.IsNullOrWhiteSpace(_settingsFeedback)) { <div class="settings-feedback @(_feedbackError ? "error" : "ok")">@_settingsFeedback</div> }
     </section>
 
     <section class="settings-notes">
         <div class="settings-note"><b>配置作用</b>WCS 后端地址用于页面 API 和 SignalR 连接；RCS 地址统一用于地图、车辆、库存、业务交互及任务下发；场景名称会写入发送给 RCS 的任务报文。</div>
-        <div class="settings-note"><b>保存方式</b>配置同时保存到浏览器运行时缓存和 WCS 后端数据库。后端保存成功后，其他页面会使用新配置。</div>
+        <div class="settings-note"><b>保存方式</b>先保存到指定 WCS 后端，再更新浏览器运行配置；保存按钮会等待实时连接与健康状态刷新完成。</div>
     </section>
 </div>
 
@@ -102,13 +102,21 @@
     private async Task SaveAsync()
     {
         if (_saving) return;
+        using var wcsConnectionTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        CancellationTokenSource? runtimeConnectionTimeout = null;
         _saving = true;
         _saved = false;
         _settingsFeedback = "";
+        _feedbackError = false;
+        var backendSettingsSaved = false;
+        await InvokeAsync(StateHasChanged);
         try
         {
-            await RuntimeConfig.SaveAsync(_wcsBaseUrl, _grcsBaseUrl, _warehouse);
-            var result = await WcsApi.PutWithStatusAsync("/api/wcs/auto/settings", new { grcsBaseUrl = _grcsBaseUrl, sceneName = _warehouse });
+            // 先在 5 秒窗口内持续探测用户填写的 WCS 地址，网络错误不会立刻结束保存。
+            await WcsApi.WaitUntilReachableAsync(_wcsBaseUrl, wcsConnectionTimeout.Token);
+
+            // WCS 可达后保存后端设置，再应用运行时连接配置。
+            var result = await WcsApi.PutWithStatusAsync("/api/wcs/auto/settings", new { grcsBaseUrl = _grcsBaseUrl, sceneName = _warehouse }, _wcsBaseUrl);
             if (!result.Ok)
             {
                 _feedbackError = true;
@@ -116,17 +124,31 @@
                 return;
             }
 
+            backendSettingsSaved = true;
+            runtimeConnectionTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            await RuntimeConfig.SaveAsync(_wcsBaseUrl, _grcsBaseUrl, _warehouse, runtimeConnectionTimeout.Token);
             _feedbackError = false;
             _settingsFeedback = "系统设置已保存，新的连接配置已生效。";
             _saved = true;
         }
+        catch (OperationCanceledException) when (wcsConnectionTimeout.IsCancellationRequested)
+        {
+            _feedbackError = true;
+            _settingsFeedback = "正在尝试连接 WCS；5 秒内仍无法连接，设置未保存。请检查 WCS 地址和服务状态。";
+        }
+        catch (OperationCanceledException) when (runtimeConnectionTimeout?.IsCancellationRequested == true)
+        {
+            _feedbackError = true;
+            _settingsFeedback = "后端设置已保存，但 5 秒内仍未连通 WCS/RCS；请检查地址和服务状态。";
+        }
         catch (Exception ex)
         {
             _feedbackError = true;
-            _settingsFeedback = $"保存失败：{ex.Message}";
+            _settingsFeedback = $"{(backendSettingsSaved ? "后端设置已保存，但连接检查失败" : "保存失败")}：{ex.Message}";
         }
         finally
         {
+            runtimeConnectionTimeout?.Dispose();
             _saving = false;
         }
     }

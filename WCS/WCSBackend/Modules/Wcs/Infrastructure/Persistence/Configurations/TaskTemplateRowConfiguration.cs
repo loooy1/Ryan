@@ -16,7 +16,8 @@ public class TaskTemplateRowConfiguration : IEntityTypeConfiguration<TaskTemplat
     public void Configure(EntityTypeBuilder<TaskTemplateRow> builder)
     {
         builder.ToTable("task_templates");
-        builder.HasKey(x => x.Value);
+        builder.HasKey(x => new { x.RcsType, x.Value });
+        builder.Property(x => x.RcsType).HasColumnName("rcs_type").HasMaxLength(64).IsRequired();
         builder.Property(x => x.Value).HasColumnName("value").IsRequired();
         builder.Property(x => x.Label).HasColumnName("label");
         builder.Property(x => x.NeedsContainer).HasColumnName("needs_container");

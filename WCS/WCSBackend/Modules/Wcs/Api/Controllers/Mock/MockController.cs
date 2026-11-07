@@ -15,23 +15,23 @@ namespace WCSBackend.Modules.Wcs.Console.Controllers;
 [Route("api/wcs/mocks")]
 public class MockRuleController : ControllerBase
 {
-    private readonly MockRuleStore _store;
+    private readonly RcsProtocolTemplateStore _store;
     private readonly IHubContext<TaskStageRealtimeHub> _hub;
-    public MockRuleController(MockRuleStore store, IHubContext<TaskStageRealtimeHub> hub)
+    public MockRuleController(RcsProtocolTemplateStore store, IHubContext<TaskStageRealtimeHub> hub)
     {
         _store = store;
         _hub = hub;
     }
 
     [HttpGet]
-    public ActionResult<object> GetAll() => Ok(new { success = true, items = _store.GetAll() });
+    public ActionResult<object> GetAll([FromQuery] string? profileId) => Ok(new { success = true, items = _store.GetMockRules(profileId) });
 
     [HttpPost]
-    public ActionResult<object> ReplaceAll([FromBody] List<MockRuleDto> items)
+    public ActionResult<object> ReplaceAll([FromBody] List<MockRuleDto> items, [FromQuery] string? profileId)
     {
-        _store.ReplaceAll(items ?? []);
+        _store.ReplaceMockRules(items ?? [], profileId);
         _ = _hub.Clients.All.SendAsync("ConfigurationChanged", "mock-rules");
-        return Ok(new { success = true, count = _store.GetAll().Count });
+        return Ok(new { success = true, count = _store.GetMockRules(profileId).Count });
     }
 }
 

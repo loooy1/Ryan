@@ -1,0 +1,45 @@
+@if (IsOpen)
+{
+    <div class="app-confirm-backdrop" @onclick="Cancel">
+        <section class="app-confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="app-confirm-title" @onclick:stopPropagation>
+            <header class="app-confirm-header">
+                <span class="app-confirm-icon @(IsDangerous ? "danger" : "")">@(IsDangerous ? "!" : "?")</span>
+                <h2 id="app-confirm-title">@Title</h2>
+                <button type="button" class="app-confirm-close" aria-label="关闭" @onclick="Cancel">×</button>
+            </header>
+            <div class="app-confirm-message">@Message</div>
+            <footer class="app-confirm-actions">
+                <button type="button" class="btn btn-outline" @onclick="Cancel">@CancelText</button>
+                <button type="button" class="btn @(IsDangerous ? "btn-danger" : "btn-primary")" @onclick="Confirm">@ConfirmText</button>
+            </footer>
+        </section>
+    </div>
+}
+
+<style>
+    .app-confirm-backdrop { position:fixed; inset:0; z-index:12000; display:grid; place-items:center; padding:20px; background:rgba(2,8,20,.72); backdrop-filter:blur(4px); }
+    .app-confirm-dialog { width:min(460px,96vw); border:1px solid #334b69; border-radius:15px; background:linear-gradient(150deg,#142238,#0b1526 75%); box-shadow:0 24px 80px rgba(0,0,0,.48); padding:20px; color:#e5eef9; animation:app-confirm-in .14s ease-out; }
+    .app-confirm-header { display:flex; align-items:center; gap:11px; padding-bottom:14px; border-bottom:1px solid #263a53; }
+    .app-confirm-header h2 { flex:1; margin:0; color:#f3f8ff; font-size:.98rem; font-weight:700; }
+    .app-confirm-icon { width:28px; height:28px; display:grid; place-items:center; border:1px solid #245e7b; border-radius:9px; background:rgba(14,116,144,.2); color:#67e8f9; font-weight:800; }
+    .app-confirm-icon.danger { border-color:#793b49; background:rgba(127,29,29,.2); color:#fda4af; }
+    .app-confirm-close { border:0; background:transparent; color:#91a4bc; font-size:1.3rem; line-height:1; cursor:pointer; }
+    .app-confirm-close:hover { color:#fff; }
+    .app-confirm-message { padding:17px 2px 20px; color:#c4d2e3; font-size:.83rem; line-height:1.7; white-space:pre-wrap; overflow-wrap:anywhere; }
+    .app-confirm-actions { display:flex; justify-content:flex-end; gap:9px; padding-top:13px; border-top:1px solid #263a53; }
+    @@keyframes app-confirm-in { from { opacity:0; transform:translateY(5px) scale(.985); } to { opacity:1; transform:translateY(0) scale(1); } }
+</style>
+
+@code {
+    [Parameter] public bool IsOpen { get; set; }
+    [Parameter] public string Title { get; set; } = "确认操作";
+    [Parameter] public string Message { get; set; } = "确定继续吗？";
+    [Parameter] public string ConfirmText { get; set; } = "确认";
+    [Parameter] public string CancelText { get; set; } = "取消";
+    [Parameter] public bool IsDangerous { get; set; }
+    [Parameter] public EventCallback OnConfirm { get; set; }
+    [Parameter] public EventCallback OnCancel { get; set; }
+
+    private Task Confirm() => OnConfirm.InvokeAsync();
+    private Task Cancel() => OnCancel.InvokeAsync();
+}

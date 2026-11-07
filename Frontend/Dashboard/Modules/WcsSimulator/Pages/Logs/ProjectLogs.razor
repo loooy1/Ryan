@@ -1,643 +1,1074 @@
 @namespace Dashboard.Modules.WcsSimulator.Pages
-@page "/wcs-simulator/project-logs"
+@page "/wcs-simulator/project-records"
 @inject IJSRuntime Js
 @inject WcsApiClient WcsApi
 @inject LocalStoreService LocalStore
 @using Dashboard.Modules.WcsSimulator.Services
-@using ClosedXML.Excel
+@using Microsoft.AspNetCore.Components.Forms
 
 <PageTitle>项目记录</PageTitle>
 
-<div class="section-card">
-    <div class="section-header collapsible" @onclick="ToggleList" title="点击折叠/展开">
-        📋 项目记录
-        <span class="badge-info">共 @_records.Count 条</span>
-        <span class="badge-info" style="background:rgba(248,113,113,0.15);color:#f87171;">待办 @_records.Count(r => r.Status == "pending") 条</span>
-        <span style="margin-left:auto;">
-            <button class="btn btn-outline btn-sm" @onclick="ExportExcel" disabled="@(_records.Count == 0)" style="margin-right:8px;" title="导出当前筛选结果为带样式的 Excel（日期按条数合并单元格）">⬇️ 导出 Excel</button>
-            <button class="btn btn-primary btn-sm" @onclick="OpenNew">➕ 新增日程</button>
-        </span>
-        <span class="collapse-arrow">@(IsCollapsed ? "▸ 展开" : "▾ 收起")</span>
+<div class="section-card project-records-page">
+    <div class="project-page-header">
+        <div>
+            <div class="project-workspace-eyebrow">PROJECT WORKSPACE</div>
+            <div style="display:flex;align-items:center;gap:4px;flex-wrap:wrap;">
+                <h1 style="margin:0;">项目记录</h1>
+                @if (!string.IsNullOrWhiteSpace(_currentProject))
+                {
+                    <span class="project-current-tag" style="margin-left:0;">● @_currentProject</span>
+                }
+            </div>
+            <p>为每个项目集中维护概览、风险、部署资料、数据和责任人。</p>
+        </div>
+        <div class="project-page-actions">
+            <button class="btn btn-outline" @onclick="DownloadProjectMarkdown"
+                    disabled="@(string.IsNullOrWhiteSpace(_currentProject) || _projectSectionsLoading || _projectSections.Count == 0)"
+                    title="下载不带折叠内容的 Markdown 项目记录">⬇ 下载 Markdown</button>
+            <button class="btn btn-outline" @onclick="DownloadProjectHtml"
+                    disabled="@(string.IsNullOrWhiteSpace(_currentProject) || _projectSectionsLoading || _projectSections.Count == 0)"
+                    title="下载可展开阅读的独立 HTML 项目记录">⬇ 下载 HTML</button>
+            <button class="btn btn-outline" @onclick="ExportProjectPdf"
+                    disabled="@(string.IsNullOrWhiteSpace(_currentProject) || _projectSectionsLoading || _projectSections.Count == 0)"
+                    title="直接下载项目记录 PDF 文件">⬇ 下载 PDF</button>
+        </div>
     </div>
-    @if (!IsCollapsed)
+
+    <div class="project-picker-panel">
+        <div class="project-picker-label"><span>当前项目</span><small>切换后显示该项目的资料分区</small></div>
+        @if (_projectsLoading)
+        {
+            <div class="project-picker-loading">正在读取项目…</div>
+        }
+        else if (_projects.Count > 0)
+        {
+            <select value="@_currentProject" @onchange="OnProjectChanged" aria-label="选择项目">
+                @foreach (var project in _projects)
+                {
+                    <option value="@project">@project</option>
+                }
+            </select>
+        }
+        else
+        {
+            <div class="project-picker-empty">还没有项目，点击“新建项目”开始建立项目资料。</div>
+        }
+        <button class="btn btn-primary btn-sm" @onclick="CreateProject">＋ 新建项目</button>
+        @if (!string.IsNullOrWhiteSpace(_currentProject))
+        {
+            <button class="btn btn-outline btn-sm" @onclick="OpenRenameProject">重命名</button>
+            <button class="btn btn-outline btn-sm project-delete-button" @onclick="DeleteProject">删除项目</button>
+        }
+    </div>
+
+    @if (!string.IsNullOrWhiteSpace(_currentProject))
     {
-        <div class="hint-text" style="margin-top:2px;">每日项目日程：记录日期、内容、状态（待办 / 已完成 / 搁置）与备注。数据存后端 MySQL，跨浏览器共享。</div>
-
-        @* ── 项目区（必选项目，数据按项目隔离）── *@
-        <div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;margin-top:10px;padding:10px 12px;border:1px solid #1e293b;border-radius:8px;background:#0f172a;">
-            <div class="form-group" style="width:200px;">
-                <label>当前项目</label>
-                @if (_projects.Count > 0)
-                {
-                    <select value="@_currentProject" @onchange="OnProjectChanged">
-                        @foreach (var p in _projects.Where(p => p.Length > 0))
-                        {
-                            <option value="@p">@p</option>
-                        }
-                    </select>
-                }
-                else
-                {
-                    <input type="text" value="暂无项目，请新建" disabled style="color:#64748b;" />
-                }
+        <section class="project-workspace">
+            <div class="project-workspace-heading">
+                <div>
+                    <h2>@_currentProject</h2>
+                    <p>点击分区查看或编辑。正文支持 Markdown，内容较长时可在弹窗内滚动阅读。</p>
+                </div>
+                <div class="project-workspace-meta">@_projectSections.Count 个资料分区</div>
             </div>
-            <button class="btn btn-primary btn-sm" @onclick="CreateProject">➕ 新建项目</button>
-            @if (_projects.Contains(_currentProject) && _currentProject.Length > 0)
+            @if (_projectSectionsLoading)
             {
-                <button class="btn btn-outline btn-sm" style="color:#f87171;" @onclick="DeleteProject" title="删除当前项目及其全部记录（不可恢复）">🗑 删除项目</button>
+                <div class="project-section-loading">正在读取项目资料…</div>
             }
-            <span class="badge-info" style="background:rgba(59,130,246,0.15);color:#93c5fd;">当前项目：@(string.IsNullOrEmpty(_currentProject) ? "—" : _currentProject)</span>
-        </div>
-
-        @* ── 搜索区（条件由后端过滤）── *@
-        <div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;margin-top:10px;padding:10px 12px;border:1px solid #1e293b;border-radius:8px;background:#0f172a;">
-            <div class="form-group" style="width:155px;">
-                <label>日期起</label>
-                <input type="date" value="@_qDateFrom" @onchange="OnDateFromChanged" />
-            </div>
-            <div class="form-group" style="width:155px;">
-                <label>日期止</label>
-                <input type="date" value="@_qDateTo" @onchange="OnDateToChanged" />
-            </div>
-            <div class="form-group" style="width:130px;">
-                <label>状态</label>
-                <select @bind="_qStatus">
-                    <option value="">全部</option>
-                    <option value="pending">待办</option>
-                    <option value="done">已完成</option>
-                    <option value="cancelled">搁置</option>
-                </select>
-            </div>
-            <button class="btn btn-primary btn-sm" @onclick="SearchAsync">🔍 搜索</button>
-            <button class="btn btn-outline btn-sm" @onclick="ResetSearch">重置</button>
-            @if (!string.IsNullOrEmpty(_currentQuery))
+            else if (_projectSections.Count == 0)
             {
-                <span class="badge-info" style="background:rgba(59,130,246,0.15);color:#93c5fd;">筛选结果 @_records.Count 条</span>
+                <div class="project-section-loading">项目资料暂时无法加载，请检查 WCS 后端连接。</div>
             }
-        </div>
+            else
+            {
+                <div class="project-section-grid">
+                    @foreach (var section in _projectSections)
+                    {
+                        <button class="project-section-card" @onclick="() => OpenProjectSection(section)">
+                            <span class="project-section-icon">@SectionIcon(section.Key)</span>
+                            <span class="project-section-copy"><strong>@section.Title</strong><span>@SectionSummary(section)</span></span>
+                            <span class="project-section-open">打开 →</span>
+                        </button>
+                    }
+                </div>
+            }
+        </section>
+    }
 
-        @if (_loading)
-        {
-            <div class="hint-text" style="margin-top:8px;">⏳ 加载中...</div>
-        }
-        else if (_records.Count == 0)
-        {
-            <div class="hint-text" style="margin-top:8px;">暂无日程，点击「➕ 新增日程」添加第一条</div>
-        }
-else
-        {
-            <div style="margin-top:8px;">
-                @foreach (var g in Groups)
-                {
-                    var expanded = IsDayExpanded(g.Key);
-                    <div class="pl-day-block">
-                        <div class="pl-day-header" @onclick="() => ToggleDay(g.Key)" title="点击展开/收起当天日程">
-                            <span style="font-weight:600;font-family:Consolas,monospace;color:#e2e8f0;">📅 @g.Key</span>
-                            <span class="badge-info">@g.Count() 条</span>
-                            <span class="badge-info" style="background:rgba(248,113,113,0.15);color:#f87171;">待办 @g.Count(x => x.Status == "pending") 条</span>
-                            <span style="margin-left:auto;color:#64748b;">@(expanded ? "▾" : "▸")</span>
-                        </div>
-                        @if (expanded)
-                        {
-                            <table class="data-table" style="margin-top:6px;">
-                                <tbody>
-                                    @{ var gi = 0; }
-                                    @foreach (var r in g)
-                                    {
-                                        gi++;
-                                        <tr>
-                                            <td style="width:40px;font-weight:600;color:#64748b;">@gi</td>
-                                            <td style="max-width:15em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="@r.Content">@r.Content</td>
-                                            <td style="width:100px;">
-                                                <span class="badge-info" style="display:inline-block;width:88px;text-align:center;background:@(StatusMeta(r.Status).bg);color:@(StatusMeta(r.Status).fg);">
-                                                    @StatusMeta(r.Status).label
-                                                </span>
-                                            </td>
-                                            <td>@(string.IsNullOrEmpty(r.Remark) ? "—" : r.Remark)</td>
-                                            <td style="width:180px;">
-                                                @if (r.Status == "pending" || r.Status == "cancelled")
-                                                {
-                                                    <button class="btn btn-outline btn-xs" @onclick="() => ToggleDone(r)" title="标记为已完成">✔ 完成</button>
-                                                }
-                                                <button class="btn btn-outline btn-xs" @onclick="() => OpenEdit(r)">✏️ 编辑</button>
-                                                <button class="btn btn-outline btn-xs" style="color:#f87171;" @onclick="() => Remove(r)">🗑 删除</button>
-                                            </td>
-                                        </tr>
-                                    }
-                                </tbody>
-                            </table>
-                        }
-                    </div>
-                }
-            </div>
-        }
-
-        @if (!string.IsNullOrEmpty(_feedback))
-        {
-            <div class="response-panel @(_feedbackClass)" style="margin-top:8px;">@_feedback</div>
-        }
+    @if (!string.IsNullOrWhiteSpace(_feedback))
+    {
+        <div class="response-panel @(_feedbackClass)" style="margin-top:14px;">@_feedback</div>
     }
 </div>
 
-@* ── 新增 / 编辑弹窗 ── *@
-@if (_showEditor)
+@if (_activeProjectSection != null)
 {
-    <div class="template-modal-overlay" @onclick="CloseEditor">
-        <div class="template-modal tpl-modal mod-modal" @onclick:stopPropagation style="max-width:520px;">
-            <div class="tpl-modal-header">
-                <div class="tpl-modal-title">
-                    <span class="tpl-modal-icon">📋</span>
-                    <div>
-                        <div class="tpl-modal-title-text">@(_editingNew ? "新增日程" : "编辑日程")</div>
-                        <div class="tpl-modal-sub">记录每天的项目日程，按日期倒序展示</div>
-                    </div>
+    <div class="template-modal-overlay project-section-overlay" @onclick="CloseProjectSection">
+        <div class="project-section-modal" @onclick:stopPropagation>
+            <header class="project-section-modal-header">
+                <div class="project-section-modal-title">
+                    <span class="project-section-icon">@SectionIcon(_activeProjectSection.Key)</span>
+                    <div><h2>@_activeProjectSection.Title</h2><p>@_currentProject · Markdown 项目资料</p></div>
                 </div>
-                <button type="button" class="tpl-modal-close" @onclick="CloseEditor" title="关闭">✕</button>
-            </div>
-            <div class="tpl-modal-body">
-                <div class="form-section-title">🗓 日程信息</div>
-                <div class="form-group">
-                    <label>所属项目</label>
-                    <select @bind="_editProject">
-                        @foreach (var p in _projects.Where(p => p.Length > 0))
-                        {
-                            <option value="@p">@p</option>
-                        }
-                    </select>
-                    <div class="hint-text">切换项目可把这条日程移动到其他项目</div>
+                <div class="project-section-modal-actions">
+                    <label class="btn btn-outline project-upload-label" title="上传 Markdown 文件到当前分区">
+                        ⬆ 上传 Markdown
+                        <InputFile class="project-upload-input" accept=".md,.markdown,text/markdown" OnChange="UploadMarkdownFile" />
+                    </label>
+                    <button class="btn btn-outline" @onclick="ToggleSectionEdit">@(_sectionEditing ? "👁 预览" : "✏ 编辑")</button>
+                    @if (_sectionEditing)
+                    {
+                        <button class="btn btn-primary" @onclick="SaveProjectSection" disabled="@_sectionSaving">@(_sectionSaving ? "保存中…" : "保存资料")</button>
+                    }
+                    <button class="tpl-modal-close" @onclick="CloseProjectSection" title="关闭">✕</button>
                 </div>
-                <div class="form-group">
-                    <label>日期 <span class="req-star">*</span></label>
-                    <input type="date" value="@_editLogDate" @onchange="OnEditDateChanged" />
-                </div>
-                <div class="form-group">
-                    <label>内容 <span class="req-star">*</span></label>
-                    <textarea @bind="_editContent" rows="3" placeholder="今天的项目日程，如：完成设备联调、跟进 RCS 排车问题等"></textarea>
-                </div>
-                <div class="form-group">
-                    <label>状态</label>
-                    <select @bind="_editStatus">
-                        <option value="pending">待办</option>
-                        <option value="done">已完成</option>
-                        <option value="cancelled">搁置</option>
-                    </select>
-                </div>
-                <div class="form-group">
-                    <label>备注</label>
-                    <textarea @bind="_editRemark" rows="2" placeholder="补充说明（可空）"></textarea>
-                </div>
-
-                @if (!string.IsNullOrEmpty(_editError))
+            </header>
+            <div class="project-section-modal-body">
+                @if (_sectionEditing)
                 {
-                    <div class="tpl-error">@_editError</div>
+                    <div class="project-markdown-editor">
+                        <div class="project-line-editor-toolbar">
+                            <div><strong>分条填写</strong><span>每个内容块单独编辑，保存时自动排版。</span></div>
+                            <div class="project-line-add-actions">
+                                <button class="btn btn-outline btn-sm project-line-delete" @onclick="ClearAllContentLines" disabled="@(_sectionLines.Count == 0)" title="清空当前分区的全部内容，保存后生效">清空所有栏</button>
+                                <button class="btn btn-outline btn-sm" @onclick='() => AddContentLine("paragraph")'>＋ 正文</button>
+                                <button class="btn btn-outline btn-sm" @onclick='() => AddContentLine("heading")'>＋ 标题</button>
+                                <button class="btn btn-outline btn-sm" @onclick='() => AddContentLine("bullet")'>＋ 列表项</button>
+                            </div>
+                        </div>
+                        @if (_sectionLines.Count == 0)
+                        {
+                            <div class="project-line-empty">还没有内容，点击上方按钮添加一条。</div>
+                        }
+                        <div class="project-line-list">
+                            @for (var i = 0; i < _sectionLines.Count; i++)
+                            {
+                                var index = i;
+                                var line = _sectionLines[index];
+                                <div class="project-line-row">
+                                    <select class="project-line-kind" @bind="line.Kind" aria-label="内容类型">
+                                        <option value="paragraph">正文</option>
+                                        <option value="heading">标题</option>
+                                        <option value="bullet">列表项</option>
+                                        <option value="quote">引用</option>
+                                        <option value="literal">代码/原文</option>
+                                    </select>
+                                    @if (line.Kind == "heading")
+                                    {
+                                        <select class="project-line-kind" @bind="line.HeadingLevel" aria-label="标题级别">
+                                            <option value="1">H1</option><option value="2">H2</option><option value="3">H3</option>
+                                            <option value="4">H4</option><option value="5">H5</option><option value="6">H6</option>
+                                        </select>
+                                    }
+                                    <textarea @bind="line.Text" @bind:event="oninput" rows="@(line.Text.Length > 90 ? 3 : 1)" placeholder="输入这一条内容…"></textarea>
+                                    <div class="project-line-controls">
+                                        <button class="btn btn-outline btn-xs" @onclick="() => MoveContentLine(index, -1)" disabled="@(index == 0)" title="上移">↑</button>
+                                        <button class="btn btn-outline btn-xs" @onclick="() => MoveContentLine(index, 1)" disabled="@(index == _sectionLines.Count - 1)" title="下移">↓</button>
+                                        <button class="btn btn-outline btn-xs project-line-delete" @onclick="() => RemoveContentLine(index)" title="删除此条">删除</button>
+                                    </div>
+                                </div>
+                            }
+                        </div>
+                    </div>
+                }
+                else if (string.IsNullOrWhiteSpace(_sectionDraft))
+                {
+                    <div class="project-markdown-empty"><span>📝</span><h3>这个分区还没有内容</h3><p>点击右上角“编辑”，开始填写项目资料。</p></div>
+                }
+                else
+                {
+                    <article class="project-markdown-preview">@((MarkupString)RenderMarkdown(_sectionDraft))</article>
+                }
+                @if (!string.IsNullOrWhiteSpace(_sectionError))
+                {
+                    <div class="response-panel error" style="margin-top:12px;">@_sectionError</div>
+                }
+                @if (!string.IsNullOrWhiteSpace(_sectionSavedAt) && !_sectionEditing)
+                {
+                    <div class="project-section-updated">最近保存：@_sectionSavedAt</div>
                 }
             </div>
-            <div class="tpl-modal-footer">
-                <button class="btn btn-outline" @onclick="CloseEditor">取消</button>
-                <button class="btn btn-primary" @onclick="Save" disabled="@(_saving || string.IsNullOrWhiteSpace(_editLogDate) || string.IsNullOrWhiteSpace(_editContent))">
-                    @(_saving ? "⏳ 保存中..." : "✅ 保存")
-                </button>
-            </div>
         </div>
     </div>
 }
 
-@* ── 系统风格密码对话框（行删除 / 删除项目）── *@
-@if (_passwordVisible)
-{
-    <div class="template-modal-overlay" @onclick="CancelPassword">
-        <div class="tpl-modal" @onclick:stopPropagation style="max-width:420px;">
-            <div class="tpl-modal-header">
-                <div class="tpl-modal-title">🔒 @_passwordTitle</div>
-                <button class="tpl-modal-close" @onclick="CancelPassword" title="关闭">✕</button>
-            </div>
-            <div class="tpl-modal-body">
-                <div class="hint-text" style="white-space:pre-wrap;color:#e2e8f0;margin-bottom:10px;">@_passwordMessage</div>
-                <input type="password" @bind="_passwordValue" placeholder="请输入删除密码" style="width:100%;" />
-            </div>
-            <div class="tpl-modal-footer" style="display:flex;gap:10px;justify-content:flex-end;margin-top:12px;">
-                <button class="btn btn-danger" @onclick="PasswordConfirm" disabled="@(string.IsNullOrEmpty(_passwordValue))">确认删除</button>
-                <button class="btn btn-outline" @onclick="CancelPassword">取消</button>
-            </div>
-        </div>
-    </div>
-}
-
-@* ── 系统风格新建项目弹窗 ── *@
 @if (_newProjectVisible)
 {
     <div class="template-modal-overlay" @onclick="CancelNewProject">
-        <div class="tpl-modal" @onclick:stopPropagation style="max-width:420px;">
-            <div class="tpl-modal-header">
-                <div class="tpl-modal-title">📝 新建项目</div>
-                <button class="tpl-modal-close" @onclick="CancelNewProject" title="关闭">✕</button>
-            </div>
+        <div class="tpl-modal" @onclick:stopPropagation style="max-width:460px;">
+            <div class="tpl-modal-header"><div class="tpl-modal-title">新建项目</div><button class="tpl-modal-close" @onclick="CancelNewProject">✕</button></div>
             <div class="tpl-modal-body">
-                <div class="hint-text" style="color:#e2e8f0;margin-bottom:10px;">输入新项目名，新建记录将归属该项目。</div>
-                <input type="text" @bind="_newProjectValue" placeholder="输入项目名" style="width:100%;" />
+                <div class="hint-text" style="margin-bottom:12px;">新项目会自动建立项目概览、风险、部署文档、项目数据、责任人和补充说明分区。</div>
+                <input type="text" @bind="_newProjectValue" @bind:event="oninput" maxlength="191" placeholder="输入项目名称" style="width:100%;" />
+                @if (!string.IsNullOrWhiteSpace(_newProjectError)) { <div class="tpl-error" style="margin-top:10px;">@_newProjectError</div> }
             </div>
-            <div class="tpl-modal-footer" style="display:flex;gap:10px;justify-content:flex-end;margin-top:12px;">
-                <button class="btn btn-primary" @onclick="NewProjectConfirm" disabled="@(string.IsNullOrWhiteSpace(_newProjectValue))">确认</button>
+            <div class="tpl-modal-footer">
                 <button class="btn btn-outline" @onclick="CancelNewProject">取消</button>
+                <button class="btn btn-primary" @onclick="NewProjectConfirm" disabled="@(_creatingProject || string.IsNullOrWhiteSpace(_newProjectValue))">@(_creatingProject ? "创建中…" : "创建项目")</button>
             </div>
         </div>
     </div>
 }
 
-@* ── 系统风格提示弹窗（导出失败等）── *@
-@if (_noticeVisible)
+@if (_passwordVisible)
 {
-    <div class="template-modal-overlay" @onclick="CloseNotice">
-        <div class="tpl-modal" @onclick:stopPropagation style="max-width:420px;">
-            <div class="tpl-modal-header">
-                <div class="tpl-modal-title">⚠️ @_noticeTitle</div>
-                <button class="tpl-modal-close" @onclick="CloseNotice" title="关闭">✕</button>
-            </div>
+    <div class="template-modal-overlay" @onclick="CancelPassword">
+        <div class="tpl-modal" @onclick:stopPropagation style="max-width:440px;">
+            <div class="tpl-modal-header"><div class="tpl-modal-title">🔒 删除项目</div><button class="tpl-modal-close" @onclick="CancelPassword">✕</button></div>
             <div class="tpl-modal-body">
-                <div class="hint-text" style="white-space:pre-wrap;color:#e2e8f0;">@_noticeMessage</div>
+                <div class="hint-text" style="white-space:pre-wrap;color:#e2e8f0;margin-bottom:12px;">@_passwordMessage</div>
+                <input type="password" @bind="_passwordValue" placeholder="请输入删除密码" style="width:100%;" />
             </div>
-            <div class="tpl-modal-footer" style="display:flex;gap:10px;justify-content:flex-end;margin-top:12px;">
-                <button class="btn btn-primary" @onclick="CloseNotice">知道了</button>
+            <div class="tpl-modal-footer">
+                <button class="btn btn-outline" @onclick="CancelPassword">取消</button>
+                <button class="btn btn-danger" @onclick="PasswordConfirm" disabled="@(string.IsNullOrEmpty(_passwordValue))">确认删除</button>
+            </div>
+        </div>
+    </div>
+}
+
+@if (_renameVisible)
+{
+    <div class="template-modal-overlay" @onclick="CancelRenameProject">
+        <div class="tpl-modal" @onclick:stopPropagation style="max-width:460px;">
+            <div class="tpl-modal-header"><div class="tpl-modal-title">✏ 重命名项目</div><button class="tpl-modal-close" @onclick="CancelRenameProject">✕</button></div>
+            <div class="tpl-modal-body">
+                <div class="form-group"><label>新项目名称</label><input type="text" @bind="_renameProjectValue" @bind:event="oninput" maxlength="191" /></div>
+                <div class="form-group"><label>密码</label><input type="password" @bind="_renamePasswordValue" placeholder="请输入密码" /></div>
+                @if (!string.IsNullOrWhiteSpace(_renameError)) { <div class="tpl-error">@_renameError</div> }
+            </div>
+            <div class="tpl-modal-footer">
+                <button class="btn btn-outline" @onclick="CancelRenameProject">取消</button>
+                <button class="btn btn-primary" @onclick="ConfirmRenameProject" disabled="@(_renamingProject || string.IsNullOrWhiteSpace(_renameProjectValue) || string.IsNullOrWhiteSpace(_renamePasswordValue))">@(_renamingProject ? "重命名中…" : "确认重命名")</button>
             </div>
         </div>
     </div>
 }
 
 @code {
-    private List<ProjectLogDto> _records = [];
-    private bool _loading;
-    private bool _saving;
-    private string _feedback = "";
-    private string _feedbackClass = "";
-    private bool _collapsed = false;
-    private bool IsCollapsed => _collapsed;
-    private Task ToggleList() { _collapsed = !_collapsed; StateHasChanged(); return Task.CompletedTask; }
-
-    // ── 搜索条件（后端过滤，默认今天）──
-    private string _qDateFrom = "";
-    private string _qDateTo = "";
-    private string _qStatus = "";
-    private string? _currentQuery;
-
-    // ── 编辑状态 ──
-    private bool _showEditor;
-    private bool _editingNew;
-    private long _editId;
-    private string _editLogDate = "";
-    private string _editContent = "";
-    private string _editStatus = "pending";
-    private string _editProject = "";
-    private string _editRemark = "";
-    private string _editError = "";
-
-    // ── 按天展开：_expandedDays 为空 = 全折叠；默认只展开今天 ──
-    private HashSet<string> _expandedDays = [];
-
-    private List<IGrouping<string, ProjectLogDto>> Groups => _records.GroupBy(r => r.LogDate).ToList();
-
-    private bool IsDayExpanded(string date) => _expandedDays.Contains(date);
-
-    private void ToggleDay(string date)
-    {
-        if (_expandedDays.Contains(date)) _expandedDays.Remove(date);
-        else _expandedDays.Add(date);
-    }
-
-    // ── 项目区：必选项目，数据按项目隔离；当前项目记 localStorage ──
     private const string ProjectStoreKey = "grcs_pl_project";
     private List<string> _projects = [];
+    private List<ProjectSectionDto> _projectSections = [];
     private string _currentProject = "";
+    private bool _projectsLoading;
+    private bool _projectSectionsLoading;
     private bool _newProjectVisible;
+    private bool _creatingProject;
     private string _newProjectValue = "";
+    private string _newProjectError = "";
+    private ProjectSectionDto? _activeProjectSection;
+    private List<ProjectContentLine> _sectionLines = [];
+    private string _sectionDraft = "";
+    private string? _uploadedMarkdownOriginal;
+    private string? _uploadedMarkdownLinesSnapshot;
+    private string _sectionSavedAt = "";
+    private string _sectionError = "";
+    private bool _sectionEditing;
+    private bool _sectionSaving;
+    private string _feedback = "";
+    private string _feedbackClass = "";
+    private bool _passwordVisible;
+    private string _passwordValue = "";
+    private string _passwordMessage = "";
+    private bool _renameVisible;
+    private bool _renamingProject;
+    private string _renameProjectValue = "";
+    private string _renamePasswordValue = "";
+    private string _renameError = "";
 
-    private async Task LoadProjectsAsync()
+    protected override async Task OnInitializedAsync()
     {
-        try { _projects = await WcsApi.GetAsync<List<string>>("/api/wcs/project-logs/projects") ?? []; }
-        catch { _projects = []; }
+        _projectsLoading = true;
+        try
+        {
+            _projects = (await WcsApi.GetAsync<List<ProjectWorkspaceDto>>("/api/wcs/projects") ?? [])
+                .Select(project => project.Name).Where(name => !string.IsNullOrWhiteSpace(name)).ToList();
+            var saved = LocalStore.Get(ProjectStoreKey);
+            _currentProject = !string.IsNullOrWhiteSpace(saved) && _projects.Contains(saved)
+                ? saved
+                : _projects.FirstOrDefault() ?? "";
+        }
+        catch (Exception ex) { ShowFeedback("项目列表加载失败：" + ex.Message, "error"); }
+        finally { _projectsLoading = false; }
+        await LoadProjectSectionsAsync();
     }
 
     private async Task OnProjectChanged(Microsoft.AspNetCore.Components.ChangeEventArgs e)
     {
         _currentProject = e.Value?.ToString() ?? "";
         await LocalStore.SetAsync(Js, ProjectStoreKey, _currentProject);
-        await SearchAsync();
+        CloseProjectSection();
+        await LoadProjectSectionsAsync();
     }
 
-    private void CreateProject() { _newProjectValue = ""; _newProjectVisible = true; }
+    private async Task LoadProjectSectionsAsync()
+    {
+        _projectSectionsLoading = true;
+        _projectSections = [];
+        try
+        {
+            if (!string.IsNullOrWhiteSpace(_currentProject))
+                _projectSections = await WcsApi.GetAsync<List<ProjectSectionDto>>($"/api/wcs/projects/{Uri.EscapeDataString(_currentProject)}/sections") ?? [];
+        }
+        catch (Exception ex) { ShowFeedback("项目资料加载失败：" + ex.Message, "error"); }
+        finally { _projectSectionsLoading = false; }
+    }
+
+    private void CreateProject()
+    {
+        _newProjectValue = "";
+        _newProjectError = "";
+        _newProjectVisible = true;
+    }
 
     private void CancelNewProject() => _newProjectVisible = false;
 
     private async Task NewProjectConfirm()
     {
         var name = _newProjectValue.Trim();
-        _newProjectVisible = false;
-        if (name.Length == 0) { ShowFeedback("⚠ 请输入项目名", "error"); return; }
-        if (!_projects.Contains(name)) _projects.Add(name);
-        _currentProject = name;
-        await LocalStore.SetAsync(Js, ProjectStoreKey, name);
-        ShowFeedback($"✅ 已切换到项目「{name}」（新建日程将归属该项目）", "success");
-        await SearchAsync();
-    }
-
-    /// <summary>删除当前项目及其全部记录（需密码，不可恢复）。</summary>
-    private void DeleteProject() =>
-        ShowPassword("删除项目", $"删除项目「{_currentProject}」将删除其全部 {_records.Count} 条日程，不可恢复！请输入删除密码：", async pwd =>
-        {
-            if (pwd != "wayzim") { ShowFeedback("❌ 密码错误，未删除", "error"); return; }
-            try
-            {
-                var deletedName = _currentProject;
-                await WcsApi.DeleteAsync($"/api/wcs/project-logs/projects/{Uri.EscapeDataString(_currentProject)}?password={Uri.EscapeDataString(pwd)}");
-                _projects.Remove(_currentProject);
-                _currentProject = _projects.FirstOrDefault(p => p.Length > 0) ?? "";
-                await LocalStore.SetAsync(Js, ProjectStoreKey, _currentProject);
-                ShowFeedback($"🗑 已删除项目「{deletedName}」（其全部记录已清除）", "success");
-                await SearchAsync();
-            }
-            catch (Exception ex) { ShowFeedback("❌ " + ex.Message, "error"); }
-        });
-
-    // ── 系统风格对话框：删除密码 / 提示 ──
-    private bool _passwordVisible;
-    private string _passwordTitle = "";
-    private string _passwordMessage = "";
-    private string _passwordValue = "";
-    private Func<string, Task>? _passwordAction;
-
-    private void ShowPassword(string title, string message, Func<string, Task> action) { _passwordTitle = title; _passwordMessage = message; _passwordAction = action; _passwordValue = ""; _passwordVisible = true; }
-    private void CancelPassword() { _passwordVisible = false; _passwordAction = null; }
-    private async Task PasswordConfirm() { var act = _passwordAction; var v = _passwordValue; _passwordVisible = false; _passwordAction = null; if (act != null) await act(v); }
-
-    private bool _noticeVisible;
-    private string _noticeTitle = "";
-    private string _noticeMessage = "";
-
-    private void ShowNotice(string title, string message) { _noticeTitle = title; _noticeMessage = message; _noticeVisible = true; }
-    private void CloseNotice() => _noticeVisible = false;
-
-    private void OnDateFromChanged(Microsoft.AspNetCore.Components.ChangeEventArgs e) => _qDateFrom = e.Value?.ToString() ?? "";
-    private void OnDateToChanged(Microsoft.AspNetCore.Components.ChangeEventArgs e) => _qDateTo = e.Value?.ToString() ?? "";
-    private void OnEditDateChanged(Microsoft.AspNetCore.Components.ChangeEventArgs e) => _editLogDate = e.Value?.ToString() ?? "";
-
-    protected override async Task OnInitializedAsync()
-    {
-        await LoadProjectsAsync();
-        var saved = LocalStore.Get(ProjectStoreKey);
-        if (!string.IsNullOrEmpty(saved) && _projects.Contains(saved)) _currentProject = saved;
-        else if (_projects.Count > 0) _currentProject = _projects[0];
-        _qDateFrom = DateTime.Now.ToString("yyyy-MM-dd");
-        _qDateTo = _qDateFrom;
-        _expandedDays.Add(_qDateFrom);
-        await SearchAsync();
-    }
-
-    private async Task LoadAsync(string? query = null)
-    {
-        _currentQuery = query;
-        _loading = true;
+        if (name.Length == 0) { _newProjectError = "请输入项目名称"; return; }
+        if (_projects.Contains(name, StringComparer.OrdinalIgnoreCase)) { _newProjectError = "该项目名称已存在"; return; }
+        _creatingProject = true;
+        _newProjectError = "";
         try
         {
-            _records = await WcsApi.GetAsync<List<ProjectLogDto>>("/api/wcs/project-logs" + (query ?? "")) ?? [];
+            var result = await WcsApi.PostAsync<object, ProjectCreateResult>("/api/wcs/projects", new { name });
+            if (result?.Success != true) { _newProjectError = result?.Message ?? "创建失败，请检查 WCS 后端连接"; return; }
+            _projects.Add(name);
+            _currentProject = name;
+            await LocalStore.SetAsync(Js, ProjectStoreKey, name);
+            _newProjectVisible = false;
+            await LoadProjectSectionsAsync();
+            ShowFeedback($"已创建项目“{name}”", "success");
         }
-        catch { _records = []; }
-        finally { _loading = false; StateHasChanged(); }
+        catch (Exception ex) { _newProjectError = "创建失败：" + ex.Message; }
+        finally { _creatingProject = false; }
     }
 
-    private async Task SearchAsync()
+    private void DeleteProject()
     {
-        var ps = new List<string> { "project=" + Uri.EscapeDataString(_currentProject) };
-        if (!string.IsNullOrWhiteSpace(_qDateFrom)) ps.Add("dateFrom=" + Uri.EscapeDataString(_qDateFrom.Trim()));
-        if (!string.IsNullOrWhiteSpace(_qDateTo)) ps.Add("dateTo=" + Uri.EscapeDataString(_qDateTo.Trim()));
-        if (!string.IsNullOrWhiteSpace(_qStatus)) ps.Add("status=" + Uri.EscapeDataString(_qStatus.Trim()));
-        await LoadAsync("?" + string.Join("&", ps));
+        _passwordValue = "";
+        _passwordMessage = $"确认删除项目“{_currentProject}”及其资料吗？此操作不可恢复。请输入删除密码：";
+        _passwordVisible = true;
     }
 
-    private void ResetSearch()
+    private void OpenRenameProject()
     {
-        _qDateFrom = "";
-        _qDateTo = "";
-        _qStatus = "";
-        _ = SearchAsync();
+        _renameProjectValue = _currentProject;
+        _renamePasswordValue = "";
+        _renameError = "";
+        _renameVisible = true;
     }
 
-    private void OpenNew()
-    {
-        _editingNew = true;
-        _editId = 0;
-        _editLogDate = DateTime.Now.ToString("yyyy-MM-dd");
-        _editContent = "";
-        _editStatus = "pending";
-        _editProject = _currentProject;
-        _editRemark = "";
-        _editError = "";
-        _showEditor = true;
-    }
+    private void CancelRenameProject() => _renameVisible = false;
 
-    private void OpenEdit(ProjectLogDto r)
+    private async Task ConfirmRenameProject()
     {
-        _editingNew = false;
-        _editId = r.Id;
-        _editLogDate = r.LogDate;
-        _editContent = r.Content;
-        _editStatus = r.Status ?? "pending";
-        _editProject = r.Project ?? "";
-        _editRemark = r.Remark ?? "";
-        _editError = "";
-        _showEditor = true;
-    }
+        var newName = _renameProjectValue.Trim();
+        if (newName.Length == 0) { _renameError = "项目名称不能为空"; return; }
+        if (newName.Length > 191) { _renameError = "项目名称不能超过 191 个字符"; return; }
+        if (newName == _currentProject) { _renameVisible = false; return; }
 
-    private void CloseEditor()
-    {
-        _showEditor = false;
-        _saving = false;
-        _editError = "";
-    }
-
-    private async Task Save()
-    {
-        if (string.IsNullOrWhiteSpace(_editLogDate)) { _editError = "❌ 请选择日期"; return; }
-        if (string.IsNullOrWhiteSpace(_editContent)) { _editError = "❌ 请填写日程内容"; return; }
-        _saving = true;
+        _renamingProject = true;
+        _renameError = "";
         try
         {
-            var rec = new ProjectLogDto
+            var oldName = _currentProject;
+            var (ok, statusCode, json) = await WcsApi.PutWithStatusAsync(
+                $"/api/wcs/projects/{Uri.EscapeDataString(oldName)}",
+                new { NewName = newName, Password = _renamePasswordValue });
+            if (!ok) throw new InvalidOperationException(ReadApiMessage(json, $"重命名失败（HTTP {statusCode}）"));
+
+            var index = _projects.IndexOf(oldName);
+            if (index >= 0) _projects[index] = newName;
+            _currentProject = newName;
+            await LocalStore.SetAsync(Js, ProjectStoreKey, newName);
+            _renameVisible = false;
+            CloseProjectSection();
+            await LoadProjectSectionsAsync();
+            ShowFeedback($"项目已重命名为“{newName}”", "success");
+        }
+        catch (Exception ex) { _renameError = ex.Message; }
+        finally { _renamingProject = false; }
+    }
+
+    private static string ReadApiMessage(string json, string fallback)
+    {
+        try
+        {
+            using var document = System.Text.Json.JsonDocument.Parse(json);
+            if (document.RootElement.TryGetProperty("message", out var message) && message.ValueKind == System.Text.Json.JsonValueKind.String)
+                return message.GetString() ?? fallback;
+        }
+        catch { }
+        return fallback;
+    }
+
+    private void CancelPassword() => _passwordVisible = false;
+
+    private async Task PasswordConfirm()
+    {
+        var password = _passwordValue;
+        _passwordVisible = false;
+        try
+        {
+            var deleteSucceeded = await WcsApi.DeleteAsync($"/api/wcs/projects/{Uri.EscapeDataString(_currentProject)}?password={Uri.EscapeDataString(password)}");
+            if (!deleteSucceeded) throw new InvalidOperationException("密码错误或后端拒绝了删除请求");
+            var deleted = _currentProject;
+            _projects.Remove(deleted);
+            _currentProject = _projects.FirstOrDefault() ?? "";
+            await LocalStore.SetAsync(Js, ProjectStoreKey, _currentProject);
+            CloseProjectSection();
+            await LoadProjectSectionsAsync();
+            ShowFeedback($"已删除项目“{deleted}”", "success");
+        }
+        catch (Exception ex) { ShowFeedback("删除失败：" + ex.Message, "error"); }
+    }
+
+    private void OpenProjectSection(ProjectSectionDto section)
+    {
+        _activeProjectSection = section;
+        _sectionDraft = section.MarkdownContent ?? "";
+        _sectionLines = ParseMarkdownLines(_sectionDraft);
+        _uploadedMarkdownOriginal = null;
+        _uploadedMarkdownLinesSnapshot = null;
+        _sectionSavedAt = section.UpdatedAt ?? "";
+        _sectionEditing = false;
+        _sectionError = "";
+    }
+
+    private void CloseProjectSection()
+    {
+        _activeProjectSection = null;
+        _sectionEditing = false;
+        _uploadedMarkdownOriginal = null;
+        _uploadedMarkdownLinesSnapshot = null;
+        _sectionError = "";
+    }
+
+    private void ToggleSectionEdit()
+    {
+        if (_sectionEditing)
+        {
+            _sectionDraft = GetCurrentSectionMarkdown();
+        }
+        else
+        {
+            _sectionLines = ParseMarkdownLines(_sectionDraft);
+            if (_sectionLines.Count == 0) _sectionLines.Add(new ProjectContentLine());
+            if (_uploadedMarkdownOriginal != null)
+                _uploadedMarkdownLinesSnapshot = ComposeMarkdown(_sectionLines);
+        }
+        _sectionEditing = !_sectionEditing;
+        _sectionError = "";
+    }
+
+    private async Task SaveProjectSection()
+    {
+        if (_activeProjectSection == null) return;
+        _sectionSaving = true;
+        _sectionError = "";
+        try
+        {
+            _sectionDraft = GetCurrentSectionMarkdown();
+            var result = await WcsApi.PutAsync<object, ProjectSectionSaveResult>(
+                $"/api/wcs/projects/{Uri.EscapeDataString(_currentProject)}/sections/{Uri.EscapeDataString(_activeProjectSection.Key)}",
+                new { markdownContent = _sectionDraft });
+            if (result?.Success != true) { _sectionError = result?.Message ?? "保存失败，请检查 WCS 后端连接"; return; }
+            _activeProjectSection.MarkdownContent = _sectionDraft;
+            _activeProjectSection.UpdatedAt = result.Data?.UpdatedAt ?? DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
+            _sectionSavedAt = _activeProjectSection.UpdatedAt;
+            _sectionEditing = false;
+            _uploadedMarkdownOriginal = null;
+            _uploadedMarkdownLinesSnapshot = null;
+            ShowFeedback($"已保存“{_activeProjectSection.Title}”", "success");
+        }
+        catch (Exception ex) { _sectionError = "保存失败：" + ex.Message; }
+        finally { _sectionSaving = false; }
+    }
+
+    private async Task UploadMarkdownFile(InputFileChangeEventArgs args)
+    {
+        if (_activeProjectSection == null) return;
+        var file = args.File;
+        var extension = Path.GetExtension(file.Name);
+        if (!extension.Equals(".md", StringComparison.OrdinalIgnoreCase)
+            && !extension.Equals(".markdown", StringComparison.OrdinalIgnoreCase))
+        {
+            _sectionError = "请选择 .md 或 .markdown 文件";
+            return;
+        }
+
+        try
+        {
+            await using var stream = file.OpenReadStream(10 * 1024 * 1024);
+            using var reader = new System.IO.StreamReader(stream, System.Text.Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
+            _sectionDraft = await reader.ReadToEndAsync();
+            _sectionLines = ParseMarkdownLines(_sectionDraft);
+            if (_sectionLines.Count == 0) _sectionLines.Add(new ProjectContentLine());
+            _uploadedMarkdownOriginal = _sectionDraft;
+            _uploadedMarkdownLinesSnapshot = ComposeMarkdown(_sectionLines);
+            _sectionEditing = true;
+            _sectionError = "";
+            ShowFeedback($"已载入 Markdown 文件“{file.Name}”，检查内容后点击“保存资料”写入项目。", "success");
+        }
+        catch (Exception ex) { _sectionError = "读取 Markdown 文件失败：" + ex.Message; }
+    }
+
+    private async Task DownloadProjectMarkdown()
+    {
+        if (string.IsNullOrWhiteSpace(_currentProject) || _projectSections.Count == 0) return;
+        try
+        {
+            var sections = GetOrderedSectionsForExport();
+            var content = new System.Text.StringBuilder();
+            content.Append("# ").AppendLine(_currentProject + " 项目记录");
+            content.AppendLine();
+            content.Append("> 项目资料汇总 · 导出时间：").AppendLine(DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"));
+            content.Append("> 资料分区：").Append(sections.Count).AppendLine(" 个");
+            foreach (var section in sections)
             {
-                Id = _editId,
-                LogDate = _editLogDate.Trim(),
-                Content = _editContent.Trim(),
-                Status = string.IsNullOrWhiteSpace(_editStatus) ? "pending" : _editStatus.Trim(),
-                Project = _editProject.Trim(),
-                Remark = string.IsNullOrWhiteSpace(_editRemark) ? null : _editRemark.Trim(),
+                var sectionContent = section.MarkdownContent ?? "";
+                if (_activeProjectSection != null && string.Equals(_activeProjectSection.Key, section.Key, StringComparison.Ordinal))
+                    sectionContent = _sectionEditing ? GetCurrentSectionMarkdown() : _sectionDraft;
+
+                content.AppendLine().AppendLine("---").AppendLine().AppendLine("---").AppendLine();
+                content.Append("## ").Append(SectionIcon(section.Key)).Append(' ').AppendLine(section.Title).AppendLine();
+                var preparedContent = NormalizeMarkdownForDownload(sectionContent);
+                content.AppendLine(string.IsNullOrWhiteSpace(preparedContent) ? "暂无内容" : preparedContent);
+            }
+
+            var fileName = $"{SafeFileName(_currentProject)}_项目记录.md";
+            await Js.InvokeVoidAsync("downloadTextFile", fileName, content.ToString(), "text/markdown;charset=utf-8");
+            ShowFeedback($"已下载项目“{_currentProject}”的 Markdown 文档。", "success");
+        }
+        catch (Exception ex)
+        {
+            ShowFeedback("下载 Markdown 失败：" + ex.Message, "error");
+        }
+    }
+
+    private async Task DownloadProjectHtml()
+    {
+        if (string.IsNullOrWhiteSpace(_currentProject) || _projectSections.Count == 0) return;
+
+        try
+        {
+            var html = BuildProjectHtml();
+            var fileName = $"{SafeFileName(_currentProject)}_项目记录.html";
+            await Js.InvokeVoidAsync("downloadTextFile", fileName, html, "text/html;charset=utf-8");
+            ShowFeedback($"已下载项目“{_currentProject}”的 HTML 阅读页。", "success");
+        }
+        catch (Exception ex)
+        {
+            ShowFeedback("下载 HTML 失败：" + ex.Message, "error");
+        }
+    }
+
+    private async Task ExportProjectPdf()
+    {
+        if (string.IsNullOrWhiteSpace(_currentProject) || _projectSections.Count == 0) return;
+        try
+        {
+            var orderedSections = GetOrderedSectionsForExport();
+            var sections = orderedSections
+                .Select(section => new
+                {
+                    title = section.Title,
+                    icon = SectionIcon(section.Key),
+                    content = PrepareMarkdownForHtml(GetSectionContentForExport(section))
+                })
+                .ToList();
+            var payload = new
+            {
+                title = _currentProject + " 项目记录",
+                exportTime = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"),
+                sections
             };
-            if (_editingNew)
+            await Js.InvokeVoidAsync("downloadProjectPdf", $"{SafeFileName(_currentProject)}_项目记录.pdf", payload);
+            ShowFeedback($"已下载项目“{_currentProject}”的 PDF 文档。", "success");
+        }
+        catch (Exception ex)
+        {
+            ShowFeedback("下载 PDF 失败：" + ex.Message, "error");
+        }
+    }
+
+    private string BuildProjectHtml()
+    {
+        var exportTime = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
+        var sections = GetOrderedSectionsForExport();
+        var projectTitle = System.Net.WebUtility.HtmlEncode(_currentProject);
+        var html = new System.Text.StringBuilder();
+        html.AppendLine("<!doctype html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">");
+        html.Append("<title>").Append(projectTitle).AppendLine(" 项目记录</title>");
+        html.AppendLine("<style>");
+        html.AppendLine(ExportHtmlStyles);
+        html.AppendLine("</style></head><body><main class=\"page\">");
+        html.Append("<header class=\"hero\"><div class=\"eyebrow\">PROJECT WORKSPACE</div><h1>")
+            .Append(projectTitle).AppendLine(" 项目记录</h1>");
+        html.Append("<p>项目资料汇总 · 导出时间：").Append(System.Net.WebUtility.HtmlEncode(exportTime))
+            .Append(" · ").Append(sections.Count).AppendLine(" 个资料分区</p></header>");
+        html.AppendLine("<nav class=\"toolbar\"><input id=\"search\" type=\"search\" placeholder=\"搜索项目资料…\" aria-label=\"搜索项目资料\"><button type=\"button\" onclick=\"setAll(true)\">全部展开</button><button type=\"button\" onclick=\"setAll(false)\">全部收起</button><button type=\"button\" onclick=\"window.print()\">打印 / 保存 PDF</button></nav>");
+        html.AppendLine("<section id=\"sections\">");
+        for (var i = 0; i < sections.Count; i++)
+        {
+            var section = sections[i];
+            var sectionContent = section.MarkdownContent ?? "";
+            if (_activeProjectSection != null && string.Equals(_activeProjectSection.Key, section.Key, StringComparison.Ordinal))
+                sectionContent = _sectionEditing ? GetCurrentSectionMarkdown() : _sectionDraft;
+
+            if (i > 0)
+                html.AppendLine("<hr class=\"section-divider\" style=\"border:0;border-top:1px solid #cbd8e6;margin:9px 4px 4px\"><hr class=\"section-divider\" style=\"border:0;border-top:1px solid #cbd8e6;margin:4px 4px 20px\">");
+            html.Append("<details class=\"section\"><summary><span class=\"icon\">")
+                .Append(System.Net.WebUtility.HtmlEncode(SectionIcon(section.Key))).Append("</span><span>")
+                .Append(System.Net.WebUtility.HtmlEncode(section.Title)).AppendLine("</span></summary>");
+            html.Append("<article class=\"content\">").Append(RenderMarkdown(PrepareMarkdownForHtml(sectionContent)))
+                .AppendLine("</article></details>");
+        }
+        html.AppendLine("</section><footer>由 WCS 项目记录导出 · ").Append(projectTitle).AppendLine("</footer></main>");
+        html.AppendLine("<script>function setAll(open){document.querySelectorAll('details.section').forEach(x=>x.open=open)}document.getElementById('search').addEventListener('input',e=>{const q=e.target.value.trim().toLocaleLowerCase();document.querySelectorAll('details.section').forEach(x=>{x.hidden=q!==''&&!x.innerText.toLocaleLowerCase().includes(q);if(q&& !x.hidden)x.open=true})});</script>");
+        html.AppendLine("</body></html>");
+        return html.ToString();
+    }
+
+    private static string PrepareMarkdownForHtml(string markdown)
+    {
+        if (string.IsNullOrWhiteSpace(markdown)) return "暂无内容";
+        var lines = markdown.Trim().Replace("\r\n", "\n").Replace('\r', '\n').Split('\n');
+        var result = new System.Text.StringBuilder();
+        var outsideFence = new System.Text.StringBuilder();
+        char? fenceCharacter = null;
+        var fenceLength = 0;
+
+        void FlushOutsideFence()
+        {
+            if (outsideFence.Length == 0) return;
+            var text = System.Net.WebUtility.HtmlDecode(outsideFence.ToString());
+            text = System.Text.RegularExpressions.Regex.Replace(
+                text,
+                @"<details>\s*<summary>(.*?)</summary>",
+                match => "## " + System.Net.WebUtility.HtmlDecode(match.Groups[1].Value) + "\n",
+                System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.Singleline);
+            text = System.Text.RegularExpressions.Regex.Replace(text, @"</details>", "\n", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            result.Append(text);
+            outsideFence.Clear();
+        }
+
+        for (var index = 0; index < lines.Length; index++)
+        {
+            var line = lines[index];
+            var hasNewline = index < lines.Length - 1;
+            if (TryReadMarkdownFence(line, out var marker, out var markerLength, out var markerTail))
             {
-                var resp = await WcsApi.PostAsync<ProjectLogDto, SaveResult>("/api/wcs/project-logs", rec);
-                if (resp == null || !resp.Success) { _editError = "❌ 新增失败：后端未响应"; return; }
-                ShowFeedback($"✅ 已新增日程（ID {resp.Id}）", "success");
+                if (!fenceCharacter.HasValue)
+                {
+                    FlushOutsideFence();
+                    fenceCharacter = marker;
+                    fenceLength = markerLength;
+                }
+                else if (marker == fenceCharacter.Value && markerLength >= fenceLength && string.IsNullOrWhiteSpace(markerTail))
+                {
+                    result.Append(line);
+                    if (hasNewline) result.Append('\n');
+                    fenceCharacter = null;
+                    fenceLength = 0;
+                    continue;
+                }
+
+                result.Append(line);
+                if (hasNewline) result.Append('\n');
+                continue;
+            }
+
+            if (fenceCharacter.HasValue)
+            {
+                result.Append(line);
+                if (hasNewline) result.Append('\n');
             }
             else
             {
-                await WcsApi.PutAsync<ProjectLogDto, object>($"/api/wcs/project-logs/{_editId}", rec);
-                ShowFeedback($"✅ 已保存修改（ID {_editId}）", "success");
+                outsideFence.Append(line);
+                if (hasNewline) outsideFence.Append('\n');
             }
-            _showEditor = false;
-            _editError = "";
-            await LoadAsync(_currentQuery);
         }
-        catch (Exception ex) { _editError = "❌ " + ex.Message; }
-        finally { _saving = false; }
+
+        FlushOutsideFence();
+        return result.ToString().Trim();
     }
 
-    /// <summary>一键标记完成：done ↔ pending（搁置保留不动）。</summary>
-    private async Task ToggleDone(ProjectLogDto r)
+    private static string NormalizeMarkdownForDownload(string markdown)
     {
-        try
-        {
-            await WcsApi.PutAsync<ProjectLogDto, object>($"/api/wcs/project-logs/{r.Id}", new ProjectLogDto
-            {
-                Id = r.Id,
-                LogDate = r.LogDate,
-                Content = r.Content,
-                Status = "done",
-                Remark = r.Remark,
-            });
-            ShowFeedback($"✅ 已标记完成（ID {r.Id}）", "success");
-            await LoadAsync(_currentQuery);
-        }
-        catch (Exception ex) { ShowFeedback("❌ " + ex.Message, "error"); }
-    }
+        var prepared = PrepareMarkdownForHtml(markdown);
+        var lines = prepared.Replace("\r\n", "\n").Replace('\r', '\n').Split('\n');
+        var result = new List<string>(lines.Length + 1);
+        char? openFenceCharacter = null;
+        var openFenceLength = 0;
 
-    private void Remove(ProjectLogDto r) =>
-        ShowPassword("删除日程", $"确认删除这条日程？（ID {r.Id}，{r.Content}）\n请输入删除密码：", async pwd =>
+        foreach (var line in lines)
         {
-            if (pwd != "wayzim") { ShowFeedback("❌ 密码错误，未删除", "error"); return; }
-            try
+            var trimmed = line.TrimStart();
+            if (TryReadMarkdownFence(line, out var marker, out var markerLength, out var markerTail))
             {
-                await WcsApi.DeleteAsync($"/api/wcs/project-logs/{r.Id}?password={Uri.EscapeDataString(pwd)}");
-                ShowFeedback($"🗑 已删除（ID {r.Id}）", "success");
-                await LoadAsync(_currentQuery);
-            }
-            catch (Exception ex) { ShowFeedback("❌ " + ex.Message, "error"); }
-        });
-
-    /// <summary>导出当前筛选结果为 Excel：第一列日期（同一天按条数合并单元格），后面是事项/状态/备注。</summary>
-    private async Task ExportExcel()
-    {
-        try
-        {
-            await LoadAsync(_currentQuery);
-            if (_records.Count == 0) { ShowNotice("导出失败", "当前筛选条件下没有数据，无法导出 Excel。"); return; }
-            using var wb = new XLWorkbook();
-            var ws = wb.Worksheets.Add("项目记录");
-            var projTitle = SafeFileName(string.IsNullOrEmpty(_currentProject) ? "项目" : _currentProject);
-            var headers = new[] { "日期", "事项", "状态", "备注" };
-            ws.Cell(1, 1).Value = $"{projTitle}_项目记录";
-            ws.Range(1, 1, 1, headers.Length).Merge();
-            ws.Cell(1, 1).Style.Font.Bold = true;
-            ws.Cell(1, 1).Style.Font.FontSize = 16;
-            ws.Cell(1, 1).Style.Font.FontColor = XLColor.White;
-            ws.Cell(1, 1).Style.Fill.BackgroundColor = XLColor.FromHtml("#0f172a");
-            ws.Cell(1, 1).Style.Alignment.Horizontal = XLAlignmentHorizontalValues.Center;
-            ws.Cell(1, 1).Style.Alignment.Vertical = XLAlignmentVerticalValues.Center;
-            ws.Row(1).Height = 30;
-            for (var c = 0; c < headers.Length; c++) ws.Cell(2, c + 1).Value = headers[c];
-            var headerRow = ws.Row(2);
-            ws.Range(2, 1, 2, headers.Length).Style.Font.Bold = true;
-            ws.Range(2, 1, 2, headers.Length).Style.Font.FontColor = XLColor.White;
-            ws.Range(2, 1, 2, headers.Length).Style.Fill.BackgroundColor = XLColor.FromHtml("#0f172a");
-            ws.Range(2, 1, 2, headers.Length).Style.Alignment.Horizontal = XLAlignmentHorizontalValues.Center;
-            ws.Range(2, 1, 2, headers.Length).Style.Alignment.Vertical = XLAlignmentVerticalValues.Center;
-            headerRow.Height = 24;
-
-            var groups = _records.GroupBy(r => r.LogDate).ToList();
-            var row = 3;
-            foreach (var g in groups)
-            {
-                var gi = 0;
-                foreach (var r in g)
+                if (!openFenceCharacter.HasValue)
                 {
-                    ws.Cell(row, 1).Value = gi == 0 ? g.Key : "";
-                    ws.Cell(row, 2).Value = r.Content;
-                    ws.Cell(row, 3).Value = StatusMeta(r.Status).label;
-                    ws.Cell(row, 4).Value = r.Remark ?? "";
-
-                    if ((row - 3) % 2 == 1)
-                        ws.Range(row, 1, row, 4).Style.Fill.BackgroundColor = XLColor.FromHtml("#f1f5f9");
-                    var (_, _, stFg) = StatusMeta(r.Status);
-                    ws.Cell(row, 3).Style.Font.FontColor = XLColor.FromHtml(stFg);
-                    ws.Cell(row, 3).Style.Font.Bold = true;
-                    ws.Cell(row, 3).Style.Alignment.Horizontal = XLAlignmentHorizontalValues.Center;
-                    ws.Cell(row, 4).Style.Alignment.WrapText = true;
-                    row++;
-                    gi++;
+                    openFenceCharacter = marker;
+                    openFenceLength = markerLength;
                 }
-                if (g.Count() > 1)
+                else if (marker == openFenceCharacter.Value && markerLength >= openFenceLength && string.IsNullOrWhiteSpace(markerTail))
                 {
-                    var merged = ws.Range(row - g.Count(), 1, row - 1, 1).Merge();
-                    merged.Style.Alignment.Vertical = XLAlignmentVerticalValues.Center;
-                    merged.Style.Alignment.Horizontal = XLAlignmentHorizontalValues.Center;
-                    merged.Style.Font.Bold = true;
-                    merged.Style.Font.FontColor = XLColor.FromHtml("#334155");
+                    openFenceCharacter = null;
+                    openFenceLength = 0;
                 }
+                result.Add(line);
+                continue;
             }
 
-            var used = ws.RangeUsed();
-            if (used != null)
+            if (openFenceCharacter.HasValue)
             {
-                used.Style.Alignment.Vertical = XLAlignmentVerticalValues.Center;
-                used.Style.Border.OutsideBorder = XLBorderStyleValues.Thin;
-                used.Style.Border.InsideBorder = XLBorderStyleValues.Thin;
-                used.Style.Border.OutsideBorderColor = XLColor.FromHtml("#cbd5e1");
-                used.Style.Border.InsideBorderColor = XLColor.FromHtml("#cbd5e1");
+                result.Add(line);
+                continue;
             }
 
-            ws.SheetView.FreezeRows(2);
-            ws.Columns().AdjustToContents();
-            ws.Column(1).Width = 14;
-            ws.Column(2).Width = 60;
-            ws.Column(3).Width = 12;
-            ws.Column(4).Width = 40;
-            ws.Column(2).Style.Alignment.WrapText = true;
-
-            using var ms = new MemoryStream();
-            wb.SaveAs(ms);
-            var b64 = Convert.ToBase64String(ms.ToArray());
-            var projPart = SafeFileName(string.IsNullOrEmpty(_currentProject) ? "未分类" : _currentProject);
-            await Js.InvokeVoidAsync("downloadBase64",
-                $"项目记录_{projPart}_{DateTime.Now:yyyyMMdd_HHmm}.xlsx",
-                b64,
-                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
-            ShowFeedback($"⬇️ 已导出 {_records.Count} 条记录（项目：{projPart}）为 Excel", "success");
+            var headingLevel = 0;
+            while (headingLevel < 6 && headingLevel < trimmed.Length && trimmed[headingLevel] == '#') headingLevel++;
+            if (headingLevel > 0 && headingLevel < trimmed.Length && trimmed[headingLevel] == ' ')
+            {
+                var childLevel = Math.Max(3, Math.Min(6, headingLevel + 1));
+                result.Add(new string('#', childLevel) + trimmed[headingLevel..]);
+            }
+            else result.Add(line);
         }
-        catch (Exception ex) { ShowFeedback("❌ 导出失败：" + ex.Message, "error"); }
+
+        if (openFenceCharacter.HasValue) result.Add(new string(openFenceCharacter.Value, openFenceLength));
+        return string.Join("\n", result).Trim();
     }
 
-    /// <summary>状态徽标：pending=待办(灰) / done=已完成(绿) / cancelled=搁置(橙)。</summary>
-    private static (string label, string bg, string fg) StatusMeta(string status)
-        => status switch
-        {
-            "done" => ("✔ 已完成", "rgba(74,222,128,0.15)", "#4ade80"),
-            "cancelled" => ("⊘ 搁置", "rgba(251,191,36,0.15)", "#fbbf24"),
-            _ => ("⏳ 待办", "rgba(148,163,184,0.15)", "#94a3b8"),
-        };
-
-    private void ShowFeedback(string msg, string cls)
+    private string GetSectionContentForExport(ProjectSectionDto section)
     {
-        _feedback = msg;
-        _feedbackClass = cls;
-        StateHasChanged();
+        if (_activeProjectSection == null || !string.Equals(_activeProjectSection.Key, section.Key, StringComparison.Ordinal))
+            return section.MarkdownContent ?? "";
+        return _sectionEditing ? GetCurrentSectionMarkdown() : _sectionDraft;
     }
 
-    /// <summary>文件名安全化：去除 Windows 非法字符。</summary>
+    private string GetCurrentSectionMarkdown()
+    {
+        var composed = ComposeMarkdown(_sectionLines);
+        if (_uploadedMarkdownOriginal != null
+            && string.Equals(composed, _uploadedMarkdownLinesSnapshot, StringComparison.Ordinal))
+            return _uploadedMarkdownOriginal;
+
+        if (_uploadedMarkdownOriginal != null)
+        {
+            _uploadedMarkdownOriginal = null;
+            _uploadedMarkdownLinesSnapshot = null;
+        }
+        return composed;
+    }
+
+    private const string ExportHtmlStyles = """
+        :root{color-scheme:light;--ink:#17243b;--muted:#61718a;--line:#dce5f0;--blue:#087eaa;--paper:#f4f7fb}
+        *{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink);font:16px/1.75 'Segoe UI','Microsoft YaHei',sans-serif}.page{max-width:1080px;margin:0 auto;padding:40px 28px 56px}.hero{padding:30px 34px;border-radius:20px;background:linear-gradient(125deg,#102744,#0a7390);color:#fff;box-shadow:0 16px 38px #16324a24}.eyebrow{font-size:12px;letter-spacing:.16em;opacity:.75}.hero h1{font-size:32px;line-height:1.25;margin:8px 0}.hero p{margin:8px 0 0;color:#d8e9f5}.toolbar{position:sticky;top:0;z-index:2;display:flex;gap:10px;padding:16px 0;background:var(--paper)}.toolbar input{flex:1;min-width:180px;padding:10px 14px;border:1px solid var(--line);border-radius:10px;font:inherit}.toolbar button{padding:9px 14px;border:1px solid #c9d8e8;border-radius:10px;background:#fff;color:#174667;font:600 14px inherit;cursor:pointer}.toolbar button:hover{border-color:var(--blue);color:var(--blue)}.section{margin:12px 0;border:1px solid var(--line);border-radius:14px;background:#fff;overflow:hidden;box-shadow:0 4px 16px #1d35520a}.section>summary{display:flex;align-items:center;gap:12px;padding:15px 20px;cursor:pointer;list-style:none;font-size:18px;font-weight:700}.section>summary::-webkit-details-marker{display:none}.section>summary:before{content:'›';display:grid;place-items:center;width:26px;height:26px;border-radius:8px;background:#e8f5fa;color:var(--blue);font-size:24px;line-height:1;transition:transform .15s}.section[open]>summary:before{transform:rotate(90deg)}.icon{font-size:20px}.content{padding:6px 28px 24px 58px;border-top:1px solid #edf1f6}.content h1,.content h2,.content h3{line-height:1.35;margin:18px 0 8px}.content p{margin:10px 0}.content ul{padding-left:24px}.content blockquote{margin:14px 0;padding:8px 16px;border-left:3px solid #29a77d;background:#f3faf7;color:#40556d}.content pre{overflow:auto;padding:14px;border-radius:10px;background:#101a29;color:#e4edf7}.content pre code{display:block;padding:0;border-radius:0;background:transparent;color:inherit}.content code{padding:2px 5px;border-radius:4px;background:#edf2f7;color:#24364b}footer{padding:20px 0;color:var(--muted);font-size:13px;text-align:center}
+        @media(max-width:700px){.page{padding:20px 14px 36px}.hero{padding:22px}.hero h1{font-size:25px}.toolbar{flex-wrap:wrap}.toolbar input{flex-basis:100%}.toolbar button{flex:1}.content{padding-left:22px}}
+        @media print{@page{margin:16mm}body{background:#fff;font-size:11pt}.page{max-width:none;padding:0}.hero{padding:16px 20px;box-shadow:none;print-color-adjust:exact;-webkit-print-color-adjust:exact}.toolbar{display:none}.section{break-inside:avoid;box-shadow:none;margin:8px 0}.section:not([open])>.content{display:block}.section>summary:before{display:none}.section>summary{padding:8px 12px}.content{padding:0 16px 12px;border-top:0}footer{display:none}}
+        """;
+
+    private static string RenderSectionText(string markdown)
+    {
+        if (string.IsNullOrWhiteSpace(markdown)) return "暂无内容";
+
+        // The deployment section may itself contain a details wrapper copied from an older export.
+        // Remove only that outer wrapper because the current export already supplies the section toggle.
+        markdown = System.Text.RegularExpressions.Regex.Replace(
+            markdown.Trim(),
+            @"^<details>\s*<summary>.*?</summary>\s*|\s*</details>$",
+            "",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.Singleline);
+
+        var lines = markdown.Replace("\r\n", "\n").Replace('\r', '\n').Split('\n');
+        var html = new System.Text.StringBuilder();
+        var inCodeBlock = false;
+        var hasContent = false;
+        foreach (var rawLine in lines)
+        {
+            var trimmed = rawLine.Trim();
+            if (trimmed.StartsWith("```") || trimmed.StartsWith("~~~"))
+            {
+                inCodeBlock = !inCodeBlock;
+                continue;
+            }
+            if (trimmed.Length == 0) continue;
+            if (inCodeBlock) trimmed = "  " + trimmed;
+            else if (trimmed.StartsWith("### ")) trimmed = "【" + trimmed[4..] + "】";
+            else if (trimmed.StartsWith("## ")) trimmed = "【" + trimmed[3..] + "】";
+            else if (trimmed.StartsWith("# ")) trimmed = "【" + trimmed[2..] + "】";
+            else if (trimmed.StartsWith("- ") || trimmed.StartsWith("* ")) trimmed = "• " + trimmed[2..];
+            else if (trimmed.StartsWith("> ")) trimmed = "— " + trimmed[2..];
+
+            if (hasContent) html.Append("<br>");
+            html.Append(System.Net.WebUtility.HtmlEncode(trimmed));
+            hasContent = true;
+        }
+        return hasContent ? html.ToString() : "暂无内容";
+    }
+
+    private void AddContentLine(string kind)
+    {
+        _sectionLines.Add(new ProjectContentLine { Kind = kind });
+    }
+
+    private void ClearAllContentLines()
+    {
+        _sectionLines.Clear();
+        _uploadedMarkdownOriginal = null;
+        _uploadedMarkdownLinesSnapshot = null;
+        _sectionError = "";
+    }
+
+    private void RemoveContentLine(int index)
+    {
+        if (index >= 0 && index < _sectionLines.Count) _sectionLines.RemoveAt(index);
+    }
+
+    private void MoveContentLine(int index, int offset)
+    {
+        var target = index + offset;
+        if (index < 0 || index >= _sectionLines.Count || target < 0 || target >= _sectionLines.Count) return;
+        (_sectionLines[index], _sectionLines[target]) = (_sectionLines[target], _sectionLines[index]);
+    }
+
+    private static List<ProjectContentLine> ParseMarkdownLines(string markdown)
+    {
+        var lines = new List<ProjectContentLine>();
+        char? fenceCharacter = null;
+        var fenceLength = 0;
+        foreach (var raw in (markdown ?? "").Replace("\r\n", "\n").Replace('\r', '\n').Split('\n'))
+        {
+            var text = raw.TrimEnd();
+            if (fenceCharacter.HasValue)
+            {
+                lines.Add(new ProjectContentLine { Kind = "literal", Text = raw });
+                if (TryReadMarkdownFence(text, out var closingCharacter, out var closingLength, out var closingTail)
+                    && closingCharacter == fenceCharacter.Value
+                    && closingLength >= fenceLength
+                    && string.IsNullOrWhiteSpace(closingTail))
+                {
+                    fenceCharacter = null;
+                    fenceLength = 0;
+                }
+                continue;
+            }
+
+            if (TryReadMarkdownFence(text, out var openingCharacter, out var openingLength, out _))
+            {
+                lines.Add(new ProjectContentLine { Kind = "literal", Text = raw });
+                fenceCharacter = openingCharacter;
+                fenceLength = openingLength;
+                continue;
+            }
+
+            if (string.IsNullOrWhiteSpace(text)) continue;
+            var trimmed = text.TrimStart();
+            var headingLevel = 0;
+            while (headingLevel < trimmed.Length && headingLevel < 6 && trimmed[headingLevel] == '#') headingLevel++;
+            if (headingLevel > 0 && headingLevel < trimmed.Length && trimmed[headingLevel] == ' ')
+                lines.Add(new ProjectContentLine { Kind = "heading", HeadingLevel = headingLevel, Text = trimmed[(headingLevel + 1)..] });
+            else if (trimmed.StartsWith("- ") || trimmed.StartsWith("* ")) lines.Add(new ProjectContentLine { Kind = "bullet", Text = trimmed[2..] });
+            else if (trimmed.StartsWith("> ")) lines.Add(new ProjectContentLine { Kind = "quote", Text = trimmed[2..] });
+            else lines.Add(new ProjectContentLine { Kind = "paragraph", Text = text });
+        }
+        return lines;
+    }
+
+    private static string ComposeMarkdown(IEnumerable<ProjectContentLine> lines)
+    {
+        var output = new System.Text.StringBuilder();
+        var previousWasLiteral = false;
+        foreach (var line in lines.Where(line => line.Kind == "literal" || !string.IsNullOrWhiteSpace(line.Text)))
+        {
+            var isLiteral = line.Kind == "literal";
+            if (output.Length > 0) output.Append(isLiteral && previousWasLiteral ? "\n" : "\n\n");
+            var text = line.Kind switch
+            {
+                "heading" => new string('#', Math.Clamp(line.HeadingLevel, 1, 6)) + " " + line.Text.Trim(),
+                "bullet" => "- " + line.Text.Trim(),
+                "quote" => "> " + line.Text.Trim(),
+                "literal" => line.Text,
+                _ => line.Text.Trim()
+            };
+            output.Append(text);
+            previousWasLiteral = isLiteral;
+        }
+
+        return CloseUnclosedMarkdownFence(output.ToString());
+    }
+
+    private static string CloseUnclosedMarkdownFence(string markdown)
+    {
+        char? fenceCharacter = null;
+        var fenceLength = 0;
+        foreach (var line in markdown.Replace("\r\n", "\n").Split('\n'))
+        {
+            if (!TryReadMarkdownFence(line, out var marker, out var length, out var tail)) continue;
+            if (!fenceCharacter.HasValue)
+            {
+                fenceCharacter = marker;
+                fenceLength = length;
+            }
+            else if (marker == fenceCharacter.Value && length >= fenceLength && string.IsNullOrWhiteSpace(tail))
+            {
+                fenceCharacter = null;
+                fenceLength = 0;
+            }
+        }
+
+        if (!fenceCharacter.HasValue) return markdown;
+        var closingFence = new string(fenceCharacter.Value, fenceLength);
+        return markdown.TrimEnd() + "\n" + closingFence;
+    }
+
+    private static bool TryReadMarkdownFence(string line, out char marker, out int length, out string tail)
+    {
+        marker = '\0';
+        length = 0;
+        tail = "";
+        var leadingSpaces = 0;
+        while (leadingSpaces < line.Length && line[leadingSpaces] == ' ') leadingSpaces++;
+        if (leadingSpaces > 3 || leadingSpaces >= line.Length) return false;
+        marker = line[leadingSpaces];
+        if (marker != '`' && marker != '~') return false;
+        var index = leadingSpaces;
+        while (index < line.Length && line[index] == marker) index++;
+        length = index - leadingSpaces;
+        if (length < 3) return false;
+        tail = line[index..];
+        return true;
+    }
+
     private static string SafeFileName(string name)
+        => System.Text.RegularExpressions.Regex.Replace(name.Trim(), "[\\x00-\\x1F<>:\"/\\\\|?*]", "_");
+
+    private static string SectionIcon(string key) => key switch
     {
-        var safe = string.Join("_", name.Split(Path.GetInvalidFileNameChars(), StringSplitOptions.RemoveEmptyEntries));
-        return safe.Length == 0 ? "项目" : safe;
+        "overview" => "📌", "risks" => "⚠️", "deployment" => "🛠️",
+        "data" => "📊", "owners" => "👥", _ => "🗂️"
+    };
+
+    private static bool IsSupplementarySection(ProjectSectionDto section)
+        => string.Equals(section.Key, "supplement", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(section.Key, "additional", StringComparison.OrdinalIgnoreCase)
+            || section.Title.Contains("补充", StringComparison.Ordinal);
+
+    private List<ProjectSectionDto> GetOrderedSectionsForExport()
+        => _projectSections
+            .OrderBy(section => IsSupplementarySection(section) ? 2
+                : string.Equals(section.Key, "deployment", StringComparison.OrdinalIgnoreCase)
+                    || section.Title.Contains("部署", StringComparison.Ordinal) ? 1 : 0)
+            .ToList();
+
+    private static string SectionSummary(ProjectSectionDto section)
+    {
+        var text = (section.MarkdownContent ?? "").Trim();
+        if (text.Length == 0) return "尚未填写 · 点击添加项目资料";
+        text = System.Text.RegularExpressions.Regex.Replace(text, "[#*`>\\[\\]_-]", "");
+        text = System.Text.RegularExpressions.Regex.Replace(text, "\\s+", " ").Trim();
+        return text.Length > 82 ? text[..82] + "…" : text;
     }
 
-    private class SaveResult
+    private static string RenderMarkdown(string markdown)
+    {
+        var lines = (markdown ?? "").Replace("\r\n", "\n").Replace('\r', '\n').Split('\n');
+        var html = new System.Text.StringBuilder();
+        var listOpen = false;
+        char? codeFence = null;
+        var codeFenceLength = 0;
+        var codeContent = new System.Text.StringBuilder();
+        foreach (var raw in lines)
+        {
+            var trimmed = raw.Trim();
+            if (TryReadMarkdownFence(raw, out var marker, out var markerLength, out var markerTail))
+            {
+                if (!codeFence.HasValue)
+                {
+                    if (listOpen) { html.Append("</ul>"); listOpen = false; }
+                    codeFence = marker;
+                    codeFenceLength = markerLength;
+                    codeContent.Clear();
+                }
+                else if (marker == codeFence.Value && markerLength >= codeFenceLength && string.IsNullOrWhiteSpace(markerTail))
+                {
+                    html.Append("<pre><code>")
+                        .Append(System.Text.Encodings.Web.HtmlEncoder.Default.Encode(codeContent.ToString().TrimEnd('\n')))
+                        .AppendLine("</code></pre>");
+                    codeFence = null;
+                    codeFenceLength = 0;
+                    codeContent.Clear();
+                }
+                else if (codeFence.HasValue) codeContent.Append(raw).Append('\n');
+                continue;
+            }
+            if (codeFence.HasValue)
+            {
+                codeContent.Append(raw).Append('\n');
+                continue;
+            }
+            if (trimmed.Length == 0)
+            {
+                if (listOpen) { html.Append("</ul>"); listOpen = false; }
+                continue;
+            }
+            if (trimmed.StartsWith("- ") || trimmed.StartsWith("* "))
+            {
+                if (!listOpen) { html.Append("<ul>"); listOpen = true; }
+                html.Append("<li>").Append(RenderInline(trimmed[2..])).Append("</li>");
+                continue;
+            }
+            if (listOpen) { html.Append("</ul>"); listOpen = false; }
+            var level = 0;
+            while (level < trimmed.Length && level < 6 && trimmed[level] == '#') level++;
+            if (level > 0 && level < trimmed.Length && trimmed[level] == ' ')
+                html.Append("<h").Append(level).Append('>').Append(RenderInline(trimmed[(level + 1)..])).Append("</h").Append(level).Append('>');
+            else if (trimmed.StartsWith("> ")) html.Append("<blockquote>").Append(RenderInline(trimmed[2..])).Append("</blockquote>");
+            else html.Append("<p>").Append(RenderInline(trimmed)).Append("</p>");
+        }
+        if (codeFence.HasValue)
+            html.Append("<pre><code>")
+                .Append(System.Text.Encodings.Web.HtmlEncoder.Default.Encode(codeContent.ToString().TrimEnd('\n')))
+                .AppendLine("</code></pre>");
+        if (listOpen) html.Append("</ul>");
+        return html.ToString();
+    }
+
+    private static string RenderInline(string text)
+    {
+        var safe = System.Text.Encodings.Web.HtmlEncoder.Default.Encode(text);
+        safe = System.Text.RegularExpressions.Regex.Replace(safe, "\\*\\*(.+?)\\*\\*", "<strong>$1</strong>");
+        return System.Text.RegularExpressions.Regex.Replace(safe, "`(.+?)`", "<code>$1</code>");
+    }
+
+    private void ShowFeedback(string message, string style)
+    {
+        _feedback = message;
+        _feedbackClass = style;
+    }
+
+    private sealed class ProjectCreateResult
     {
         public bool Success { get; set; }
-        public long Id { get; set; }
+        public string? Message { get; set; }
+    }
+
+    private sealed class ProjectSectionSaveResult
+    {
+        public bool Success { get; set; }
+        public string? Message { get; set; }
+        public ProjectSectionDto? Data { get; set; }
+    }
+
+    private sealed class ProjectContentLine
+    {
+        public string Kind { get; set; } = "paragraph";
+        public int HeadingLevel { get; set; } = 2;
+        public string Text { get; set; } = "";
     }
 }

@@ -5,6 +5,7 @@
 @inherits Dashboard.Modules.WcsSimulator.Components.PageStateBase
 @using System.Text.Json
 @using Dashboard.Modules.WcsSimulator.Models
+@using Dashboard.Modules.WcsSimulator.Components
 @using Microsoft.JSInterop
 @implements IDisposable
 
@@ -137,6 +138,14 @@
     </div>
 }
 
+<AppConfirmDialog IsOpen="@_inventoryConfirmVisible"
+                  Title="确认删除库存"
+                  Message="@_inventoryConfirmMessage"
+                  ConfirmText="确认删除"
+                  IsDangerous="true"
+                  OnConfirm="ConfirmInventoryDeleteAsync"
+                  OnCancel="CancelInventoryDelete" />
+
 @code {
     private static readonly JsonSerializerOptions JsonOpts = new() { PropertyNameCaseInsensitive = true };
     private sealed class InventoryVisualUpdate
@@ -164,6 +173,12 @@
     private string _inventoryEditCode = "";
     private string _inventoryEditError = "";
     private bool _inventoryEditSaving;
+    private bool _inventoryConfirmVisible;
+    private bool _inventoryDeleteApproved;
+    private string _inventoryDeleteAction = "";
+    private string _inventoryDeleteMark = "";
+    private string _inventoryDeleteKind = "";
+    private string _inventoryConfirmMessage = "";
     private string _batchCargoPrefix = "cargo_";
     private string _batchPalletPrefix = "container_";
     private bool _batchInventoryRunning;
@@ -479,8 +494,16 @@
         var kind = action == "removePallet" ? "pallet" : "cargo";
         var code = kind == "pallet" ? slot.PalletCode : slot.CargoCode;
         if (string.IsNullOrWhiteSpace(code) || !CanEditInventorySlot(slot)) return;
-        var confirmed = await Js.InvokeAsync<bool>("confirm", $"确认从储位 {mark} 移除{(kind == "pallet" ? "托盘" : "货物")} {code}？");
-        if (!confirmed) return;
+        if (!_inventoryDeleteApproved)
+        {
+            _inventoryDeleteAction = "unit";
+            _inventoryDeleteMark = mark;
+            _inventoryDeleteKind = kind;
+            _inventoryConfirmMessage = $"确认从储位 {mark} 移除{(kind == "pallet" ? "托盘" : "货物")} {code}？";
+            _inventoryConfirmVisible = true;
+            return;
+        }
+        _inventoryDeleteApproved = false;
 
         var (ok, json) = await WcsService.RemoveInventoryUnitAsync(mark, kind);
         var result = TryParseInventoryMutation(json);
@@ -584,8 +607,15 @@
     {
         if (_batchInventoryRunning) return;
         var noun = kind == "cargo" ? "货物" : "托盘";
-        var confirmed = await Js.InvokeAsync<bool>("confirm", $"确认删除 WCS 库存地图中的所有{noun}？任务锁定或处理中库存会跳过。");
-        if (!confirmed) return;
+        if (!_inventoryDeleteApproved)
+        {
+            _inventoryDeleteAction = "all";
+            _inventoryDeleteKind = kind;
+            _inventoryConfirmMessage = $"确认删除 WCS 库存地图中的所有{noun}？任务锁定或处理中库存会跳过。";
+            _inventoryConfirmVisible = true;
+            return;
+        }
+        _inventoryDeleteApproved = false;
 
         _batchInventoryRunning = true;
         try
@@ -601,6 +631,34 @@
             _batchInventoryRunning = false;
             await InvokeAsync(StateHasChanged);
         }
+    }
+
+    private async Task ConfirmInventoryDeleteAsync()
+    {
+        var action = _inventoryDeleteAction;
+        var mark = _inventoryDeleteMark;
+        var kind = _inventoryDeleteKind;
+        _inventoryConfirmVisible = false;
+        _inventoryDeleteAction = "";
+        if (action == "unit")
+        {
+            _inventoryDeleteApproved = true;
+            await OnInventoryContextActionRequested(mark, kind == "pallet" ? "removePallet" : "removeCargo");
+        }
+        else if (action == "all")
+        {
+            _inventoryDeleteApproved = true;
+            await RemoveAllInventoryAsync(kind);
+        }
+    }
+
+    private void CancelInventoryDelete()
+    {
+        _inventoryConfirmVisible = false;
+        _inventoryDeleteApproved = false;
+        _inventoryDeleteAction = "";
+        _inventoryDeleteMark = "";
+        _inventoryDeleteKind = "";
     }
 
     private bool IsInventoryStorageStation(string mark)

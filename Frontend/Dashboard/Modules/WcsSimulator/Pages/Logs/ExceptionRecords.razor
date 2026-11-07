@@ -11,6 +11,10 @@
 <div class="section-card">
     <div class="section-header collapsible" @onclick="ToggleList" title="点击折叠/展开">
         ⚠️ 异常记录
+        @if (!string.IsNullOrWhiteSpace(_currentProject))
+        {
+            <span class="badge-info" style="background:rgba(59,130,246,0.15);color:#93c5fd;">当前项目：@_currentProject</span>
+        }
         <span class="badge-info">共 @_records.Count 条</span>
         <span class="badge-info" style="background:rgba(248,113,113,0.15);color:#f87171;">未完成 @_records.Count(r => r.Status != "resolved") 条</span>
         <span style="margin-left:auto;">
@@ -30,9 +34,9 @@
                 @if (_projects.Count > 0)
                 {
                     <select value="@_currentProject" @onchange="OnProjectChanged">
-                        @foreach (var p in _projects.Where(p => p.Length > 0))
+                        @foreach (var project in _projects.Where(project => project.Length > 0))
                         {
-                            <option value="@p">@p</option>
+                            <option value="@project">@project</option>
                         }
                     </select>
                 }
@@ -44,9 +48,9 @@
             <button class="btn btn-primary btn-sm" @onclick="CreateProject">➕ 新建项目</button>
             @if (_projects.Contains(_currentProject) && _currentProject.Length > 0)
             {
+                <button class="btn btn-outline btn-sm" @onclick="OpenRenameProject">✏ 重命名</button>
                 <button class="btn btn-outline btn-sm" style="color:#f87171;" @onclick="DeleteProject" title="删除当前项目及其全部记录（不可恢复）">🗑 删除项目</button>
             }
-            <span class="badge-info" style="background:rgba(59,130,246,0.15);color:#93c5fd;">当前项目：@(string.IsNullOrEmpty(_currentProject) ? "—" : _currentProject)</span>
         </div>
 
         @* ── 搜索区（条件由后端过滤）── *@
@@ -323,6 +327,24 @@
     </div>
 }
 
+@if (_renameVisible)
+{
+    <div class="template-modal-overlay" @onclick="CancelRenameProject">
+        <div class="tpl-modal" @onclick:stopPropagation style="max-width:460px;">
+            <div class="tpl-modal-header"><div class="tpl-modal-title">✏ 重命名项目</div><button class="tpl-modal-close" @onclick="CancelRenameProject">✕</button></div>
+            <div class="tpl-modal-body">
+                <div class="form-group"><label>新项目名称</label><input type="text" @bind="_renameProjectValue" @bind:event="oninput" maxlength="191" /></div>
+                <div class="form-group"><label>密码</label><input type="password" @bind="_renamePasswordValue" placeholder="请输入密码" /></div>
+                @if (!string.IsNullOrWhiteSpace(_renameError)) { <div class="tpl-error">@_renameError</div> }
+            </div>
+            <div class="tpl-modal-footer">
+                <button class="btn btn-outline" @onclick="CancelRenameProject">取消</button>
+                <button class="btn btn-primary" @onclick="ConfirmRenameProject" disabled="@(_renamingProject || string.IsNullOrWhiteSpace(_renameProjectValue) || string.IsNullOrWhiteSpace(_renamePasswordValue))">@(_renamingProject ? "重命名中…" : "确认重命名")</button>
+            </div>
+        </div>
+    </div>
+}
+
 @* ── 系统风格新建项目弹窗 ── *@
 @if (_newProjectVisible)
 {
@@ -495,6 +517,56 @@ private void ResetSearch()
         await SearchAsync();
     }
 
+    private void OpenRenameProject()
+    {
+        _renameProjectValue = _currentProject;
+        _renamePasswordValue = "";
+        _renameError = "";
+        _renameVisible = true;
+    }
+
+    private void CancelRenameProject() => _renameVisible = false;
+
+    private async Task ConfirmRenameProject()
+    {
+        var newName = _renameProjectValue.Trim();
+        if (newName.Length == 0) { _renameError = "项目名称不能为空"; return; }
+        if (newName.Length > 191) { _renameError = "项目名称不能超过 191 个字符"; return; }
+        if (newName == _currentProject) { _renameVisible = false; return; }
+
+        _renamingProject = true;
+        _renameError = "";
+        try
+        {
+            var oldName = _currentProject;
+            var (ok, statusCode, json) = await WcsApi.PutWithStatusAsync(
+                $"/api/wcs/exception-records/projects/{Uri.EscapeDataString(oldName)}",
+                new { NewName = newName, Password = _renamePasswordValue });
+            if (!ok) throw new InvalidOperationException(ReadApiMessage(json, $"重命名失败（HTTP {statusCode}）"));
+
+            await LoadProjectsAsync();
+            _currentProject = newName;
+            await LocalStore.SetAsync(Js, ProjectStoreKey, newName);
+            _renameVisible = false;
+            ShowFeedback($"项目已重命名为“{newName}”", "success");
+            await SearchAsync();
+        }
+        catch (Exception ex) { _renameError = ex.Message; }
+        finally { _renamingProject = false; }
+    }
+
+    private static string ReadApiMessage(string json, string fallback)
+    {
+        try
+        {
+            using var document = System.Text.Json.JsonDocument.Parse(json);
+            if (document.RootElement.TryGetProperty("message", out var message) && message.ValueKind == System.Text.Json.JsonValueKind.String)
+                return message.GetString() ?? fallback;
+        }
+        catch { }
+        return fallback;
+    }
+
     /// <summary>删除当前项目及其全部记录（需密码，不可恢复）。</summary>
     private void DeleteProject() =>
         ShowPassword("删除项目", $"删除项目「{_currentProject}」将删除其全部 {_records.Count} 条异常记录，不可恢复！请输入删除密码：", async pwd =>
@@ -519,6 +591,11 @@ private void ResetSearch()
     private string _passwordMessage = "";
     private string _passwordValue = "";
     private Func<string, Task>? _passwordAction;
+    private bool _renameVisible;
+    private bool _renamingProject;
+    private string _renameProjectValue = "";
+    private string _renamePasswordValue = "";
+    private string _renameError = "";
 
     private void ShowPassword(string title, string message, Func<string, Task> action) { _passwordTitle = title; _passwordMessage = message; _passwordAction = action; _passwordValue = ""; _passwordVisible = true; }
     private void CancelPassword() { _passwordVisible = false; _passwordAction = null; }

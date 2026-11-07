@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>泰国 TWD 项目记录 · 阅读预览</title>
+  <style>
+    :root { color-scheme: light; --ink:#172b45; --muted:#64748b; --line:#dbe5ef; --blue:#087eaa; --blue-soft:#eaf7fb; --green:#13866d; --paper:#fff; --bg:#f2f6fa; }
+    * { box-sizing:border-box; }
+    body { margin:0; background:var(--bg); color:var(--ink); font:15px/1.7 "Segoe UI","Microsoft YaHei",sans-serif; }
+    .shell { width:min(1040px,calc(100% - 40px)); margin:42px auto; }
+    .hero { position:relative; overflow:hidden; padding:34px 38px; border:1px solid #d7e4ed; border-radius:20px; background:linear-gradient(120deg,#fff 0%,#f6fbff 62%,#e8f6f7 100%); box-shadow:0 12px 36px #183a5812; }
+    .hero:after { content:""; position:absolute; width:240px;height:240px;right:-58px;top:-92px;border-radius:50%;background:#31b6bf13; }
+    .eyebrow { color:var(--blue); font-size:12px; font-weight:800; letter-spacing:.16em; }
+    h1 { margin:7px 0 4px; font-size:30px; line-height:1.25; letter-spacing:.01em; }
+    .subtitle { color:var(--muted); margin:0; }
+    .meta { display:flex; flex-wrap:wrap; gap:10px; margin-top:22px; }
+    .pill { padding:6px 11px; border:1px solid var(--line); border-radius:999px; background:#ffffffc9; color:#49627a; font-size:12px; }
+    .toolbar { display:flex; align-items:center; gap:10px; margin:22px 0 14px; }
+    .search { flex:1; min-width:180px; position:relative; }
+    .search input { width:100%; height:44px; padding:0 14px 0 42px; border:1px solid var(--line); border-radius:12px; background:#fff; color:var(--ink); font:inherit; outline:none; }
+    .search input:focus { border-color:#55b5d0; box-shadow:0 0 0 3px #55b5d020; }
+    .search span { position:absolute; left:14px; top:8px; color:#7a91a6; font-size:18px; }
+    button { height:42px; padding:0 14px; border:1px solid var(--line); border-radius:11px; background:#fff; color:#38536d; font:600 13px "Segoe UI","Microsoft YaHei",sans-serif; cursor:pointer; }
+    button:hover { border-color:#9cc9d5; color:var(--blue); background:#faffff; }
+    .section-list { display:grid; gap:10px; }
+    details { border:1px solid var(--line); border-radius:14px; background:var(--paper); box-shadow:0 3px 12px #183a5808; overflow:hidden; }
+    details[open] { border-color:#b7dbe4; box-shadow:0 8px 24px #183a580d; }
+    summary { display:flex; align-items:center; gap:13px; min-height:66px; padding:13px 18px; cursor:pointer; list-style:none; user-select:none; }
+    summary::-webkit-details-marker { display:none; }
+    .chevron { width:28px;height:28px;display:grid;place-items:center;border-radius:9px;background:var(--blue-soft);color:var(--blue);font-size:15px;transition:transform .18s ease; }
+    details[open] .chevron { transform:rotate(90deg); }
+    .icon { width:34px;height:34px;display:grid;place-items:center;border-radius:10px;background:#f0f5f9;font-size:17px; }
+    .title { flex:1; font-size:16px; font-weight:750; }
+    .hint { color:#8495a6; font-size:12px; }
+    .body { padding:0 23px 21px 93px; color:#344b63; }
+    .body p { margin:3px 0 11px; }
+    .body ul { margin:0; padding-left:20px; }
+    .body li { padding:3px 0; }
+    .callout { margin-top:12px; padding:11px 14px; border-left:3px solid #39a7be; border-radius:0 9px 9px 0; background:#f1f9fb; color:#49677d; font-size:13px; }
+    .sample { color:#8a9aa8; font-style:italic; }
+    .footer { padding:20px 4px 0; color:#8292a2; font-size:12px; text-align:center; }
+    .empty { display:none; padding:30px; text-align:center; color:var(--muted); background:#fff; border:1px dashed var(--line); border-radius:14px; }
+    @media (max-width:640px) { .shell{width:min(100% - 22px,1040px);margin:16px auto}.hero{padding:25px 21px}h1{font-size:25px}.toolbar{flex-wrap:wrap}.search{flex-basis:100%}.body{padding-left:22px}.hint{display:none}summary{gap:9px;padding:12px}.title{font-size:15px} }
+    @media print { body{background:#fff}.shell{width:100%;margin:0}.hero,details{box-shadow:none}.toolbar{display:none}details{break-inside:avoid}details:not([open])>.body{display:none}.hero{border-radius:0} }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <header class="hero">
+      <div class="eyebrow">PROJECT WORKSPACE · READ VIEW</div>
+      <h1>泰国 TWD 项目记录</h1>
+      <p class="subtitle">项目资料集中查看 · 点击分区标题展开内容</p>
+      <div class="meta">
+        <span class="pill">资料分区 6 个</span>
+        <span class="pill">导出时间：2026-11-07 13:40</span>
+        <span class="pill">预览样例</span>
+      </div>
+    </header>
+
+    <div class="toolbar">
+      <label class="search"><span>⌕</span><input id="search" type="search" placeholder="搜索项目内容或分区名称…"></label>
+      <button type="button" id="expand">全部展开</button>
+      <button type="button" id="collapse">全部收起</button>
+      <button type="button" onclick="window.print()">打印 / 保存 PDF</button>
+    </div>
+
+    <section class="section-list" id="sections">
+      <details data-key="overview" data-search="项目概览 车型 快仓 M100C RCS 版本 库位 输送线 分拣台">
+        <summary><span class="chevron">›</span><span class="icon">📌</span><span class="title">项目概览</span><span class="hint">基本信息与规模</span></summary>
+        <div class="body"><ul>
+          <li>车型：快仓 M100C，共 41 台车；车辆地址范围 10.57.109.1–10.57.109.41。</li>
+          <li>RCS 版本 16.1，前端 1.2.8，算法与 16.1 配套。</li>
+          <li>库位 613 个，输送线接驳位 10 个，分拣台 10 个，异常处理工位 2 个。</li>
+        </ul></div>
+      </details>
+
+      <details data-key="risks" data-search="项目风险 AP 终端 掉线 无线">
+        <summary><span class="chevron">›</span><span class="icon">⚠️</span><span class="title">项目风险</span><span class="hint">问题与应对</span></summary>
+        <div class="body"><ul><li>现场单个 AP 约可连接 20–30 个终端，车辆集中时存在掉线风险。</li></ul><div class="callout">建议记录现场验证结果、责任人和应对措施。</div></div>
+      </details>
+
+      <details data-key="data" data-search="项目数据 地图 库存 数据库">
+        <summary><span class="chevron">›</span><span class="icon">📊</span><span class="title">项目数据</span><span class="hint">关键数据与资料</span></summary>
+        <div class="body"><p class="sample">示例内容：地图规模、库存统计、接口数据或数据库信息。</p></div>
+      </details>
+
+      <details data-key="owners" data-search="项目责任人 经理 实施 开发">
+        <summary><span class="chevron">›</span><span class="icon">👥</span><span class="title">项目责任人</span><span class="hint">分工与联系人</span></summary>
+        <div class="body"><p class="sample">示例内容：项目经理、软件经理、WCS 实施、WCS 开发、WMS 开发等。</p></div>
+      </details>
+
+      <details data-key="notes" data-search="补充说明 备注">
+        <summary><span class="chevron">›</span><span class="icon">📝</span><span class="title">补充说明</span><span class="hint">其他项目资料</span></summary>
+        <div class="body"><p class="sample">示例内容：未归入其他分区的说明、会议结论或待办信息。</p></div>
+      </details>
+
+      <details data-key="deployment" data-search="部署文档 服务器 账号 路径 安装">
+        <summary><span class="chevron">›</span><span class="icon">🛠️</span><span class="title">部署文档</span><span class="hint">最后一个分区</span></summary>
+        <div class="body"><p class="sample">示例内容：部署步骤、服务器信息、账号和路径。实际部署信息请从项目资料读取。</p><div class="callout">部署资料可能包含敏感信息，请妥善保管。</div></div>
+      </details>
+    </section>
+    <div class="empty" id="empty">没有匹配的内容。</div>
+    <div class="footer">本页为交互式阅读示例 · 折叠内容可搜索，打印时适合保存为 PDF</div>
+  </main>
+  <script>
+    const panels = [...document.querySelectorAll('#sections details')];
+    document.querySelector('#expand').addEventListener('click', () => panels.forEach(p => p.open = true));
+    document.querySelector('#collapse').addEventListener('click', () => panels.forEach(p => p.open = false));
+    document.querySelector('#search').addEventListener('input', event => {
+      const query = event.target.value.trim().toLocaleLowerCase();
+      let visible = 0;
+      for (const panel of panels) {
+        const match = !query || (panel.innerText + ' ' + panel.dataset.search).toLocaleLowerCase().includes(query);
+        panel.hidden = !match;
+        if (match) visible++;
+      }
+      document.querySelector('#empty').style.display = visible ? 'none' : 'block';
+    });
+  </script>
+</body>
+</html>

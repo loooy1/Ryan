@@ -6,7 +6,7 @@ window.grcsTaskStage = (() => {
     let ref = null;
     let started = false;
 
-    function connect(hubUrl) {
+    async function connect(hubUrl) {
         if (started) return;
         started = true;
         connection = new signalR.HubConnectionBuilder()
@@ -42,17 +42,23 @@ window.grcsTaskStage = (() => {
         });
         connection.onclose(() => { if (ref) ref.invokeMethodAsync('OnStateChanged', 'disconnected'); });
 
-        connection.start()
-            .then(() => { if (ref) ref.invokeMethodAsync('OnStateChanged', 'connected'); })
-            .catch((err) => { console.error('grcsTaskStage start failed:', err); if (ref) ref.invokeMethodAsync('OnStateChanged', 'disconnected'); });
+        try {
+            await connection.start();
+            if (ref) await ref.invokeMethodAsync('OnStateChanged', 'connected');
+        } catch (err) {
+            started = false;
+            console.error('grcsTaskStage start failed:', err);
+            if (ref) await ref.invokeMethodAsync('OnStateChanged', 'disconnected');
+            throw err;
+        }
     }
 
-    function disconnect() {
+    async function disconnect() {
         if (connection) {
             const c = connection;
             connection = null;
             started = false;
-            c.stop().catch(() => {});
+            await c.stop();
         }
     }
 

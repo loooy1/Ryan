@@ -16,43 +16,46 @@ public sealed class RuntimeConfigurationCoordinator
     private readonly IJSRuntime _js;
     private readonly TaskStageHub _stage;
     private readonly AutomationHub _automation;
+    private readonly BackendHealthService _health;
 
     public RuntimeConfigurationCoordinator(
         LocalStoreService store,
         IJSRuntime js,
         TaskStageHub stage,
-        AutomationHub automation)
+        AutomationHub automation,
+        BackendHealthService health)
     {
         _store = store;
         _js = js;
         _stage = stage;
         _automation = automation;
+        _health = health;
     }
 
-    /// <summary>保存运行时配置，并在后台刷新受影响服务；连接刷新不能阻塞配置保存。</summary>
-    public async Task SaveAsync(string? wcsUrl = null, string? grcsUrl = null, string? warehouse = null)
+    /// <summary>保存运行时配置，并等待受影响的运行时服务切换到新配置。</summary>
+    public async Task SaveAsync(string? wcsUrl = null, string? grcsUrl = null, string? warehouse = null, CancellationToken cancellationToken = default)
     {
         var wcsChanged = await SetIfChangedAsync(WcsEndpointKey, wcsUrl);
         var grcsChanged = await SetIfChangedAsync(GrcsEndpointKey, grcsUrl);
-        var warehouseChanged = await SetIfChangedAsync(WarehouseKey, warehouse);
+        await SetIfChangedAsync(WarehouseKey, warehouse);
 
-        if (wcsChanged)
-            _ = RefreshStageInBackgroundAsync();
+        // 普通重复保存或仅修改场景名时，若当前连接健康，不要额外重连/探测，
+        // 避免健康探测接口的偶发慢响应被误判成配置保存失败。
+        var shouldVerifyConnections = wcsChanged || grcsChanged
+            || _health.WcsOnline != true || _health.GrcsOnline != true;
+        if (!shouldVerifyConnections) return;
 
-        if (wcsChanged || grcsChanged || warehouseChanged)
-            _ = RefreshAutomationInBackgroundAsync();
-    }
+        var refreshTasks = new List<Task>();
+        if (wcsChanged || _health.WcsOnline != true)
+            refreshTasks.Add(_stage.RefreshConnectionAsync(cancellationToken));
 
-    private async Task RefreshStageInBackgroundAsync()
-    {
-        try { await _stage.RefreshConnectionAsync().WaitAsync(TimeSpan.FromSeconds(3)); }
-        catch { /* 地址保存不应因旧连接断开或 SignalR 重连失败而失败 */ }
-    }
+        var healthRefresh = _automation.RefreshConfigurationAsync(cancellationToken);
+        refreshTasks.Add(healthRefresh);
 
-    private async Task RefreshAutomationInBackgroundAsync()
-    {
-        try { await _automation.RefreshNowAsync().WaitAsync(TimeSpan.FromSeconds(5)); }
-        catch { /* 自动化状态会由常驻刷新循环继续更新 */ }
+        // 设置页只有在受影响服务已经读取新配置后才会收到完成信号。
+        await Task.WhenAll(refreshTasks).WaitAsync(cancellationToken);
+        if (!await healthRefresh)
+            throw new InvalidOperationException("WCS 或 RCS 健康检查未通过。");
     }
 
     private async Task<bool> SetIfChangedAsync(string key, string? value)

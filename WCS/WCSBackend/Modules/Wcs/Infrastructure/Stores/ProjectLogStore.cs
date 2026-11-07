@@ -60,6 +60,21 @@ public class ProjectLogStore
         Audit("ProjectLedgerProjectRemoved", "删除项目全部台账 Project={Project}", project);
     }
 
+    public void RenameByProject(string currentName, string newName)
+    {
+        using var uow = _uow.Create();
+        var rows = uow.Repository<Entities.ProjectLogDto>().Query().Where(r => r.Project == currentName).ToList();
+        if (rows.Count == 0) return;
+        var now = DateTime.Now.ToString("O");
+        foreach (var row in rows)
+        {
+            row.Project = newName;
+            row.UpdatedAt = now;
+        }
+        uow.CommitAsync().GetAwaiter().GetResult();
+        Audit("ProjectLedgerProjectRenamed", "重命名项目台账 Project={OldProject} NewProject={NewProject}", currentName, newName);
+    }
+
     public void Update(Entities.ProjectLogDto rec)
     {
         using var uow = _uow.Create();

@@ -312,6 +312,64 @@ namespace WCSBackend.Migrations
                     b.ToTable("project_logs", (string)null);
                 });
 
+            modelBuilder.Entity("Contracts.Entities.ProjectWorkspaceDto", b =>
+                {
+                    b.Property<string>("Name")
+                        .HasMaxLength(191)
+                        .HasColumnType("varchar(191)")
+                        .HasColumnName("name");
+
+                    b.Property<string>("CreatedAt")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("varchar(40)")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("UpdatedAt")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("varchar(40)")
+                        .HasColumnName("updated_at");
+
+                    b.HasKey("Name");
+
+                    b.ToTable("project_workspaces", (string)null);
+                });
+
+            modelBuilder.Entity("Contracts.Entities.ProjectSectionDto", b =>
+                {
+                    b.Property<string>("ProjectName")
+                        .HasMaxLength(191)
+                        .HasColumnType("varchar(191)")
+                        .HasColumnName("project_name");
+
+                    b.Property<string>("Key")
+                        .HasMaxLength(64)
+                        .HasColumnType("varchar(64)")
+                        .HasColumnName("section_key");
+
+                    b.Property<string>("Title")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("varchar(128)")
+                        .HasColumnName("title");
+
+                    b.Property<string>("MarkdownContent")
+                        .IsRequired()
+                        .HasColumnType("longtext")
+                        .HasColumnName("markdown_content");
+
+                    b.Property<string>("UpdatedAt")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("varchar(40)")
+                        .HasColumnName("updated_at");
+
+                    b.HasKey("ProjectName", "Key");
+
+                    b.ToTable("project_sections", (string)null);
+                });
+
             modelBuilder.Entity("Contracts.Entities.TaskRecord", b =>
                 {
                     b.Property<long>("Id")
@@ -388,6 +446,12 @@ namespace WCSBackend.Migrations
 
             modelBuilder.Entity("Contracts.Entities.TaskTemplateRow", b =>
                 {
+                    b.Property<string>("RcsType")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("varchar(64)")
+                        .HasColumnName("rcs_type");
+
                     b.Property<string>("Value")
                         .HasColumnType("varchar(255)")
                         .HasColumnName("value");
@@ -435,7 +499,7 @@ namespace WCSBackend.Migrations
                         .HasColumnType("longtext")
                         .HasColumnName("workflow_json");
 
-                    b.HasKey("Value");
+                    b.HasKey("RcsType", "Value");
 
                     b.ToTable("task_templates", (string)null);
                 });

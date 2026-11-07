@@ -7,55 +7,65 @@ using Microsoft.AspNetCore.Http;
 namespace WCSBackend.Modules.Wcs.Infrastructure;
 public class TaskTemplateStore
 {
+    private const string DefaultRcsType = "RCS1";
     private readonly IUnitOfWorkFactory _uow;
     private readonly object _lock = new();
-    private List<TaskTemplateDto> _items = [];
 
     public TaskTemplateStore(IUnitOfWorkFactory uowFactory)
     {
         _uow = uowFactory;
-        try
-        {
-            using var uow = _uow.Create();
-            _items = uow.Repository<TaskTemplateRow>().FindAllAsync().GetAwaiter().GetResult()
-                .Select(r => r.Adapt<TaskTemplateDto>()).ToList();
-        }
-        catch { }
     }
 
-    public List<TaskTemplateDto> GetAll()
-    {
-        lock (_lock) return _items.ToList();
-    }
-
-    public void ReplaceAll(IEnumerable<TaskTemplateDto> items)
+    public List<TaskTemplateDto> GetAll(string? profileId = null)
     {
         lock (_lock)
         {
-            _items = items?.ToList() ?? [];
+            var rcsType = NormalizeProfileId(profileId);
+            using var uow = _uow.Create();
+            return uow.Repository<TaskTemplateRow>().Query()
+                .Where(row => row.RcsType == rcsType)
+                .OrderBy(row => row.UpdatedAt)
+                .ToList()
+                .Select(row => row.Adapt<TaskTemplateDto>())
+                .ToList();
+        }
+    }
+
+    public void ReplaceAll(IEnumerable<TaskTemplateDto> items, string? profileId = null)
+    {
+        lock (_lock)
+        {
+            var rcsType = NormalizeProfileId(profileId);
+            var updated = items?.ToList() ?? [];
             using var uow = _uow.Create();
             var repo = uow.Repository<TaskTemplateRow>();
-            repo.DeleteWhereAsync(_ => true).GetAwaiter().GetResult();
-            foreach (var dto in _items)
-                repo.AddAsync(dto.Adapt<TaskTemplateRow>()).GetAwaiter().GetResult();
+            repo.DeleteWhereAsync(row => row.RcsType == rcsType).GetAwaiter().GetResult();
+            foreach (var dto in updated)
+            {
+                var row = dto.Adapt<TaskTemplateRow>();
+                row.RcsType = rcsType;
+                repo.AddAsync(row).GetAwaiter().GetResult();
+            }
             uow.CommitAsync().GetAwaiter().GetResult();
         }
     }
 
-    public bool Remove(string value)
+    public bool Remove(string value, string? profileId = null)
     {
         lock (_lock)
         {
-            var n = _items.RemoveAll(x => string.Equals(x.Value, value, StringComparison.OrdinalIgnoreCase));
-            if (n > 0)
-            {
-                using var uow = _uow.Create();
-                uow.Repository<TaskTemplateRow>().DeleteWhereAsync(x => x.Value == value).GetAwaiter().GetResult();
-                uow.CommitAsync().GetAwaiter().GetResult();
-            }
-            return n > 0;
+            var rcsType = NormalizeProfileId(profileId);
+            using var uow = _uow.Create();
+            var repo = uow.Repository<TaskTemplateRow>();
+            if (!repo.Query().Any(x => x.RcsType == rcsType && x.Value == value)) return false;
+            repo.DeleteWhereAsync(x => x.RcsType == rcsType && x.Value == value).GetAwaiter().GetResult();
+            uow.CommitAsync().GetAwaiter().GetResult();
+            return true;
         }
     }
+
+    private static string NormalizeProfileId(string? profileId)
+        => string.IsNullOrWhiteSpace(profileId) ? DefaultRcsType : profileId.Trim();
 }
 
 /// <summary>

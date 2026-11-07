@@ -5,6 +5,7 @@ namespace Contracts.Entities;
 /// <summary>任务模板行（task_templates 表，固定属性列化 + Start/End JSON 列）。</summary>
 public class TaskTemplateRow
 {
+    public string RcsType { get; set; } = "RCS1";
     public string Value { get; set; } = "";
     public string Label { get; set; } = "";
     public bool NeedsContainer { get; set; }

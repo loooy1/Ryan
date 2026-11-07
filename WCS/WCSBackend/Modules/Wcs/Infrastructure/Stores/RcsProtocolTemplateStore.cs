@@ -12,6 +12,7 @@ namespace WCSBackend.Modules.Wcs.Infrastructure;
 public sealed class RcsProtocolTemplateStore
 {
     private const string LegacyStorageKey = "rcs_protocol_profiles";
+    private const string ProfileMarkerId = "__RCS_PROFILE__";
     private static readonly JsonSerializerOptions JsonOptions = new() { PropertyNameCaseInsensitive = true };
     private readonly IUnitOfWorkFactory _uow;
     private readonly object _sync = new();
@@ -57,7 +58,7 @@ public sealed class RcsProtocolTemplateStore
             profile.MockRules ??= [];
             NormalizeTaskInterfaceAssignments(profile.FeatureModules);
             profile.Operations = BuildOperations(profile.FeatureModules);
-            EnsureRequiredOperations(profile);
+            ValidateRequiredTaskInterfaces(profile);
             foreach (var op in profile.Operations)
             {
                 op.Key = op.Key?.Trim() ?? "";
@@ -73,9 +74,6 @@ public sealed class RcsProtocolTemplateStore
             }
             if (profile.Operations.Select(o => o.Key).Distinct(StringComparer.OrdinalIgnoreCase).Count() != profile.Operations.Count)
                 throw new InvalidOperationException($"配置集「{profile.Name}」中存在重复的操作编码。");
-            foreach (var requiredKey in new[] { "task.carry", "task.move" })
-                if (!profile.Operations.Any(o => Eq(o.Key, requiredKey)))
-                    throw new InvalidOperationException($"配置集「{profile.Name}」必须保留 {requiredKey} 模板。");
             EnforceSingleBoardSync(profile.MockRules);
         }
 
@@ -95,8 +93,10 @@ public sealed class RcsProtocolTemplateStore
     {
         lock (_sync)
         {
-            if (!_config.Profiles.Any(p => Eq(p.Id, profileId)))
+            var target = _config.Profiles.FirstOrDefault(p => Eq(p.Id, profileId));
+            if (target == null)
                 throw new InvalidOperationException($"RCS 配置集「{profileId}」不存在。");
+            ValidateRequiredTaskInterfaces(target);
             _config.ActiveProfileId = profileId.Trim();
             Persist();
             return Clone(_config);
@@ -114,7 +114,12 @@ public sealed class RcsProtocolTemplateStore
             var wasActive = Eq(_config.ActiveProfileId, profile.Id);
             _config.Profiles.Remove(profile);
             if (wasActive) _config.ActiveProfileId = _config.Profiles[0].Id;
-            Persist(); // 两张表整体重写，删除类型时同时清除其 Mock 和业务模板行。
+            using (var uow = _uow.Create())
+            {
+                uow.Repository<TaskTemplateRow>().DeleteWhereAsync(row => row.RcsType == profile.Id).GetAwaiter().GetResult();
+                uow.CommitAsync().GetAwaiter().GetResult();
+            }
+            Persist(); // RCS 类型删除后同步清除其 Mock 和业务功能模板；任务模板由独立表按 RCS 类型隔离。
             return Clone(_config);
         }
     }
@@ -129,24 +134,41 @@ public sealed class RcsProtocolTemplateStore
         => GetActive().FeatureModules.Any(module =>
             Eq(module.TaskInterfaceType, taskInterfaceType) && !string.IsNullOrWhiteSpace(module.ApiUrl));
 
+    public List<FeatureModuleDto> GetFeatureModules(string? profileId = null)
+    {
+        lock (_sync)
+            return Clone(FindProfile(profileId)?.FeatureModules ?? []);
+    }
+
     public void ReplaceActiveFeatureModules(IEnumerable<FeatureModuleDto> modules)
+        => ReplaceFeatureModules(modules, null);
+
+    public void ReplaceFeatureModules(IEnumerable<FeatureModuleDto> modules, string? profileId)
     {
         lock (_sync)
         {
-            var profile = GetActiveMutable();
+            var profile = GetOrCreateMutableProfile(profileId);
             profile.FeatureModules = modules?.ToList() ?? [];
             NormalizeTaskInterfaceAssignments(profile.FeatureModules);
             profile.Operations = BuildOperations(profile.FeatureModules);
-            EnsureRequiredOperations(profile);
             Persist();
         }
     }
 
+    public List<MockRuleDto> GetMockRules(string? profileId = null)
+    {
+        lock (_sync)
+            return Clone(FindProfile(profileId)?.MockRules ?? []);
+    }
+
     public void ReplaceActiveMockRules(IEnumerable<MockRuleDto> rules)
+        => ReplaceMockRules(rules, null);
+
+    public void ReplaceMockRules(IEnumerable<MockRuleDto> rules, string? profileId)
     {
         lock (_sync)
         {
-            var profile = GetActiveMutable();
+            var profile = GetOrCreateMutableProfile(profileId);
             profile.MockRules = rules?.ToList() ?? [];
             EnforceSingleBoardSync(profile.MockRules);
             Persist();
@@ -154,10 +176,13 @@ public sealed class RcsProtocolTemplateStore
     }
 
     public bool RemoveActiveMockRule(string id)
+        => RemoveMockRule(id, null);
+
+    public bool RemoveMockRule(string id, string? profileId)
     {
         lock (_sync)
         {
-            var profile = _config.Profiles.FirstOrDefault(p => Eq(p.Id, _config.ActiveProfileId));
+            var profile = FindProfile(profileId);
             if (profile == null) return false;
             var removed = profile.MockRules.RemoveAll(x => Eq(x.Id, id)) > 0;
             if (removed) Persist();
@@ -202,8 +227,8 @@ public sealed class RcsProtocolTemplateStore
         var requiresWrite = false;
         var profiles = types.Select(type =>
         {
-            var profileRows = featureRows.Where(x => Eq(x.RcsType, type)).ToList();
-            var profileFeature = profileRows.FirstOrDefault();
+            var profileRows = featureRows.Where(x => Eq(x.RcsType, type) && !Eq(x.Id, ProfileMarkerId)).ToList();
+            var profileFeature = profileRows.FirstOrDefault() ?? featureRows.FirstOrDefault(x => Eq(x.RcsType, type));
             var featureTemplates = profileRows.Select(x => x.Adapt<FeatureModuleDto>()).ToList();
             var mockTemplates = mockRows.Where(x => Eq(x.RcsType, type)).Select(x => x.Adapt<MockRuleDto>()).ToList();
             var profile = new RcsProtocolProfileDto
@@ -214,8 +239,6 @@ public sealed class RcsProtocolTemplateStore
                 FeatureModules = featureTemplates,
                 MockRules = mockTemplates,
             };
-            EnsureRequiredOperations(profile);
-            profile.MockRules = EnsureDefaultMockRule(profile.MockRules);
             if (profile.Operations.Count != profileRows.Count(x => IsProtocolOperationKey(x.Id)) || profile.MockRules.Count != mockTemplates.Count)
                 requiresWrite = true;
             return profile;
@@ -288,6 +311,14 @@ public sealed class RcsProtocolTemplateStore
                 row.UpdatedAt = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
                 uow.Repository<RcsFeatureModuleRow>().AddAsync(row).GetAwaiter().GetResult();
             }
+
+            // Profile metadata must survive even when its HTTP client and server template lists are empty.
+            var marker = new FeatureModuleDto { Id = ProfileMarkerId, Name = profile.Name }.Adapt<RcsFeatureModuleRow>();
+            marker.RcsType = profile.Id;
+            marker.ProfileName = profile.Name;
+            marker.IsActive = Eq(profile.Id, config.ActiveProfileId);
+            marker.UpdatedAt = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
+            uow.Repository<RcsFeatureModuleRow>().AddAsync(marker).GetAwaiter().GetResult();
         }
         uow.CommitAsync().GetAwaiter().GetResult();
     }
@@ -314,9 +345,29 @@ public sealed class RcsProtocolTemplateStore
             if (!profile.Operations.Any(x => Eq(x.Key, required.Key))) profile.Operations.Add(required);
     }
 
-    private RcsProtocolProfileDto GetActiveMutable()
-        => _config.Profiles.FirstOrDefault(p => Eq(p.Id, _config.ActiveProfileId))
-            ?? throw new InvalidOperationException("当前 RCS 配置集不存在。");
+    private RcsProtocolProfileDto? FindProfile(string? profileId)
+        => _config.Profiles.FirstOrDefault(p => Eq(p.Id, string.IsNullOrWhiteSpace(profileId) ? _config.ActiveProfileId : profileId));
+
+    private RcsProtocolProfileDto GetOrCreateMutableProfile(string? profileId)
+    {
+        var profile = FindProfile(profileId);
+        if (profile != null) return profile;
+        if (string.IsNullOrWhiteSpace(profileId))
+            throw new InvalidOperationException("当前 RCS 配置集不存在。");
+
+        profile = new RcsProtocolProfileDto { Id = profileId.Trim(), Name = profileId.Trim(), Operations = [], FeatureModules = [], MockRules = [] };
+        _config.Profiles.Add(profile);
+        return profile;
+    }
+
+    private static void ValidateRequiredTaskInterfaces(RcsProtocolProfileDto profile)
+    {
+        var modules = profile.FeatureModules ?? [];
+        var carryCount = modules.Count(module => Eq(module.TaskInterfaceType, TaskInterfaceTypes.Carry));
+        var moveCount = modules.Count(module => Eq(module.TaskInterfaceType, TaskInterfaceTypes.Move));
+        if (carryCount != 1 || moveCount != 1)
+            throw new InvalidOperationException($"配置集「{profile.Name}」必须各配置一个搬运和移动任务接口；当前搬运 {carryCount}/1，移动 {moveCount}/1。");
+    }
 
     private static RcsProtocolProfileDto CreateDefaultProfile() => new()
     {

@@ -25,6 +25,7 @@ public static class WcsModuleExtensions
         services.AddSingleton<SignalConfirmStore>();
         services.AddSingleton<ExceptionRecordStore>();
         services.AddSingleton<ProjectLogStore>();
+        services.AddSingleton<ProjectWorkspaceStore>();
         services.AddSingleton<TaskTemplateStore>();
         services.AddSingleton<FeatureModuleStore>();
         services.AddSingleton<RcsProtocolTemplateStore>();

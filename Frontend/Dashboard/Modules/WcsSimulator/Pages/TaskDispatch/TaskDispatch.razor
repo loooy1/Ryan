@@ -51,6 +51,7 @@
 
     <div class="sub-header">
         🎯 选择任务类型
+        <span class="badge-info">当前 RCS：@_activeRcsProfileName</span>
         @if (!string.IsNullOrEmpty(_selectedType))
         {
             <span class="badge-selected">@_selectedType</span>
@@ -116,7 +117,8 @@
         }
         else
         {
-            var tt = TaskTypeRegistry.All.First(t => t.Value == _selectedType);
+            var tt = TaskTypeRegistry.All.FirstOrDefault(t => string.Equals(t.Value, _selectedType, StringComparison.OrdinalIgnoreCase))
+                ?? new TaskTemplateDto { Value = _selectedType, Label = "该任务类型不在当前 RCS 模板中" };
             <text>@tt.Label：起点(@(string.Join("+", MapStationTypeBits.DecodeNames(tt.Start.StationTypeBits)))) → 终点(@(string.Join("+", MapStationTypeBits.DecodeNames(tt.End.StationTypeBits))))</text>
         }
     </div>
@@ -604,6 +606,9 @@
 
     // ── 添加/编辑模板弹窗 ──
     private const string TemplateStorageKey = "grcs_td_templates";
+    private string _activeRcsProfileId = "RCS1";
+    private string _activeRcsProfileName = "RCS1";
+    private string ProfileTemplateStorageKey => $"{TemplateStorageKey}:{_activeRcsProfileId}";
     private bool _showTemplateModal;
     private TaskTemplateDto? _editingTemplate;             // 非空=编辑已有模板；null=新建
     private TemplateDraft _draft = new();
@@ -945,7 +950,7 @@
         if (TaskTypeRegistry.Remove(value))
         {
             if (_selectedType == value) _selectedType = "";
-            try { await Api.DeleteTaskTemplateAsync(value); } catch { }
+            try { await Api.DeleteTaskTemplateAsync(value, _activeRcsProfileId); } catch { }
             await SaveCustomTemplates();
             StateHasChanged();
         }
@@ -957,8 +962,8 @@
     private async Task SaveCustomTemplates()
     {
         var list = TaskTypeRegistry.Customs.ToList();
-        try { await Api.SaveTaskTemplatesAsync(list); } catch { }
-        try { await LocalStore.SetAsync(Js, TemplateStorageKey,
+        try { await Api.SaveTaskTemplatesAsync(list, _activeRcsProfileId); } catch { }
+        try { await LocalStore.SetAsync(Js, ProfileTemplateStorageKey,
             System.Text.Json.JsonSerializer.Serialize(list)); } catch { }
     }
 
@@ -967,10 +972,21 @@
     {
         try
         {
-            var remote = await Api.GetTaskTemplatesAsync();
+            var profiles = await Api.GetRcsProtocolProfilesAsync();
+            if (!string.IsNullOrWhiteSpace(profiles?.ActiveProfileId))
+            {
+                _activeRcsProfileId = profiles.ActiveProfileId.Trim();
+                _activeRcsProfileName = profiles.Profiles
+                    .FirstOrDefault(profile => string.Equals(profile.Id, _activeRcsProfileId, StringComparison.OrdinalIgnoreCase))?.Name
+                    ?? _activeRcsProfileId;
+            }
+
+            var remote = await Api.GetTaskTemplatesAsync(_activeRcsProfileId);
             if (remote != null)
             {
                 TaskTypeRegistry.SetCustoms(remote);
+                if (!TaskTypeRegistry.All.Any(x => string.Equals(x.Value, _selectedType, StringComparison.OrdinalIgnoreCase)))
+                    _selectedType = "";
                 return;
             }
         }
@@ -978,7 +994,9 @@
 
         try
         {
-            var json = LocalStore[TemplateStorageKey];
+            var json = LocalStore[ProfileTemplateStorageKey];
+            if (string.IsNullOrEmpty(json) && string.Equals(_activeRcsProfileId, "RCS1", StringComparison.OrdinalIgnoreCase))
+                json = LocalStore[TemplateStorageKey];
             if (string.IsNullOrEmpty(json) || json == "null") return;
             var customs = System.Text.Json.JsonSerializer.Deserialize<List<TaskTemplateDto>>(json);
             if (customs != null) TaskTypeRegistry.SetCustoms(customs);
@@ -1104,6 +1122,9 @@
         }
         catch { _mapStations = []; }
 
+        if (!TaskTypeRegistry.All.Any(x => string.Equals(x.Value, _selectedType, StringComparison.OrdinalIgnoreCase)))
+            _selectedType = "";
+
         if (!restored)
         {
             _groupId = "GRP_" + DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString("x").ToUpper();
@@ -1134,7 +1155,9 @@
 
     private void OnConfigurationChanged(string key)
     {
-        if (key is "task-templates" or "feature-modules")
+        if (key == "rcs-profiles")
+            _ = InvokeAsync(async () => { await LoadCustomTemplates(); await LoadModules(); StateHasChanged(); });
+        else if (key is "task-templates" or "feature-modules")
             _ = InvokeAsync(async () => { await LoadCustomTemplates(); StateHasChanged(); });
     }
 

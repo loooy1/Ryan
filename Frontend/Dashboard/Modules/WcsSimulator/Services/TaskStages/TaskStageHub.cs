@@ -32,6 +32,8 @@ public class TaskStageHub : IDisposable
     private readonly object _lock = new();
     private DotNetObjectReference<TaskStageHub>? _ref;
     private readonly SemaphoreSlim _reconnectGate = new(1, 1);
+    private readonly object _reconnectTaskLock = new();
+    private Task? _pendingReconnect;
     private bool _started;
     private List<TaskRecord> _records = [];
     private readonly HashSet<string> _finished = new(StringComparer.OrdinalIgnoreCase);
@@ -132,26 +134,63 @@ public class TaskStageHub : IDisposable
     private void OnStoreValueChanged(string key, string? value)
     {
         if (string.Equals(key, WcsUrlKey, StringComparison.OrdinalIgnoreCase) && _started)
-            _ = ReconnectAsync();
+        {
+            lock (_reconnectTaskLock)
+            {
+                _pendingReconnect = ReconnectAsync(throwOnFailure: true);
+                _ = _pendingReconnect.ContinueWith(
+                    task => _ = task.Exception,
+                    CancellationToken.None,
+                    TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+                    TaskScheduler.Default);
+            }
+        }
     }
 
-    private async Task ReconnectAsync()
+    private async Task ReconnectAsync(bool throwOnFailure = false, CancellationToken cancellationToken = default)
     {
-        await _reconnectGate.WaitAsync();
+        await _reconnectGate.WaitAsync(cancellationToken);
         try
         {
-            await _js.InvokeVoidAsync("grcsTaskStage.disconnect");
-            await _js.InvokeVoidAsync("grcsTaskStage.connect", ResolveHubUrl());
+            await _js.InvokeVoidAsync("grcsTaskStage.disconnect", cancellationToken);
+            await _js.InvokeVoidAsync("grcsTaskStage.connect", cancellationToken, ResolveHubUrl());
         }
-        catch { }
+        catch
+        {
+            if (throwOnFailure) throw;
+        }
         finally { _reconnectGate.Release(); }
     }
 
     /// <summary>地址设置保存后立即切换到新的 WCS SignalR 地址。</summary>
-    public async Task RefreshConnectionAsync()
+    public async Task RefreshConnectionAsync(CancellationToken cancellationToken)
     {
         if (!_started) return;
-        await ReconnectAsync();
+        Task? pending;
+        lock (_reconnectTaskLock)
+        {
+            pending = _pendingReconnect;
+            _pendingReconnect = null;
+        }
+
+        // LocalStore 的变化事件已经触发重连时先等待它；若连接失败，在截止时间内继续重试。
+        if (pending != null)
+        {
+            try { await pending.WaitAsync(cancellationToken); return; }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+            catch { }
+        }
+
+        while (true)
+        {
+            try
+            {
+                await ReconnectAsync(throwOnFailure: true, cancellationToken: cancellationToken);
+                return;
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+            catch { await Task.Delay(TimeSpan.FromMilliseconds(400), cancellationToken); }
+        }
     }
 
     /// <summary>建立 SignalR 连接（幂等；MainLayout 注入时调用，保证每个标签页常驻）。</summary>
